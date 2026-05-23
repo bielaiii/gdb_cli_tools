@@ -1,0 +1,8 @@
+build/
+draft/
+*.assets/
+*_report.md
+*.log
+*.tmp
+core
+core.*
