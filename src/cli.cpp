@@ -2,12 +2,15 @@
 
 #include "common/string_utils.hpp"
 #include "gdb/gdb_session.hpp"
+#include "gdb/mi_utils.hpp"
 #include "report/report.hpp"
 #include "task/debug_task.hpp"
 #include "workflow/crash_workflow.hpp"
 
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <cctype>
 #include <stdexcept>
 #include <string>
 
@@ -18,6 +21,7 @@ struct CliOptions {
     fs::path task_file;
     fs::path assets = "report.assets";
     fs::path report = "report.md";
+    fs::path replay_before_run;
     std::string session_id = "S1";
     int run_timeout_ms = 30000;
 };
@@ -50,6 +54,8 @@ static CliOptions parse_cli(int argc, char **argv) {
             }
         } else if (arg == "--session") {
             opts.session_id = require_value(arg);
+        } else if (arg == "--replay-before-run") {
+            opts.replay_before_run = require_value(arg);
         } else if (arg == "--run-timeout-ms") {
             opts.run_timeout_ms = std::stoi(require_value(arg));
         } else {
@@ -95,11 +101,72 @@ static std::string extract_json_string(const std::string &line, const std::strin
     return out;
 }
 
+static int extract_json_int(const std::string &line, const std::string &key, int default_value) {
+    std::string needle = "\"" + key + "\"";
+    auto pos = line.find(needle);
+    if (pos == std::string::npos) {
+        return default_value;
+    }
+    pos = line.find(':', pos);
+    if (pos == std::string::npos) {
+        return default_value;
+    }
+    ++pos;
+    while (pos < line.size() && std::isspace(static_cast<unsigned char>(line[pos]))) {
+        ++pos;
+    }
+    bool negative = false;
+    if (pos < line.size() && line[pos] == '-') {
+        negative = true;
+        ++pos;
+    }
+    int value = 0;
+    bool found = false;
+    while (pos < line.size() && std::isdigit(static_cast<unsigned char>(line[pos]))) {
+        found = true;
+        value = value * 10 + (line[pos] - '0');
+        ++pos;
+    }
+    if (!found) {
+        return default_value;
+    }
+    return negative ? -value : value;
+}
+
 static bool contains_action(const std::string &line, const std::string &action) {
     return line.find("\"action\"") != std::string::npos && line.find("\"" + action + "\"") != std::string::npos;
 }
 
-static void handle_action_line(GdbSession &session, const std::string &line, bool &finished) {
+static void collect_stop_followup(GdbSession &session, const CommandResult &result) {
+    if (result.signal_name == "SIGSEGV" ||
+        result.timed_out ||
+        result.stop_reason == "interrupted_by_tool_deadline") {
+        collect_light_evidence(session);
+        return;
+    }
+
+    if (result.stop_reason == "breakpoint-hit" || result.stop_reason == "watchpoint-trigger") {
+        collect_console(session, "Current frame", "frame");
+        collect_console(session, "Frame arguments", "info args");
+        collect_console(session, "Local variables", "info locals");
+    }
+}
+
+static void add_command_evidence(GdbSession &session,
+                                 const std::string &kind,
+                                 const std::string &title,
+                                 const CommandResult &result) {
+    session.evidence_store().add(kind, title, result.command, result.raw_lines);
+}
+
+static void update_outcome_from_stop(SessionOutcome &outcome, const CommandResult &result) {
+    outcome.stop_reason = result.stop_reason.empty() ? outcome.stop_reason : result.stop_reason;
+    outcome.signal_name = result.signal_name.empty() ? outcome.signal_name : result.signal_name;
+    outcome.segfault = outcome.segfault || result.signal_name == "SIGSEGV";
+    outcome.run_timed_out = outcome.run_timed_out || result.timed_out;
+}
+
+static void handle_action_line(GdbSession &session, SessionOutcome *outcome, const std::string &line, bool &finished) {
     if (trim(line).empty()) {
         return;
     }
@@ -122,6 +189,18 @@ static void handle_action_line(GdbSession &session, const std::string &line, boo
         std::cout << "{\"ok\":true,\"action\":\"registers\",\"evidence\":\"" << ev.id << "\"}\n";
         return;
     }
+    if (contains_action(line, "threads")) {
+        auto ev = collect_console(session, "Threads", "info threads");
+        std::cout << "{\"ok\":true,\"action\":\"threads\",\"evidence\":\"" << ev.id << "\"}\n";
+        return;
+    }
+    if (contains_action(line, "frame_select")) {
+        int frame = extract_json_int(line, "frame", 0);
+        auto ev = collect_console(session, "Frame select", "frame " + std::to_string(frame));
+        std::cout << "{\"ok\":true,\"action\":\"frame_select\",\"frame\":" << frame
+                  << ",\"evidence\":\"" << ev.id << "\"}\n";
+        return;
+    }
     if (contains_action(line, "evaluate")) {
         std::string expr = extract_json_string(line, "expression");
         if (expr.empty()) {
@@ -132,7 +211,70 @@ static void handle_action_line(GdbSession &session, const std::string &line, boo
         std::cout << "{\"ok\":true,\"action\":\"evaluate\",\"evidence\":\"" << ev.id << "\"}\n";
         return;
     }
+    if (contains_action(line, "breakpoint_set")) {
+        std::string location = extract_json_string(line, "location");
+        if (location.empty()) {
+            std::cout << "{\"ok\":false,\"error\":\"missing location\"}\n";
+            return;
+        }
+
+        auto insert = session.command("-break-insert " + mi_quote(location));
+        add_command_evidence(session, "GdbCommand", "Breakpoint set", insert);
+        std::string number;
+        for (const auto &raw : insert.raw_lines) {
+            number = field_value(raw, "number");
+            if (!number.empty()) {
+                break;
+            }
+        }
+
+        std::string condition = extract_json_string(line, "condition");
+        std::string condition_evidence;
+        if (!condition.empty() && !number.empty()) {
+            auto cond = session.command("-break-condition " + number + " " + condition);
+            auto ev = session.evidence_store().add("GdbCommand", "Breakpoint condition", cond.command, cond.raw_lines);
+            condition_evidence = ev.id;
+        }
+
+        std::cout << "{\"ok\":true,\"action\":\"breakpoint_set\",\"breakpoint\":\"" << number << "\"";
+        if (!condition_evidence.empty()) {
+            std::cout << ",\"condition_evidence\":\"" << condition_evidence << "\"";
+        }
+        std::cout << "}\n";
+        return;
+    }
+    if (contains_action(line, "continue")) {
+        int deadline_ms = extract_json_int(line, "deadline_ms", 30000);
+        auto result = session.exec_control("-exec-continue", std::chrono::milliseconds(deadline_ms));
+        auto ev = session.evidence_store().add("StopEvent", "Continue stop", result.command, result.raw_lines);
+        if (outcome != nullptr) {
+            update_outcome_from_stop(*outcome, result);
+        }
+        collect_stop_followup(session, result);
+        std::cout << "{\"ok\":true,\"action\":\"continue\",\"stop_reason\":\"" << result.stop_reason
+                  << "\",\"signal\":\"" << result.signal_name
+                  << "\",\"evidence\":\"" << ev.id << "\"}\n";
+        return;
+    }
     std::cout << "{\"ok\":false,\"error\":\"unsupported action\"}\n";
+}
+
+static void replay_action_file(GdbSession &session, const fs::path &path) {
+    std::ifstream in(path);
+    if (!in) {
+        throw std::runtime_error("failed to open replay file: " + path.string());
+    }
+
+    bool ignored_finish = false;
+    std::string line;
+    while (std::getline(in, line)) {
+        line = trim(line);
+        if (line.empty() || line[0] == '#') {
+            continue;
+        }
+        handle_action_line(session, nullptr, line, ignored_finish);
+        ignored_finish = false;
+    }
 }
 
 static int run_check(const DebugTask &task) {
@@ -158,6 +300,10 @@ static int run_serve(const CliOptions &opts, const DebugTask &task) {
         session.start();
         session.initialize(task);
 
+        if (!opts.replay_before_run.empty()) {
+            replay_action_file(session, opts.replay_before_run);
+        }
+
         if (task.core_dump) {
             outcome.core_mode = true;
             auto load = session.load_core(task);
@@ -171,9 +317,7 @@ static int run_serve(const CliOptions &opts, const DebugTask &task) {
             outcome.signal_name = run.signal_name;
             outcome.segfault = run.signal_name == "SIGSEGV";
             outcome.run_timed_out = run.timed_out;
-            if (outcome.segfault || outcome.run_timed_out || outcome.stop_reason == "interrupted_by_tool_deadline") {
-                collect_light_evidence(session);
-            }
+            collect_stop_followup(session, run);
         }
 
         std::cout << "{\"ok\":true,\"session_id\":\"" << opts.session_id
@@ -183,7 +327,7 @@ static int run_serve(const CliOptions &opts, const DebugTask &task) {
         bool finished = false;
         std::string line;
         while (!finished && std::getline(std::cin, line)) {
-            handle_action_line(session, line, finished);
+            handle_action_line(session, &outcome, line, finished);
         }
 
         write_report(opts.report, opts.assets, task, outcome, session.evidence_store().all());
@@ -216,4 +360,3 @@ int run_cli(int argc, char **argv) {
         return 1;
     }
 }
-

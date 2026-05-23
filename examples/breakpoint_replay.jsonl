@@ -1,0 +1,2 @@
+{"action":"breakpoint_set","location":"examples/segfault.cpp:14","condition":"session == 0"}
+
