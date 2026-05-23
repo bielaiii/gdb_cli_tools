@@ -1,11 +1,47 @@
 #include "mi_utils.hpp"
 
-#include "../common/string_utils.hpp"
+namespace {
 
-#include <sstream>
+void append_unescaped_mi_string(std::string_view s, std::string &out) {
+    for (size_t i = 0; i < s.size(); ++i) {
+        char c = s[i];
+        if (c != '\\' || i + 1 >= s.size()) {
+            out.push_back(c);
+            continue;
+        }
+        char n = s[++i];
+        switch (n) {
+            case 'n': out.push_back('\n'); break;
+            case 't': out.push_back('\t'); break;
+            case 'r': out.push_back('\r'); break;
+            case '\\': out.push_back('\\'); break;
+            case '"': out.push_back('"'); break;
+            default: out.push_back(n); break;
+        }
+    }
+}
 
-std::string mi_quote(const std::string &s) {
+std::optional<std::string_view> mi_stream_payload_view(std::string_view line) {
+    if (line.size() < 3) {
+        return std::nullopt;
+    }
+    char kind = line[0];
+    if (kind != '~' && kind != '@' && kind != '&') {
+        return std::nullopt;
+    }
+    auto first = line.find('"');
+    auto last = line.rfind('"');
+    if (first == std::string_view::npos || last == std::string_view::npos || first == last) {
+        return std::nullopt;
+    }
+    return line.substr(first + 1, last - first - 1);
+}
+
+} // namespace
+
+std::string mi_quote(std::string_view s) {
     std::string out = "\"";
+    out.reserve(s.size() + 2);
     for (char c : s) {
         if (c == '\\' || c == '"') {
             out.push_back('\\');
@@ -23,45 +59,25 @@ std::string mi_quote(const std::string &s) {
 std::string unescape_mi_string(std::string_view s) {
     std::string out;
     out.reserve(s.size());
-    for (size_t i = 0; i < s.size(); ++i) {
-        char c = s[i];
-        if (c != '\\' || i + 1 >= s.size()) {
-            out.push_back(c);
-            continue;
-        }
-        char n = s[++i];
-        switch (n) {
-            case 'n': out.push_back('\n'); break;
-            case 't': out.push_back('\t'); break;
-            case 'r': out.push_back('\r'); break;
-            case '\\': out.push_back('\\'); break;
-            case '"': out.push_back('"'); break;
-            default: out.push_back(n); break;
-        }
-    }
+    append_unescaped_mi_string(s, out);
     return out;
 }
 
-std::optional<std::string> mi_stream_payload(const std::string &line) {
-    if (line.size() < 3) {
+std::optional<std::string> mi_stream_payload(std::string_view line) {
+    auto payload = mi_stream_payload_view(line);
+    if (!payload) {
         return std::nullopt;
     }
-    char kind = line[0];
-    if (kind != '~' && kind != '@' && kind != '&') {
-        return std::nullopt;
-    }
-    auto first = line.find('"');
-    auto last = line.rfind('"');
-    if (first == std::string::npos || last == std::string::npos || first == last) {
-        return std::nullopt;
-    }
-    return unescape_mi_string(std::string_view(line).substr(first + 1, last - first - 1));
+    return unescape_mi_string(*payload);
 }
 
-std::string field_value(const std::string &line, const std::string &name) {
-    std::string needle = name + "=\"";
+std::string field_value(std::string_view line, std::string_view name) {
+    std::string needle;
+    needle.reserve(name.size() + 2);
+    needle.append(name);
+    needle.append("=\"");
     auto pos = line.find(needle);
-    if (pos == std::string::npos) {
+    if (pos == std::string_view::npos) {
         return {};
     }
     pos += needle.size();
@@ -87,24 +103,38 @@ std::string field_value(const std::string &line, const std::string &name) {
 }
 
 std::string joined_raw(const std::vector<std::string> &lines) {
-    std::ostringstream out;
+    size_t total_size = lines.size();
     for (const auto &line : lines) {
-        out << line << '\n';
+        total_size += line.size();
     }
-    return out.str();
+
+    std::string out;
+    out.reserve(total_size);
+    for (const auto &line : lines) {
+        out.append(line);
+        out.push_back('\n');
+    }
+    return out;
 }
 
 std::string decoded_streams(const std::vector<std::string> &lines) {
-    std::ostringstream out;
+    size_t reserve_size = 0;
     for (const auto &line : lines) {
-        if (auto payload = mi_stream_payload(line)) {
-            out << *payload;
-            if (!payload->empty() && payload->back() != '\n') {
-                out << '\n';
-            }
+        reserve_size += line.size();
+    }
+
+    std::string out;
+    out.reserve(reserve_size);
+    for (const auto &line : lines) {
+        auto payload = mi_stream_payload_view(line);
+        if (!payload) {
+            continue;
+        }
+        size_t before = out.size();
+        append_unescaped_mi_string(*payload, out);
+        if (out.size() != before && out.back() != '\n') {
+            out.push_back('\n');
         }
     }
-    std::string decoded = out.str();
-    return decoded.empty() ? joined_raw(lines) : decoded;
+    return out.empty() ? joined_raw(lines) : out;
 }
-

@@ -9,6 +9,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <string_view>
 
 class GdbSession {
 public:
@@ -37,7 +38,7 @@ private:
     CommandResult command_blocking(const std::string &command, std::chrono::milliseconds timeout);
     CommandResult exec_control_blocking(const std::string &command, std::chrono::milliseconds run_deadline);
     void interrupt_after_deadline(CommandResult &result);
-    void log_line(const std::string &line);
+    void log_line(std::string_view line);
 
     std::filesystem::path assets_;
     std::filesystem::path working_directory_;

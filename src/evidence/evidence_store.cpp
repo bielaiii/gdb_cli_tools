@@ -5,6 +5,7 @@
 
 #include <filesystem>
 #include <sstream>
+#include <utility>
 
 namespace fs = std::filesystem;
 
@@ -14,7 +15,7 @@ static std::string summarize_backtrace(const std::string &text) {
     std::string line;
     int frames = 0;
     while (std::getline(in, line)) {
-        if (starts_with(trim(line), "#")) {
+        if (starts_with(trim_view(line), "#")) {
             out << line << '\n';
             ++frames;
             if (frames >= 12) {
@@ -45,9 +46,9 @@ EvidenceStore::EvidenceStore(fs::path assets, fs::path working_directory)
     fs::create_directories(assets_ / "evidence" / "summary");
 }
 
-Evidence EvidenceStore::add(const std::string &kind,
-                            const std::string &title,
-                            const std::string &command,
+Evidence EvidenceStore::add(std::string_view kind,
+                            std::string_view title,
+                            std::string_view command,
                             const std::vector<std::string> &raw_lines,
                             bool backtrace_summary) {
     std::ostringstream id_stream;
@@ -64,17 +65,23 @@ Evidence EvidenceStore::add(const std::string &kind,
 
     std::string raw = joined_raw(raw_lines);
     std::string decoded = sanitize_output(decoded_streams(raw_lines), working_directory_);
-    std::string summary = backtrace_summary ? summarize_backtrace(decoded) : decoded;
+    std::string summary = backtrace_summary ? summarize_backtrace(decoded) : std::move(decoded);
 
-    Evidence ev{id, kind, title, command, raw_file, summary_file, view_file, summary};
+    Evidence ev{std::move(id),
+                std::string(kind),
+                std::string(title),
+                std::string(command),
+                raw_file,
+                summary_file,
+                view_file,
+                std::move(summary)};
     write_text_file(raw_file, raw);
-    write_text_file(summary_file, summary);
+    write_text_file(summary_file, ev.summary);
     write_text_file(view_file, evidence_view(ev));
-    evidence_.push_back(ev);
-    return ev;
+    evidence_.push_back(std::move(ev));
+    return evidence_.back();
 }
 
 const std::vector<Evidence> &EvidenceStore::all() const {
     return evidence_;
 }
-

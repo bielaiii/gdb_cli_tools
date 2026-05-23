@@ -5,10 +5,22 @@
 #include <fstream>
 #include <stdexcept>
 
-std::string trim(std::string s) {
+std::string_view trim_view(std::string_view s) {
     auto is_space = [](unsigned char c) { return std::isspace(c) != 0; };
-    s.erase(s.begin(), std::find_if(s.begin(), s.end(), [&](char c) { return !is_space(c); }));
-    s.erase(std::find_if(s.rbegin(), s.rend(), [&](char c) { return !is_space(c); }).base(), s.end());
+    while (!s.empty() && is_space(static_cast<unsigned char>(s.front()))) {
+        s.remove_prefix(1);
+    }
+    while (!s.empty() && is_space(static_cast<unsigned char>(s.back()))) {
+        s.remove_suffix(1);
+    }
+    return s;
+}
+
+std::string trim(std::string s) {
+    auto view = trim_view(s);
+    if (view.size() != s.size()) {
+        s = std::string(view);
+    }
     return s;
 }
 
@@ -20,14 +32,15 @@ std::string lower(std::string s) {
 }
 
 bool starts_with(std::string_view s, std::string_view prefix) {
-    return s.size() >= prefix.size() && s.substr(0, prefix.size()) == prefix;
+    return s.size() >= prefix.size() && s.compare(0, prefix.size(), prefix) == 0;
 }
 
-std::string shell_quote_for_report(const std::string &s) {
+std::string shell_quote_for_report(std::string_view s) {
     if (s.find_first_of(" \t\n\"'\\") == std::string::npos) {
-        return s;
+        return std::string(s);
     }
     std::string out = "'";
+    out.reserve(s.size() + 2);
     for (char c : s) {
         if (c == '\'') {
             out += "'\\''";
@@ -39,7 +52,7 @@ std::string shell_quote_for_report(const std::string &s) {
     return out;
 }
 
-void replace_all(std::string &s, const std::string &from, const std::string &to) {
+void replace_all(std::string &s, std::string_view from, std::string_view to) {
     if (from.empty()) {
         return;
     }
@@ -58,7 +71,7 @@ std::string sanitize_output(std::string s, const std::filesystem::path &working_
     return s;
 }
 
-std::string slugify(std::string s) {
+std::string slugify(std::string_view s) {
     std::string out;
     for (char c : s) {
         if (std::isalnum(static_cast<unsigned char>(c))) {
@@ -73,11 +86,10 @@ std::string slugify(std::string s) {
     return out.empty() ? "evidence" : out;
 }
 
-void write_text_file(const std::filesystem::path &path, const std::string &text) {
+void write_text_file(const std::filesystem::path &path, std::string_view text) {
     std::ofstream out(path);
     if (!out) {
         throw std::runtime_error("failed to write: " + path.string());
     }
     out << text;
 }
-

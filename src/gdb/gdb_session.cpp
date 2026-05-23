@@ -106,7 +106,13 @@ void GdbSession::drain_startup() {
 CommandResult GdbSession::command_blocking(const std::string &command, std::chrono::milliseconds timeout) {
     uint64_t token = ++token_;
     std::string prefix = std::to_string(token);
-    process_.write_all(prefix + command + "\n");
+    std::string result_prefix = prefix + "^";
+    std::string wire_command;
+    wire_command.reserve(prefix.size() + command.size() + 1);
+    wire_command.append(prefix);
+    wire_command.append(command);
+    wire_command.push_back('\n');
+    process_.write_all(wire_command);
 
     CommandResult result;
     result.command = command;
@@ -117,17 +123,21 @@ CommandResult GdbSession::command_blocking(const std::string &command, std::chro
         if (!line) {
             break;
         }
-        log_line(*line);
-        if (*line == "(gdb)") {
+        std::string raw = std::move(*line);
+        log_line(raw);
+        if (raw == "(gdb)") {
             continue;
         }
-        result.raw_lines.push_back(*line);
-        if (starts_with(*line, prefix + "^")) {
-            result.result_class = line->substr(prefix.size() + 1);
+        bool completed = starts_with(raw, result_prefix);
+        if (completed) {
+            result.result_class.assign(raw, prefix.size() + 1, std::string::npos);
             auto comma = result.result_class.find(',');
             if (comma != std::string::npos) {
                 result.result_class.resize(comma);
             }
+        }
+        result.raw_lines.push_back(std::move(raw));
+        if (completed) {
             return result;
         }
     }
@@ -138,7 +148,14 @@ CommandResult GdbSession::command_blocking(const std::string &command, std::chro
 CommandResult GdbSession::exec_control_blocking(const std::string &command, std::chrono::milliseconds run_deadline) {
     uint64_t token = ++token_;
     std::string prefix = std::to_string(token);
-    process_.write_all(prefix + command + "\n");
+    std::string running_prefix = prefix + "^running";
+    std::string error_prefix = prefix + "^error";
+    std::string wire_command;
+    wire_command.reserve(prefix.size() + command.size() + 1);
+    wire_command.append(prefix);
+    wire_command.append(command);
+    wire_command.push_back('\n');
+    process_.write_all(wire_command);
 
     CommandResult result;
     result.command = command;
@@ -151,28 +168,32 @@ CommandResult GdbSession::exec_control_blocking(const std::string &command, std:
         if (!line) {
             break;
         }
-        log_line(*line);
-        if (*line == "(gdb)") {
+        std::string raw = std::move(*line);
+        log_line(raw);
+        if (raw == "(gdb)") {
             continue;
         }
-        result.raw_lines.push_back(*line);
 
-        if (starts_with(*line, prefix + "^running")) {
+        if (starts_with(raw, running_prefix)) {
             saw_running = true;
-        } else if (line->find("*stopped") != std::string::npos) {
-            result.stop_reason = field_value(*line, "reason");
-            result.signal_name = field_value(*line, "signal-name");
-            result.breakpoint_number = field_value(*line, "bkptno");
+        } else if (raw.find("*stopped") != std::string::npos) {
+            result.stop_reason = field_value(raw, "reason");
+            result.signal_name = field_value(raw, "signal-name");
+            result.breakpoint_number = field_value(raw, "bkptno");
+            result.raw_lines.push_back(std::move(raw));
             return result;
-        } else if (line->find("=thread-group-exited") != std::string::npos ||
-                   line->find("reason=\"exited") != std::string::npos) {
+        } else if (raw.find("=thread-group-exited") != std::string::npos ||
+                   raw.find("reason=\"exited") != std::string::npos) {
             result.exited = true;
             result.stop_reason = "exited";
+            result.raw_lines.push_back(std::move(raw));
             return result;
-        } else if (!saw_running && starts_with(*line, prefix + "^error")) {
+        } else if (!saw_running && starts_with(raw, error_prefix)) {
             result.result_class = "error";
+            result.raw_lines.push_back(std::move(raw));
             return result;
         }
+        result.raw_lines.push_back(std::move(raw));
     }
 
     result.timed_out = true;
@@ -184,7 +205,11 @@ CommandResult GdbSession::exec_control_blocking(const std::string &command, std:
 void GdbSession::interrupt_after_deadline(CommandResult &result) {
     uint64_t token = ++token_;
     std::string prefix = std::to_string(token);
-    process_.write_all(prefix + "-exec-interrupt\n");
+    std::string wire_command;
+    wire_command.reserve(prefix.size() + 16);
+    wire_command.append(prefix);
+    wire_command.append("-exec-interrupt\n");
+    process_.write_all(wire_command);
     auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(5000);
     while (std::chrono::steady_clock::now() < deadline) {
         auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
@@ -192,20 +217,21 @@ void GdbSession::interrupt_after_deadline(CommandResult &result) {
         if (!line) {
             break;
         }
-        log_line(*line);
-        if (*line == "(gdb)") {
+        std::string raw = std::move(*line);
+        log_line(raw);
+        if (raw == "(gdb)") {
             continue;
         }
-        result.raw_lines.push_back(*line);
-        if (line->find("*stopped") != std::string::npos) {
+        if (raw.find("*stopped") != std::string::npos) {
             result.stop_reason = "interrupted_by_tool_deadline";
-            result.signal_name = field_value(*line, "signal-name");
+            result.signal_name = field_value(raw, "signal-name");
+            result.raw_lines.push_back(std::move(raw));
             return;
         }
+        result.raw_lines.push_back(std::move(raw));
     }
 }
 
-void GdbSession::log_line(const std::string &line) {
+void GdbSession::log_line(std::string_view line) {
     session_log_ << line << '\n';
-    session_log_.flush();
 }

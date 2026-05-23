@@ -4,6 +4,7 @@
 
 #include <sstream>
 #include <algorithm>
+#include <string_view>
 
 namespace fs = std::filesystem;
 
@@ -52,7 +53,8 @@ void write_report(const fs::path &report,
         md << "- Human view: `" << display_path(ev.view_file) << "`\n";
         md << "- Summary: `" << display_path(ev.summary_file) << "`\n";
         md << "- Raw MI: `" << display_path(ev.raw_file) << "`\n\n";
-        md << "```text\n" << ev.summary.substr(0, 4000);
+        std::string_view summary_view(ev.summary);
+        md << "```text\n" << summary_view.substr(0, 4000);
         if (ev.summary.size() > 4000) {
             md << "\n... truncated in report; see summary file ...";
         }

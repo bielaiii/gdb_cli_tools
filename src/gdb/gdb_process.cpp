@@ -10,6 +10,12 @@
 #include <unistd.h>
 #include <utility>
 
+namespace {
+
+constexpr size_t kReadBufferCompactThreshold = 64 * 1024;
+
+} // namespace
+
 GdbProcess GdbProcess::spawn() {
     int in_pipe[2];
     int out_pipe[2];
@@ -62,6 +68,7 @@ GdbProcess &GdbProcess::operator=(GdbProcess &&other) noexcept {
         in_fd = std::exchange(other.in_fd, -1);
         out_fd = std::exchange(other.out_fd, -1);
         buffer = std::move(other.buffer);
+        buffer_start = std::exchange(other.buffer_start, 0);
     }
     return *this;
 }
@@ -77,7 +84,7 @@ void GdbProcess::close_all() {
     }
 }
 
-void GdbProcess::write_all(const std::string &data) {
+void GdbProcess::write_all(std::string_view data) {
     const char *ptr = data.data();
     size_t left = data.size();
     while (left > 0) {
@@ -96,10 +103,14 @@ void GdbProcess::write_all(const std::string &data) {
 std::optional<std::string> GdbProcess::read_line(std::chrono::milliseconds timeout) {
     auto deadline = std::chrono::steady_clock::now() + timeout;
     while (true) {
-        auto pos = buffer.find('\n');
+        auto pos = buffer.find('\n', buffer_start);
         if (pos != std::string::npos) {
-            std::string line = buffer.substr(0, pos);
-            buffer.erase(0, pos + 1);
+            std::string line(buffer.data() + buffer_start, pos - buffer_start);
+            buffer_start = pos + 1;
+            if (buffer_start >= kReadBufferCompactThreshold && buffer_start * 2 >= buffer.size()) {
+                buffer.erase(0, buffer_start);
+                buffer_start = 0;
+            }
             if (!line.empty() && line.back() == '\r') {
                 line.pop_back();
             }
@@ -139,10 +150,14 @@ std::optional<std::string> GdbProcess::read_line(std::chrono::milliseconds timeo
             throw std::runtime_error("read from gdb failed");
         }
         if (n == 0) {
-            if (!buffer.empty()) {
-                std::string line = std::exchange(buffer, {});
+            if (buffer_start < buffer.size()) {
+                std::string line(buffer.data() + buffer_start, buffer.size() - buffer_start);
+                buffer.clear();
+                buffer_start = 0;
                 return line;
             }
+            buffer.clear();
+            buffer_start = 0;
             return std::nullopt;
         }
         buffer.append(chunk.data(), static_cast<size_t>(n));
@@ -157,4 +172,3 @@ void GdbProcess::terminate() {
         pid = -1;
     }
 }
-

@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <vector>
 
 struct Evidence {
@@ -19,9 +20,9 @@ class EvidenceStore {
 public:
     EvidenceStore(std::filesystem::path assets, std::filesystem::path working_directory);
 
-    Evidence add(const std::string &kind,
-                 const std::string &title,
-                 const std::string &command,
+    Evidence add(std::string_view kind,
+                 std::string_view title,
+                 std::string_view command,
                  const std::vector<std::string> &raw_lines,
                  bool backtrace_summary = false);
 
@@ -33,4 +34,3 @@ private:
     int counter_ = 0;
     std::vector<Evidence> evidence_;
 };
-

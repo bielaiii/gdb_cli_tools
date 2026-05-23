@@ -3,6 +3,7 @@
 #include <chrono>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <sys/types.h>
 
 class GdbProcess {
@@ -11,6 +12,7 @@ public:
     int in_fd = -1;
     int out_fd = -1;
     std::string buffer;
+    size_t buffer_start = 0;
 
     static GdbProcess spawn();
 
@@ -22,8 +24,7 @@ public:
     GdbProcess &operator=(GdbProcess &&other) noexcept;
 
     void close_all();
-    void write_all(const std::string &data);
+    void write_all(std::string_view data);
     std::optional<std::string> read_line(std::chrono::milliseconds timeout);
     void terminate();
 };
-
