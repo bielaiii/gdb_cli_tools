@@ -87,6 +87,7 @@ static void handle_action_line(GdbSession &session,
                                bool &finished,
                                std::ostream &out);
 static void replay_action_file(GdbSession &session, ProbeState &probe_state, const fs::path &path, std::ostream &out);
+static std::string json_escape(const std::string &s);
 
 static void collect_stop_followup(GdbSession &session, const CommandResult &result) {
     if (result.signal_name == "SIGSEGV" ||
@@ -215,7 +216,7 @@ static void handle_action_line(GdbSession &session,
     try {
         action = parse_json(line);
     } catch (const std::exception &ex) {
-        out << "{\"ok\":false,\"error\":\"invalid json: " << ex.what() << "\"}\n";
+        out << "{\"ok\":false,\"error\":" << json_escape(std::string("invalid json: ") + ex.what()) << "}\n";
         return;
     }
     std::string action_name = action.string_or("action");
@@ -711,9 +712,77 @@ static std::string daemon_response(bool ok, const std::string &message) {
     return out.str();
 }
 
-static std::string handle_daemon_request(const Json &request, std::map<std::string, LiveSession> &sessions) {
+static void shutdown_live_sessions(std::map<std::string, LiveSession> &sessions) {
+    for (auto &[_, live] : sessions) {
+        if (live.session) {
+            live.session->shutdown();
+        }
+    }
+    sessions.clear();
+}
+
+static std::string live_session_status_json(const std::string &session_id, const LiveSession &live) {
+    std::ostringstream out;
+    out << "{"
+        << "\"session_id\":" << json_escape(session_id) << ","
+        << "\"task\":" << json_escape(live.opts.task_file.string()) << ","
+        << "\"report\":" << json_escape(live.opts.report.string()) << ","
+        << "\"assets\":" << json_escape(live.opts.assets.string()) << ","
+        << "\"mode\":" << json_escape(live.outcome.core_mode ? "core" : "run") << ","
+        << "\"stop_reason\":" << json_escape(live.outcome.stop_reason) << ","
+        << "\"signal\":" << json_escape(live.outcome.signal_name) << ","
+        << "\"segfault\":" << (live.outcome.segfault ? "true" : "false") << ","
+        << "\"run_timed_out\":" << (live.outcome.run_timed_out ? "true" : "false") << ","
+        << "\"evidence_count\":" << (live.session ? live.session->evidence_store().all().size() : 0)
+        << "}";
+    return out.str();
+}
+
+static std::string list_daemon_sessions(const std::map<std::string, LiveSession> &sessions) {
+    std::ostringstream out;
+    out << "{\"ok\":true,\"sessions\":[";
+    bool first = true;
+    for (const auto &[session_id, live] : sessions) {
+        if (!first) {
+            out << ",";
+        }
+        first = false;
+        out << live_session_status_json(session_id, live);
+    }
+    out << "]}\n";
+    return out.str();
+}
+
+static std::string finish_live_session_response(const std::string &session_id, LiveSession &live, const std::string &report) {
+    if (!report.empty()) {
+        live.opts.report = report;
+    }
+    write_session_files(live.opts, live.task, live.outcome, *live.session);
+    write_report(live.opts.report, live.opts.assets, live.task, live.outcome, live.session->evidence_store().all());
+    live.session->shutdown();
+
+    std::ostringstream out;
+    out << "{\"ok\":true,\"session_id\":" << json_escape(session_id)
+        << ",\"report\":" << json_escape(live.opts.report.string())
+        << ",\"assets\":" << json_escape(live.opts.assets.string()) << "}\n";
+    return out.str();
+}
+
+static std::string handle_daemon_request(const Json &request,
+                                         std::map<std::string, LiveSession> &sessions,
+                                         bool &shutdown_requested) {
     std::string op = request.string_or("op");
     std::string session_id = request.string_or("session_id", "S1");
+
+    if (op == "list") {
+        return list_daemon_sessions(sessions);
+    }
+
+    if (op == "shutdown") {
+        shutdown_live_sessions(sessions);
+        shutdown_requested = true;
+        return daemon_response(true, "daemon shutting down");
+    }
 
     if (op == "create") {
         if (sessions.contains(session_id)) {
@@ -744,6 +813,12 @@ static std::string handle_daemon_request(const Json &request, std::map<std::stri
     }
     LiveSession &live = it->second;
 
+    if (op == "status") {
+        std::ostringstream out;
+        out << "{\"ok\":true,\"session\":" << live_session_status_json(session_id, live) << "}\n";
+        return out.str();
+    }
+
     if (op == "action") {
         const Json *payload = request.find("payload");
         if (payload == nullptr || !payload->is_object()) {
@@ -752,23 +827,19 @@ static std::string handle_daemon_request(const Json &request, std::map<std::stri
         bool finished = false;
         std::ostringstream out;
         handle_action_line(*live.session, &live.outcome, live.probe_state, dump_json(*payload), finished, out);
+        if (finished) {
+            std::string response = finish_live_session_response(session_id, live, "");
+            sessions.erase(it);
+            return response;
+        }
         return out.str();
     }
 
     if (op == "finish") {
         std::string report = request.string_or("report");
-        if (!report.empty()) {
-            live.opts.report = report;
-        }
-        write_session_files(live.opts, live.task, live.outcome, *live.session);
-        write_report(live.opts.report, live.opts.assets, live.task, live.outcome, live.session->evidence_store().all());
-        live.session->shutdown();
-        std::ostringstream out;
-        out << "{\"ok\":true,\"session_id\":" << json_escape(session_id)
-            << ",\"report\":" << json_escape(live.opts.report.string())
-            << ",\"assets\":" << json_escape(live.opts.assets.string()) << "}\n";
+        std::string response = finish_live_session_response(session_id, live, report);
         sessions.erase(it);
-        return out.str();
+        return response;
     }
 
     if (op == "close") {
@@ -788,7 +859,8 @@ static int run_daemon(int argc, char **argv) {
     std::cout << "{\"ok\":true,\"daemon\":\"listening\",\"socket\":\"" << socket_path.string() << "\"}\n";
     std::cout.flush();
 
-    while (true) {
+    bool shutdown_requested = false;
+    while (!shutdown_requested) {
         int client = accept(server, nullptr, nullptr);
         if (client < 0) {
             continue;
@@ -798,13 +870,18 @@ static int run_daemon(int argc, char **argv) {
         std::string response;
         try {
             Json request = parse_json(request_text);
-            response = handle_daemon_request(request, sessions);
+            response = handle_daemon_request(request, sessions, shutdown_requested);
         } catch (const std::exception &ex) {
             response = daemon_response(false, ex.what());
         }
         write_fd_all(client, response);
         close(client);
     }
+
+    close(server);
+    unlink(socket_path.string().c_str());
+    shutdown_live_sessions(sessions);
+    return 0;
 }
 
 static int run_client_command(int argc, char **argv) {
@@ -862,6 +939,19 @@ static int run_client_command(int argc, char **argv) {
                 << "\"op\":\"close\","
                 << "\"session_id\":" << json_escape(session_id)
                 << "}";
+    } else if (cmd == "status") {
+        if (argc < 3) {
+            throw std::runtime_error("usage: gdb-agent status SESSION_ID [--socket path]");
+        }
+        std::string session_id = argv[2];
+        request << "{"
+                << "\"op\":\"status\","
+                << "\"session_id\":" << json_escape(session_id)
+                << "}";
+    } else if (cmd == "list") {
+        request << "{\"op\":\"list\"}";
+    } else if (cmd == "shutdown") {
+        request << "{\"op\":\"shutdown\"}";
     } else {
         throw std::runtime_error("unsupported client command: " + cmd);
     }
@@ -935,7 +1025,9 @@ int run_cli(int argc, char **argv) {
             if (command == "daemon") {
                 return run_daemon(argc, argv);
             }
-            if (command == "create" || command == "action" || command == "finish" || command == "close") {
+            if (command == "create" || command == "action" || command == "finish" ||
+                command == "close" || command == "status" || command == "list" ||
+                command == "shutdown") {
                 return run_client_command(argc, argv);
             }
         }

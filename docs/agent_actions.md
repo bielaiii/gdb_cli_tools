@@ -11,12 +11,17 @@ live session across separate CLI invocations:
 ```bash
 gdb-agent daemon --socket /tmp/gdb-agent.sock
 gdb-agent create examples/segfault_task.md --socket /tmp/gdb-agent.sock --session S1 --out report.md --assets report.assets
+gdb-agent list --socket /tmp/gdb-agent.sock
+gdb-agent status S1 --socket /tmp/gdb-agent.sock
 gdb-agent action S1 '{"action":"evaluate","expression":"session"}' --socket /tmp/gdb-agent.sock
 gdb-agent finish S1 --socket /tmp/gdb-agent.sock --out report.md
+gdb-agent shutdown --socket /tmp/gdb-agent.sock
 ```
 
 `finish` writes the report and closes that session. `close` closes the session
-without writing the final report.
+without writing the final report. `list` returns all live daemon sessions,
+`status` returns one session's stop state and evidence count, and `shutdown`
+closes every live session and removes the Unix socket.
 
 Supported action lines are intentionally small in MVP form:
 
