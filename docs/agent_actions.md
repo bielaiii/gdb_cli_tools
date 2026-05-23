@@ -15,7 +15,13 @@ Supported action lines are intentionally small in MVP form:
 {"action":"frame_select","frame":1}
 {"action":"evaluate","expression":"ptr"}
 {"action":"breakpoint_set","location":"examples/segfault.cpp:14","condition":"session == 0"}
+{"action":"watchpoint_set","expression":"global_counter"}
+{"action":"probe_disable","number":1}
+{"action":"probe_enable","number":1}
+{"action":"probe_delete","number":1}
 {"action":"continue"}
+{"action":"save_action","name":"fd-checks","saved_action":"{\"action\":\"backtrace\"}"}
+{"action":"replay","name":"fd-checks"}
 {"action":"finish_session"}
 ```
 

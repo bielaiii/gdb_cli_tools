@@ -28,6 +28,7 @@ public:
     void initialize(const DebugTask &task);
     CommandResult load_core(const DebugTask &task);
     EvidenceStore &evidence_store();
+    const std::filesystem::path &assets_dir() const;
     void shutdown();
 
 private:
@@ -44,4 +45,3 @@ private:
     uint64_t token_ = 0;
     std::ofstream session_log_;
 };
-

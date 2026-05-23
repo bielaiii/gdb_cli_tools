@@ -69,6 +69,10 @@ EvidenceStore &GdbSession::evidence_store() {
     return evidence_;
 }
 
+const fs::path &GdbSession::assets_dir() const {
+    return assets_;
+}
+
 void GdbSession::shutdown() {
     if (process_.pid > 0) {
         try {
@@ -200,4 +204,3 @@ void GdbSession::log_line(const std::string &line) {
     session_log_ << line << '\n';
     session_log_.flush();
 }
-

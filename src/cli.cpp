@@ -134,8 +134,11 @@ static int extract_json_int(const std::string &line, const std::string &key, int
 }
 
 static bool contains_action(const std::string &line, const std::string &action) {
-    return line.find("\"action\"") != std::string::npos && line.find("\"" + action + "\"") != std::string::npos;
+    return extract_json_string(line, "action") == action;
 }
+
+static void handle_action_line(GdbSession &session, SessionOutcome *outcome, const std::string &line, bool &finished);
+static void replay_action_file(GdbSession &session, const fs::path &path);
 
 static void collect_stop_followup(GdbSession &session, const CommandResult &result) {
     if (result.signal_name == "SIGSEGV" ||
@@ -243,6 +246,54 @@ static void handle_action_line(GdbSession &session, SessionOutcome *outcome, con
         std::cout << "}\n";
         return;
     }
+    if (contains_action(line, "watchpoint_set")) {
+        std::string expression = extract_json_string(line, "expression");
+        if (expression.empty()) {
+            std::cout << "{\"ok\":false,\"error\":\"missing expression\"}\n";
+            return;
+        }
+
+        auto result = session.command("-break-watch " + expression);
+        auto ev = session.evidence_store().add("GdbCommand", "Watchpoint set", result.command, result.raw_lines);
+        std::string number;
+        for (const auto &raw : result.raw_lines) {
+            number = field_value(raw, "number");
+            if (!number.empty()) {
+                break;
+            }
+        }
+        std::cout << "{\"ok\":true,\"action\":\"watchpoint_set\",\"watchpoint\":\"" << number
+                  << "\",\"evidence\":\"" << ev.id << "\"}\n";
+        return;
+    }
+    if (contains_action(line, "probe_delete") ||
+        contains_action(line, "probe_enable") ||
+        contains_action(line, "probe_disable")) {
+        int number = extract_json_int(line, "number", -1);
+        if (number < 0) {
+            std::cout << "{\"ok\":false,\"error\":\"missing probe number\"}\n";
+            return;
+        }
+
+        std::string action = "probe_delete";
+        std::string command = "-break-delete ";
+        std::string title = "Probe delete";
+        if (contains_action(line, "probe_enable")) {
+            action = "probe_enable";
+            command = "-break-enable ";
+            title = "Probe enable";
+        } else if (contains_action(line, "probe_disable")) {
+            action = "probe_disable";
+            command = "-break-disable ";
+            title = "Probe disable";
+        }
+
+        auto result = session.command(command + std::to_string(number));
+        auto ev = session.evidence_store().add("GdbCommand", title, result.command, result.raw_lines);
+        std::cout << "{\"ok\":true,\"action\":\"" << action << "\",\"number\":" << number
+                  << ",\"evidence\":\"" << ev.id << "\"}\n";
+        return;
+    }
     if (contains_action(line, "continue")) {
         int deadline_ms = extract_json_int(line, "deadline_ms", 30000);
         auto result = session.exec_control("-exec-continue", std::chrono::milliseconds(deadline_ms));
@@ -254,6 +305,44 @@ static void handle_action_line(GdbSession &session, SessionOutcome *outcome, con
         std::cout << "{\"ok\":true,\"action\":\"continue\",\"stop_reason\":\"" << result.stop_reason
                   << "\",\"signal\":\"" << result.signal_name
                   << "\",\"evidence\":\"" << ev.id << "\"}\n";
+        return;
+    }
+    if (contains_action(line, "save_action")) {
+        std::string name = extract_json_string(line, "name");
+        std::string saved_action = extract_json_string(line, "saved_action");
+        if (name.empty() || saved_action.empty()) {
+            std::cout << "{\"ok\":false,\"error\":\"save_action requires name and saved_action\"}\n";
+            return;
+        }
+
+        fs::path replay_dir = session.assets_dir() / "replay";
+        fs::create_directories(replay_dir);
+        fs::path replay_file = replay_dir / (slugify(name) + ".jsonl");
+        std::ofstream out(replay_file, std::ios::app);
+        if (!out) {
+            std::cout << "{\"ok\":false,\"error\":\"failed to write replay file\"}\n";
+            return;
+        }
+        out << saved_action << '\n';
+        std::cout << "{\"ok\":true,\"action\":\"save_action\",\"file\":\""
+                  << replay_file.lexically_normal().string() << "\"}\n";
+        return;
+    }
+    if (contains_action(line, "replay")) {
+        std::string file = extract_json_string(line, "file");
+        std::string name = extract_json_string(line, "name");
+        fs::path replay_file;
+        if (!file.empty()) {
+            replay_file = file;
+        } else if (!name.empty()) {
+            replay_file = session.assets_dir() / "replay" / (slugify(name) + ".jsonl");
+        } else {
+            std::cout << "{\"ok\":false,\"error\":\"replay requires file or name\"}\n";
+            return;
+        }
+        replay_action_file(session, replay_file);
+        std::cout << "{\"ok\":true,\"action\":\"replay\",\"file\":\""
+                  << replay_file.lexically_normal().string() << "\"}\n";
         return;
     }
     std::cout << "{\"ok\":false,\"error\":\"unsupported action\"}\n";
