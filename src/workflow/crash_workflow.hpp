@@ -21,4 +21,4 @@ Evidence collect_console(GdbSession &session,
                          std::chrono::milliseconds timeout = std::chrono::milliseconds(5000));
 
 void collect_light_evidence(GdbSession &session);
-
+void collect_core_evidence(GdbSession &session);

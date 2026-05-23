@@ -18,3 +18,10 @@ void collect_light_evidence(GdbSession &session) {
     collect_console(session, "Registers", "info registers");
 }
 
+void collect_core_evidence(GdbSession &session) {
+    collect_console(session, "Core info files", "info files");
+    collect_console(session, "Core shared libraries", "info sharedlibrary", false, std::chrono::milliseconds(10000));
+    collect_console(session, "Core threads", "info threads");
+    collect_console(session, "Core all thread backtraces", "thread apply all bt", true, std::chrono::milliseconds(15000));
+    collect_light_evidence(session);
+}

@@ -28,6 +28,7 @@ public:
     void initialize(const DebugTask &task);
     CommandResult load_core(const DebugTask &task);
     EvidenceStore &evidence_store();
+    const EvidenceStore &evidence_store() const;
     const std::filesystem::path &assets_dir() const;
     void shutdown();
 

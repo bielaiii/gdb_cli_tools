@@ -42,4 +42,11 @@ The full MI session stream is stored as:
 <assets>/logs/session.mi.raw.log
 ```
 
+The MVP also writes machine-readable session files:
+
+```text
+<assets>/task.normalized.json
+<assets>/session_summary.json
+```
+
 Reports should cite evidence ids rather than relying on summaries alone.

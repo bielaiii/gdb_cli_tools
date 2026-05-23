@@ -499,6 +499,43 @@ static int run_check(const DebugTask &task) {
     return 0;
 }
 
+static std::string json_escape(const std::string &s) {
+    Json json;
+    json.type = Json::Type::String;
+    json.string_value = s;
+    return dump_json(json);
+}
+
+static void write_session_files(const CliOptions &opts,
+                                const DebugTask &task,
+                                const SessionOutcome &outcome,
+                                const GdbSession &session) {
+    fs::create_directories(opts.assets);
+
+    std::ostringstream task_json;
+    task_json << "{\n";
+    task_json << "  \"problem\": " << json_escape(task.problem) << ",\n";
+    task_json << "  \"executable\": " << json_escape(task.executable.string()) << ",\n";
+    task_json << "  \"working_directory\": " << json_escape(task.working_directory.string()) << ",\n";
+    task_json << "  \"args\": " << json_escape(task.args_raw) << ",\n";
+    task_json << "  \"core_dump\": "
+              << (task.core_dump ? json_escape(task.core_dump->string()) : std::string("null")) << "\n";
+    task_json << "}\n";
+    write_text_file(opts.assets / "task.normalized.json", task_json.str());
+
+    std::ostringstream summary;
+    summary << "{\n";
+    summary << "  \"session_id\": " << json_escape(opts.session_id) << ",\n";
+    summary << "  \"mode\": " << json_escape(outcome.core_mode ? "core" : "run") << ",\n";
+    summary << "  \"stop_reason\": " << json_escape(outcome.stop_reason) << ",\n";
+    summary << "  \"signal\": " << json_escape(outcome.signal_name) << ",\n";
+    summary << "  \"segfault\": " << (outcome.segfault ? "true" : "false") << ",\n";
+    summary << "  \"run_timed_out\": " << (outcome.run_timed_out ? "true" : "false") << ",\n";
+    summary << "  \"evidence_count\": " << session.evidence_store().all().size() << "\n";
+    summary << "}\n";
+    write_text_file(opts.assets / "session_summary.json", summary.str());
+}
+
 static int run_serve(const CliOptions &opts, const DebugTask &task) {
     validate_task(task);
     fs::create_directories(opts.assets);
@@ -520,7 +557,7 @@ static int run_serve(const CliOptions &opts, const DebugTask &task) {
             auto load = session.load_core(task);
             session.evidence_store().add("SessionEvent", "Core load", load.command, load.raw_lines);
             outcome.stop_reason = "core_loaded";
-            collect_light_evidence(session);
+            collect_core_evidence(session);
         } else {
             auto run = session.exec_control("-exec-run", std::chrono::milliseconds(opts.run_timeout_ms));
             session.evidence_store().add("StopEvent", "Initial run stop", run.command, run.raw_lines);
@@ -542,6 +579,7 @@ static int run_serve(const CliOptions &opts, const DebugTask &task) {
             handle_action_line(session, &outcome, probe_state, line, finished);
         }
 
+        write_session_files(opts, task, outcome, session);
         write_report(opts.report, opts.assets, task, outcome, session.evidence_store().all());
         std::cout << "{\"ok\":true,\"report\":\"" << opts.report.string()
                   << "\",\"assets\":\"" << opts.assets.string() << "\"}\n";

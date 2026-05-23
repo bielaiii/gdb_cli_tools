@@ -69,6 +69,10 @@ EvidenceStore &GdbSession::evidence_store() {
     return evidence_;
 }
 
+const EvidenceStore &GdbSession::evidence_store() const {
+    return evidence_;
+}
+
 const fs::path &GdbSession::assets_dir() const {
     return assets_;
 }
