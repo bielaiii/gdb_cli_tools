@@ -9,7 +9,7 @@ struct CommandResult {
     std::string result_class;
     std::string stop_reason;
     std::string signal_name;
+    std::string breakpoint_number;
     bool timed_out = false;
     bool exited = false;
 };
-

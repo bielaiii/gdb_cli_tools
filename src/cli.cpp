@@ -1,6 +1,7 @@
 #include "cli.hpp"
 
 #include "common/string_utils.hpp"
+#include "common/json.hpp"
 #include "gdb/gdb_session.hpp"
 #include "gdb/mi_utils.hpp"
 #include "report/report.hpp"
@@ -10,9 +11,11 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <cctype>
 #include <stdexcept>
+#include <sstream>
 #include <string>
+#include <map>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -24,6 +27,11 @@ struct CliOptions {
     fs::path replay_before_run;
     std::string session_id = "S1";
     int run_timeout_ms = 30000;
+};
+
+struct ProbeState {
+    std::map<std::string, std::vector<std::string>> on_hit_actions_by_breakpoint;
+    int hypothesis_counter = 0;
 };
 
 static fs::path default_assets_for(const fs::path &report) {
@@ -65,80 +73,12 @@ static CliOptions parse_cli(int argc, char **argv) {
     return opts;
 }
 
-static std::string extract_json_string(const std::string &line, const std::string &key) {
-    std::string needle = "\"" + key + "\"";
-    auto pos = line.find(needle);
-    if (pos == std::string::npos) {
-        return {};
-    }
-    pos = line.find(':', pos);
-    if (pos == std::string::npos) {
-        return {};
-    }
-    pos = line.find('"', pos);
-    if (pos == std::string::npos) {
-        return {};
-    }
-    ++pos;
-    std::string out;
-    bool escaped = false;
-    for (; pos < line.size(); ++pos) {
-        char c = line[pos];
-        if (escaped) {
-            out.push_back(c);
-            escaped = false;
-            continue;
-        }
-        if (c == '\\') {
-            escaped = true;
-            continue;
-        }
-        if (c == '"') {
-            break;
-        }
-        out.push_back(c);
-    }
-    return out;
-}
-
-static int extract_json_int(const std::string &line, const std::string &key, int default_value) {
-    std::string needle = "\"" + key + "\"";
-    auto pos = line.find(needle);
-    if (pos == std::string::npos) {
-        return default_value;
-    }
-    pos = line.find(':', pos);
-    if (pos == std::string::npos) {
-        return default_value;
-    }
-    ++pos;
-    while (pos < line.size() && std::isspace(static_cast<unsigned char>(line[pos]))) {
-        ++pos;
-    }
-    bool negative = false;
-    if (pos < line.size() && line[pos] == '-') {
-        negative = true;
-        ++pos;
-    }
-    int value = 0;
-    bool found = false;
-    while (pos < line.size() && std::isdigit(static_cast<unsigned char>(line[pos]))) {
-        found = true;
-        value = value * 10 + (line[pos] - '0');
-        ++pos;
-    }
-    if (!found) {
-        return default_value;
-    }
-    return negative ? -value : value;
-}
-
-static bool contains_action(const std::string &line, const std::string &action) {
-    return extract_json_string(line, "action") == action;
-}
-
-static void handle_action_line(GdbSession &session, SessionOutcome *outcome, const std::string &line, bool &finished);
-static void replay_action_file(GdbSession &session, const fs::path &path);
+static void handle_action_line(GdbSession &session,
+                               SessionOutcome *outcome,
+                               ProbeState &probe_state,
+                               const std::string &line,
+                               bool &finished);
+static void replay_action_file(GdbSession &session, ProbeState &probe_state, const fs::path &path);
 
 static void collect_stop_followup(GdbSession &session, const CommandResult &result) {
     if (result.signal_name == "SIGSEGV" ||
@@ -169,43 +109,140 @@ static void update_outcome_from_stop(SessionOutcome &outcome, const CommandResul
     outcome.run_timed_out = outcome.run_timed_out || result.timed_out;
 }
 
-static void handle_action_line(GdbSession &session, SessionOutcome *outcome, const std::string &line, bool &finished) {
+static std::string json_string_field(const Json &action, const std::string &key) {
+    return action.string_or(key);
+}
+
+static int json_int_field(const Json &action, const std::string &key, int fallback) {
+    return action.int_or(key, fallback);
+}
+
+static std::vector<std::string> on_hit_actions_from(const Json &action) {
+    std::vector<std::string> actions;
+    const Json *on_hit = action.find("on_hit");
+    if (on_hit == nullptr || !on_hit->is_array()) {
+        return actions;
+    }
+    for (const auto &item : on_hit->array_value) {
+        if (item.is_object()) {
+            actions.push_back(dump_json(item));
+        }
+    }
+    return actions;
+}
+
+static void run_on_hit_actions(GdbSession &session,
+                               ProbeState &probe_state,
+                               const CommandResult &result) {
+    if (result.breakpoint_number.empty()) {
+        return;
+    }
+    auto it = probe_state.on_hit_actions_by_breakpoint.find(result.breakpoint_number);
+    if (it == probe_state.on_hit_actions_by_breakpoint.end()) {
+        return;
+    }
+    bool ignored_finish = false;
+    for (const auto &action : it->second) {
+        handle_action_line(session, nullptr, probe_state, action, ignored_finish);
+        ignored_finish = false;
+    }
+}
+
+static std::string next_hypothesis_id(ProbeState &probe_state) {
+    ++probe_state.hypothesis_counter;
+    std::ostringstream out;
+    out << 'H';
+    out.width(4);
+    out.fill('0');
+    out << probe_state.hypothesis_counter;
+    return out.str();
+}
+
+static fs::path hypothesis_file_for(GdbSession &session, const std::string &id) {
+    fs::path dir = session.assets_dir() / "hypotheses";
+    fs::create_directories(dir);
+    return dir / (id + ".md");
+}
+
+static void append_text(const fs::path &path, const std::string &text) {
+    std::ofstream out(path, std::ios::app);
+    if (!out) {
+        throw std::runtime_error("failed to append file: " + path.string());
+    }
+    out << text;
+}
+
+static bool assertion_passed(const std::string &assertion,
+                             const std::string &summary,
+                             const std::string &expected) {
+    if (assertion.empty() || assertion == "none") {
+        return true;
+    }
+    if (assertion == "contains") {
+        return summary.find(expected) != std::string::npos;
+    }
+    if (assertion == "not_contains") {
+        return summary.find(expected) == std::string::npos;
+    }
+    if (assertion == "is_null") {
+        return summary.find("0x0") != std::string::npos || summary.find("= 0") != std::string::npos;
+    }
+    if (assertion == "non_null") {
+        return summary.find("0x0") == std::string::npos && summary.find("= 0") == std::string::npos;
+    }
+    return false;
+}
+
+static void handle_action_line(GdbSession &session,
+                               SessionOutcome *outcome,
+                               ProbeState &probe_state,
+                               const std::string &line,
+                               bool &finished) {
     if (trim(line).empty()) {
         return;
     }
-    if (contains_action(line, "finish_session") || contains_action(line, "finish")) {
+    Json action;
+    try {
+        action = parse_json(line);
+    } catch (const std::exception &ex) {
+        std::cout << "{\"ok\":false,\"error\":\"invalid json: " << ex.what() << "\"}\n";
+        return;
+    }
+    std::string action_name = action.string_or("action");
+
+    if (action_name == "finish_session" || action_name == "finish") {
         finished = true;
         return;
     }
-    if (contains_action(line, "backtrace")) {
+    if (action_name == "backtrace") {
         auto ev = collect_console(session, "Backtrace", "bt", true);
         std::cout << "{\"ok\":true,\"action\":\"backtrace\",\"evidence\":\"" << ev.id << "\"}\n";
         return;
     }
-    if (contains_action(line, "locals")) {
+    if (action_name == "locals") {
         auto ev = collect_console(session, "Local variables", "info locals");
         std::cout << "{\"ok\":true,\"action\":\"locals\",\"evidence\":\"" << ev.id << "\"}\n";
         return;
     }
-    if (contains_action(line, "registers")) {
+    if (action_name == "registers") {
         auto ev = collect_console(session, "Registers", "info registers");
         std::cout << "{\"ok\":true,\"action\":\"registers\",\"evidence\":\"" << ev.id << "\"}\n";
         return;
     }
-    if (contains_action(line, "threads")) {
+    if (action_name == "threads") {
         auto ev = collect_console(session, "Threads", "info threads");
         std::cout << "{\"ok\":true,\"action\":\"threads\",\"evidence\":\"" << ev.id << "\"}\n";
         return;
     }
-    if (contains_action(line, "frame_select")) {
-        int frame = extract_json_int(line, "frame", 0);
+    if (action_name == "frame_select") {
+        int frame = json_int_field(action, "frame", 0);
         auto ev = collect_console(session, "Frame select", "frame " + std::to_string(frame));
         std::cout << "{\"ok\":true,\"action\":\"frame_select\",\"frame\":" << frame
                   << ",\"evidence\":\"" << ev.id << "\"}\n";
         return;
     }
-    if (contains_action(line, "evaluate")) {
-        std::string expr = extract_json_string(line, "expression");
+    if (action_name == "evaluate") {
+        std::string expr = json_string_field(action, "expression");
         if (expr.empty()) {
             std::cout << "{\"ok\":false,\"error\":\"missing expression\"}\n";
             return;
@@ -214,8 +251,8 @@ static void handle_action_line(GdbSession &session, SessionOutcome *outcome, con
         std::cout << "{\"ok\":true,\"action\":\"evaluate\",\"evidence\":\"" << ev.id << "\"}\n";
         return;
     }
-    if (contains_action(line, "breakpoint_set")) {
-        std::string location = extract_json_string(line, "location");
+    if (action_name == "breakpoint_set") {
+        std::string location = json_string_field(action, "location");
         if (location.empty()) {
             std::cout << "{\"ok\":false,\"error\":\"missing location\"}\n";
             return;
@@ -231,12 +268,17 @@ static void handle_action_line(GdbSession &session, SessionOutcome *outcome, con
             }
         }
 
-        std::string condition = extract_json_string(line, "condition");
+        std::string condition = json_string_field(action, "condition");
         std::string condition_evidence;
         if (!condition.empty() && !number.empty()) {
             auto cond = session.command("-break-condition " + number + " " + condition);
             auto ev = session.evidence_store().add("GdbCommand", "Breakpoint condition", cond.command, cond.raw_lines);
             condition_evidence = ev.id;
+        }
+
+        auto on_hit = on_hit_actions_from(action);
+        if (!number.empty() && !on_hit.empty()) {
+            probe_state.on_hit_actions_by_breakpoint[number] = std::move(on_hit);
         }
 
         std::cout << "{\"ok\":true,\"action\":\"breakpoint_set\",\"breakpoint\":\"" << number << "\"";
@@ -246,8 +288,8 @@ static void handle_action_line(GdbSession &session, SessionOutcome *outcome, con
         std::cout << "}\n";
         return;
     }
-    if (contains_action(line, "watchpoint_set")) {
-        std::string expression = extract_json_string(line, "expression");
+    if (action_name == "watchpoint_set") {
+        std::string expression = json_string_field(action, "expression");
         if (expression.empty()) {
             std::cout << "{\"ok\":false,\"error\":\"missing expression\"}\n";
             return;
@@ -266,10 +308,8 @@ static void handle_action_line(GdbSession &session, SessionOutcome *outcome, con
                   << "\",\"evidence\":\"" << ev.id << "\"}\n";
         return;
     }
-    if (contains_action(line, "probe_delete") ||
-        contains_action(line, "probe_enable") ||
-        contains_action(line, "probe_disable")) {
-        int number = extract_json_int(line, "number", -1);
+    if (action_name == "probe_delete" || action_name == "probe_enable" || action_name == "probe_disable") {
+        int number = json_int_field(action, "number", -1);
         if (number < 0) {
             std::cout << "{\"ok\":false,\"error\":\"missing probe number\"}\n";
             return;
@@ -278,11 +318,11 @@ static void handle_action_line(GdbSession &session, SessionOutcome *outcome, con
         std::string action = "probe_delete";
         std::string command = "-break-delete ";
         std::string title = "Probe delete";
-        if (contains_action(line, "probe_enable")) {
+        if (action_name == "probe_enable") {
             action = "probe_enable";
             command = "-break-enable ";
             title = "Probe enable";
-        } else if (contains_action(line, "probe_disable")) {
+        } else if (action_name == "probe_disable") {
             action = "probe_disable";
             command = "-break-disable ";
             title = "Probe disable";
@@ -294,22 +334,103 @@ static void handle_action_line(GdbSession &session, SessionOutcome *outcome, con
                   << ",\"evidence\":\"" << ev.id << "\"}\n";
         return;
     }
-    if (contains_action(line, "continue")) {
-        int deadline_ms = extract_json_int(line, "deadline_ms", 30000);
+    if (action_name == "continue") {
+        int deadline_ms = json_int_field(action, "deadline_ms", 30000);
         auto result = session.exec_control("-exec-continue", std::chrono::milliseconds(deadline_ms));
         auto ev = session.evidence_store().add("StopEvent", "Continue stop", result.command, result.raw_lines);
         if (outcome != nullptr) {
             update_outcome_from_stop(*outcome, result);
         }
         collect_stop_followup(session, result);
+        run_on_hit_actions(session, probe_state, result);
         std::cout << "{\"ok\":true,\"action\":\"continue\",\"stop_reason\":\"" << result.stop_reason
                   << "\",\"signal\":\"" << result.signal_name
                   << "\",\"evidence\":\"" << ev.id << "\"}\n";
         return;
     }
-    if (contains_action(line, "save_action")) {
-        std::string name = extract_json_string(line, "name");
-        std::string saved_action = extract_json_string(line, "saved_action");
+    if (action_name == "hypothesis_create") {
+        std::string id = action.string_or("id");
+        if (id.empty()) {
+            id = next_hypothesis_id(probe_state);
+        }
+        std::string title = action.string_or("title", "Untitled hypothesis");
+        std::string description = action.string_or("description");
+        fs::path file = hypothesis_file_for(session, id);
+
+        std::ostringstream md;
+        md << "# " << id << " " << title << "\n\n";
+        md << "Status: EvidenceCollectionStarted\n\n";
+        if (!description.empty()) {
+            md << "## Description\n\n" << description << "\n\n";
+        }
+        write_text_file(file, md.str());
+        std::cout << "{\"ok\":true,\"action\":\"hypothesis_create\",\"id\":\"" << id
+                  << "\",\"file\":\"" << file.lexically_normal().string() << "\"}\n";
+        return;
+    }
+    if (action_name == "hypothesis_check") {
+        std::string id = action.string_or("hypothesis");
+        std::string expression = action.string_or("expression");
+        if (id.empty() || expression.empty()) {
+            std::cout << "{\"ok\":false,\"error\":\"hypothesis_check requires hypothesis and expression\"}\n";
+            return;
+        }
+
+        std::string description = action.string_or("description", expression);
+        std::string assertion = action.string_or("assertion", "none");
+        std::string expected = action.string_or("expected");
+
+        auto ev = collect_console(session, "Hypothesis check", "p " + expression);
+        bool passed = assertion_passed(assertion, ev.summary, expected);
+        fs::path file = hypothesis_file_for(session, id);
+
+        std::ostringstream md;
+        md << "## Check: " << description << "\n\n";
+        md << "- Expression: `" << expression << "`\n";
+        md << "- Evidence: `" << ev.id << "`\n";
+        md << "- Assertion: `" << assertion << "`\n";
+        if (!expected.empty()) {
+            md << "- Expected: `" << expected << "`\n";
+        }
+        md << "- Result: `" << (passed ? "passed" : "failed") << "`\n\n";
+        md << "```text\n" << ev.summary << "\n```\n\n";
+        append_text(file, md.str());
+
+        std::cout << "{\"ok\":true,\"action\":\"hypothesis_check\",\"hypothesis\":\"" << id
+                  << "\",\"assertion\":\"" << (passed ? "passed" : "failed")
+                  << "\",\"evidence\":\"" << ev.id << "\"}\n";
+        return;
+    }
+    if (action_name == "hypothesis_conclude") {
+        std::string id = action.string_or("hypothesis");
+        std::string conclusion = action.string_or("conclusion", "Inconclusive");
+        std::string inference = action.string_or("inference");
+        if (id.empty()) {
+            std::cout << "{\"ok\":false,\"error\":\"hypothesis_conclude requires hypothesis\"}\n";
+            return;
+        }
+        fs::path file = hypothesis_file_for(session, id);
+        std::ostringstream md;
+        md << "## Agent Conclusion\n\n";
+        md << "- Conclusion: `" << conclusion << "`\n";
+        if (!inference.empty()) {
+            md << "\n" << inference << "\n";
+        }
+        md << "\n";
+        append_text(file, md.str());
+        std::cout << "{\"ok\":true,\"action\":\"hypothesis_conclude\",\"hypothesis\":\"" << id
+                  << "\",\"conclusion\":\"" << conclusion << "\"}\n";
+        return;
+    }
+    if (action_name == "save_action") {
+        std::string name = json_string_field(action, "name");
+        const Json *saved = action.find("saved_action");
+        std::string saved_action;
+        if (saved != nullptr && saved->is_string()) {
+            saved_action = saved->string_value;
+        } else if (saved != nullptr && saved->is_object()) {
+            saved_action = dump_json(*saved);
+        }
         if (name.empty() || saved_action.empty()) {
             std::cout << "{\"ok\":false,\"error\":\"save_action requires name and saved_action\"}\n";
             return;
@@ -328,9 +449,9 @@ static void handle_action_line(GdbSession &session, SessionOutcome *outcome, con
                   << replay_file.lexically_normal().string() << "\"}\n";
         return;
     }
-    if (contains_action(line, "replay")) {
-        std::string file = extract_json_string(line, "file");
-        std::string name = extract_json_string(line, "name");
+    if (action_name == "replay") {
+        std::string file = json_string_field(action, "file");
+        std::string name = json_string_field(action, "name");
         fs::path replay_file;
         if (!file.empty()) {
             replay_file = file;
@@ -340,7 +461,7 @@ static void handle_action_line(GdbSession &session, SessionOutcome *outcome, con
             std::cout << "{\"ok\":false,\"error\":\"replay requires file or name\"}\n";
             return;
         }
-        replay_action_file(session, replay_file);
+        replay_action_file(session, probe_state, replay_file);
         std::cout << "{\"ok\":true,\"action\":\"replay\",\"file\":\""
                   << replay_file.lexically_normal().string() << "\"}\n";
         return;
@@ -348,7 +469,7 @@ static void handle_action_line(GdbSession &session, SessionOutcome *outcome, con
     std::cout << "{\"ok\":false,\"error\":\"unsupported action\"}\n";
 }
 
-static void replay_action_file(GdbSession &session, const fs::path &path) {
+static void replay_action_file(GdbSession &session, ProbeState &probe_state, const fs::path &path) {
     std::ifstream in(path);
     if (!in) {
         throw std::runtime_error("failed to open replay file: " + path.string());
@@ -361,7 +482,7 @@ static void replay_action_file(GdbSession &session, const fs::path &path) {
         if (line.empty() || line[0] == '#') {
             continue;
         }
-        handle_action_line(session, nullptr, line, ignored_finish);
+        handle_action_line(session, nullptr, probe_state, line, ignored_finish);
         ignored_finish = false;
     }
 }
@@ -384,13 +505,14 @@ static int run_serve(const CliOptions &opts, const DebugTask &task) {
 
     GdbSession session(opts.assets, task.working_directory);
     SessionOutcome outcome;
+    ProbeState probe_state;
 
     try {
         session.start();
         session.initialize(task);
 
         if (!opts.replay_before_run.empty()) {
-            replay_action_file(session, opts.replay_before_run);
+            replay_action_file(session, probe_state, opts.replay_before_run);
         }
 
         if (task.core_dump) {
@@ -407,6 +529,7 @@ static int run_serve(const CliOptions &opts, const DebugTask &task) {
             outcome.segfault = run.signal_name == "SIGSEGV";
             outcome.run_timed_out = run.timed_out;
             collect_stop_followup(session, run);
+            run_on_hit_actions(session, probe_state, run);
         }
 
         std::cout << "{\"ok\":true,\"session_id\":\"" << opts.session_id
@@ -416,7 +539,7 @@ static int run_serve(const CliOptions &opts, const DebugTask &task) {
         bool finished = false;
         std::string line;
         while (!finished && std::getline(std::cin, line)) {
-            handle_action_line(session, &outcome, line, finished);
+            handle_action_line(session, &outcome, probe_state, line, finished);
         }
 
         write_report(opts.report, opts.assets, task, outcome, session.evidence_store().all());

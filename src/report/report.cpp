@@ -3,6 +3,7 @@
 #include "../common/string_utils.hpp"
 
 #include <sstream>
+#include <algorithm>
 
 namespace fs = std::filesystem;
 
@@ -58,6 +59,26 @@ void write_report(const fs::path &report,
         md << "\n```\n\n";
     }
 
+    fs::path hypotheses_dir = assets / "hypotheses";
+    if (fs::exists(hypotheses_dir)) {
+        md << "## Hypotheses\n\n";
+        std::vector<fs::path> files;
+        for (const auto &entry : fs::directory_iterator(hypotheses_dir)) {
+            if (entry.is_regular_file()) {
+                files.push_back(entry.path());
+            }
+        }
+        std::sort(files.begin(), files.end());
+        if (files.empty()) {
+            md << "No hypothesis records were written.\n\n";
+        } else {
+            for (const auto &file : files) {
+                md << "- `" << display_path(file) << "`\n";
+            }
+            md << "\n";
+        }
+    }
+
     md << "## Limitations\n\n";
     md << "- This MVP uses GDB/MI without PTY support.\n";
     md << "- Interactive stdin for the inferior is not implemented; task stdin defaults to non-interactive execution.\n";
@@ -72,4 +93,3 @@ void write_report(const fs::path &report,
 
     write_text_file(report, md.str());
 }
-

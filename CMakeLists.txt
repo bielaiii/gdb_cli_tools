@@ -9,6 +9,7 @@ set(CMAKE_COMPILE_COMMANDS ON)
 add_executable(gdb-agent
     src/main.cpp
     src/cli.cpp
+    src/common/json.cpp
     src/common/string_utils.cpp
     src/evidence/evidence_store.cpp
     src/gdb/gdb_process.cpp

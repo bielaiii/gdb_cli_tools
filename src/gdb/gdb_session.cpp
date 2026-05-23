@@ -158,6 +158,7 @@ CommandResult GdbSession::exec_control_blocking(const std::string &command, std:
         } else if (line->find("*stopped") != std::string::npos) {
             result.stop_reason = field_value(*line, "reason");
             result.signal_name = field_value(*line, "signal-name");
+            result.breakpoint_number = field_value(*line, "bkptno");
             return result;
         } else if (line->find("=thread-group-exited") != std::string::npos ||
                    line->find("reason=\"exited") != std::string::npos) {

@@ -22,6 +22,9 @@ Supported action lines are intentionally small in MVP form:
 {"action":"continue"}
 {"action":"save_action","name":"fd-checks","saved_action":"{\"action\":\"backtrace\"}"}
 {"action":"replay","name":"fd-checks"}
+{"action":"hypothesis_create","id":"H-stale-session","title":"session is null before dereference"}
+{"action":"hypothesis_check","hypothesis":"H-stale-session","description":"session argument is null","expression":"session","assertion":"is_null"}
+{"action":"hypothesis_conclude","hypothesis":"H-stale-session","conclusion":"Supported","inference":"The check shows session is null at the breakpoint."}
 {"action":"finish_session"}
 ```
 
