@@ -5,6 +5,19 @@ automatically runs the target, waits for a stop event, and collects segfault
 evidence. After that, it accepts one action per stdin line. If stdin reaches
 EOF, the session is finished and a report is written.
 
+For multi-call Agent usage, start the Unix socket daemon and address the same
+live session across separate CLI invocations:
+
+```bash
+gdb-agent daemon --socket /tmp/gdb-agent.sock
+gdb-agent create examples/segfault_task.md --socket /tmp/gdb-agent.sock --session S1 --out report.md --assets report.assets
+gdb-agent action S1 '{"action":"evaluate","expression":"session"}' --socket /tmp/gdb-agent.sock
+gdb-agent finish S1 --socket /tmp/gdb-agent.sock --out report.md
+```
+
+`finish` writes the report and closes that session. `close` closes the session
+without writing the final report.
+
 Supported action lines are intentionally small in MVP form:
 
 ```json
