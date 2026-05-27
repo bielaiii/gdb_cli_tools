@@ -52,9 +52,17 @@ void GdbSession::initialize(const DebugTask &task) {
     command("-gdb-set print max-depth 4");
     command("-gdb-set print repeats 10");
     command("-environment-cd " + mi_quote(task.working_directory.string()));
+    for (const auto &[key, value] : task.env) {
+        command("-gdb-set environment " + mi_quote(key + "=" + value));
+    }
     command("-file-exec-and-symbols " + mi_quote(task.executable.string()), std::chrono::milliseconds(10000));
-    if (!task.args_raw.empty()) {
-        command("-exec-arguments " + task.args_raw);
+    if (!task.args.empty()) {
+        std::string args_command = "-exec-arguments";
+        for (const auto &arg : task.args) {
+            args_command.push_back(' ');
+            args_command += mi_quote(arg);
+        }
+        command(args_command);
     }
 }
 
@@ -124,7 +132,7 @@ CommandResult GdbSession::command_blocking(const std::string &command, std::chro
             break;
         }
         std::string raw = std::move(*line);
-        log_line(raw);
+        unsigned long long sequence = log_line(raw);
         if (raw == "(gdb)") {
             continue;
         }
@@ -136,6 +144,7 @@ CommandResult GdbSession::command_blocking(const std::string &command, std::chro
                 result.result_class.resize(comma);
             }
         }
+        result.record_sequences.push_back(sequence);
         result.raw_lines.push_back(std::move(raw));
         if (completed) {
             return result;
@@ -169,7 +178,7 @@ CommandResult GdbSession::exec_control_blocking(const std::string &command, std:
             break;
         }
         std::string raw = std::move(*line);
-        log_line(raw);
+        unsigned long long sequence = log_line(raw);
         if (raw == "(gdb)") {
             continue;
         }
@@ -180,19 +189,29 @@ CommandResult GdbSession::exec_control_blocking(const std::string &command, std:
             result.stop_reason = field_value(raw, "reason");
             result.signal_name = field_value(raw, "signal-name");
             result.breakpoint_number = field_value(raw, "bkptno");
+            if (result.breakpoint_number.empty()) {
+                result.breakpoint_number = field_value(raw, "wpt");
+            }
+            if (starts_with(result.stop_reason, "exited")) {
+                result.exited = true;
+            }
+            result.record_sequences.push_back(sequence);
             result.raw_lines.push_back(std::move(raw));
             return result;
         } else if (raw.find("=thread-group-exited") != std::string::npos ||
                    raw.find("reason=\"exited") != std::string::npos) {
             result.exited = true;
             result.stop_reason = "exited";
+            result.record_sequences.push_back(sequence);
             result.raw_lines.push_back(std::move(raw));
-            return result;
+            continue;
         } else if (!saw_running && starts_with(raw, error_prefix)) {
             result.result_class = "error";
+            result.record_sequences.push_back(sequence);
             result.raw_lines.push_back(std::move(raw));
             return result;
         }
+        result.record_sequences.push_back(sequence);
         result.raw_lines.push_back(std::move(raw));
     }
 
@@ -218,20 +237,24 @@ void GdbSession::interrupt_after_deadline(CommandResult &result) {
             break;
         }
         std::string raw = std::move(*line);
-        log_line(raw);
+        unsigned long long sequence = log_line(raw);
         if (raw == "(gdb)") {
             continue;
         }
         if (raw.find("*stopped") != std::string::npos) {
             result.stop_reason = "interrupted_by_tool_deadline";
             result.signal_name = field_value(raw, "signal-name");
+            result.record_sequences.push_back(sequence);
             result.raw_lines.push_back(std::move(raw));
             return;
         }
+        result.record_sequences.push_back(sequence);
         result.raw_lines.push_back(std::move(raw));
     }
 }
 
-void GdbSession::log_line(std::string_view line) {
+unsigned long long GdbSession::log_line(std::string_view line) {
+    unsigned long long sequence = ++record_sequence_;
     session_log_ << line << '\n';
+    return sequence;
 }

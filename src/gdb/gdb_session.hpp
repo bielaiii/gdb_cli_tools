@@ -38,12 +38,13 @@ private:
     CommandResult command_blocking(const std::string &command, std::chrono::milliseconds timeout);
     CommandResult exec_control_blocking(const std::string &command, std::chrono::milliseconds run_deadline);
     void interrupt_after_deadline(CommandResult &result);
-    void log_line(std::string_view line);
+    unsigned long long log_line(std::string_view line);
 
     std::filesystem::path assets_;
     std::filesystem::path working_directory_;
     EvidenceStore evidence_;
     GdbProcess process_;
     uint64_t token_ = 0;
+    unsigned long long record_sequence_ = 0;
     std::ofstream session_log_;
 };

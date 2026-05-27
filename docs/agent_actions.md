@@ -14,7 +14,12 @@ gdb-agent create examples/segfault_task.md --socket /tmp/gdb-agent.sock --sessio
 gdb-agent list --socket /tmp/gdb-agent.sock
 gdb-agent status S1 --socket /tmp/gdb-agent.sock
 gdb-agent action S1 '{"action":"evaluate","expression":"session"}' --socket /tmp/gdb-agent.sock
-gdb-agent finish S1 --socket /tmp/gdb-agent.sock --out report.md
+gdb-agent action S1 action.json --socket /tmp/gdb-agent.sock
+gdb-agent save-action S1 action.json --name repro-checks --socket /tmp/gdb-agent.sock
+gdb-agent replay S1 repro-checks --socket /tmp/gdb-agent.sock
+gdb-agent finish S1 --socket /tmp/gdb-agent.sock --out report.md \
+  --agent-inference inference.md \
+  --final-conclusion conclusion.md
 gdb-agent shutdown --socket /tmp/gdb-agent.sock
 ```
 
@@ -30,10 +35,12 @@ Supported action lines are intentionally small in MVP form:
 {"action":"locals"}
 {"action":"registers"}
 {"action":"threads"}
+{"action":"args_info"}
 {"action":"frame_select","frame":1}
 {"action":"evaluate","expression":"ptr"}
 {"action":"breakpoint_set","location":"examples/segfault.cpp:14","condition":"session == 0"}
-{"action":"watchpoint_set","expression":"global_counter"}
+{"action":"watchpoint_set","expression":"global_counter","condition":"global_counter > 10"}
+{"action":"probe_list"}
 {"action":"probe_disable","number":1}
 {"action":"probe_enable","number":1}
 {"action":"probe_delete","number":1}
@@ -43,16 +50,73 @@ Supported action lines are intentionally small in MVP form:
 {"action":"hypothesis_create","id":"H-stale-session","title":"session is null before dereference"}
 {"action":"hypothesis_check","hypothesis":"H-stale-session","description":"session argument is null","expression":"session","assertion":"is_null"}
 {"action":"hypothesis_conclude","hypothesis":"H-stale-session","conclusion":"Supported","inference":"The check shows session is null at the breakpoint."}
-{"action":"finish_session"}
+{"action":"raw_mi","params":{"command":"-interpreter-exec console \"show args\"","risk":"advanced"}}
+{"action":"finish_session","agent_inference":"The evidence supports a null session argument before dereference.","final_conclusion":"Root cause is outside the tool's judgment; the agent concludes the crash path dereferences a null session."}
 ```
 
-Replay plans are JSONL files: one action object per line. Use
-`--replay-before-run plan.jsonl` to apply actions such as breakpoints before
-the first `-exec-run`.
+Saved replay plans are written as both a compatibility JSONL file and a
+structured `replay/<name>.json` plan. Use `--replay-before-run plan.json` to
+apply actions such as breakpoints before the first run.
 
 ```json
 {"action":"breakpoint_set","location":"examples/segfault.cpp:14","condition":"session == 0"}
 ```
 
-The default interface is action based. `raw_mi` is deliberately not implemented
-in the MVP user surface.
+Breakpoints and watchpoints may include `condition`, `comment`, `purpose`, and
+`on_hit` metadata. Probe metadata is persisted in `assets/probes.json`; probe
+hits are recorded as `BreakpointHit` or `WatchpointHit` evidence. If GDB rejects
+a probe or its condition, the action returns `ok:false` and records `ToolError`
+evidence.
+Use `probe_list` to capture GDB's breakpoint/watchpoint table and return the
+tool's stored metadata, including comments, purpose, hit count, and on-hit
+actions.
+
+```json
+{
+  "action": "breakpoint_set",
+  "location": "examples/segfault.cpp:14",
+  "comment": "stop before null session dereference",
+  "purpose": "hypothesis_check",
+  "on_hit": [
+    {"action":"args_info"},
+    {"action":"backtrace"}
+  ]
+}
+```
+
+Structured replay plan:
+
+```json
+{
+  "schema": "gdb-agent-replay-plan-v1",
+  "id": "replay-bt-check",
+  "name": "bt-check",
+  "actions": [
+    {
+      "id": "a1",
+      "name": "backtrace",
+      "enabled": true,
+      "tags": [],
+      "action": {"action":"backtrace"}
+    }
+  ]
+}
+```
+
+Each replayed step records `ReplayStep` evidence. Replay failures record
+`ToolError` evidence and replay continues with later enabled steps.
+
+Actions are checked against the live session state before execution. For
+example, `backtrace`, `locals`, `evaluate`, and hypothesis checks require a
+stopped inferior or core mode; `continue` requires stopped state; `finish`
+requires stopped, exited, or error state. Rejected actions are recorded as
+`ToolError` evidence.
+
+Hypothesis records are written both as per-hypothesis Markdown files and as a
+structured `assets/hypotheses/index.json`. Tool checks are recorded separately
+from agent conclusions. Final report sections `Agent Inference` and
+`Final Agent Conclusion` are populated from `finish_session`,
+`gdb-agent finish --agent-inference`, and `--final-conclusion`.
+
+The default interface is action based. `raw_mi` is an advanced escape hatch and
+must include `risk: "advanced"`; it is recorded as evidence.

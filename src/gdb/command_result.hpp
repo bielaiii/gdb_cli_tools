@@ -6,6 +6,7 @@
 struct CommandResult {
     std::string command;
     std::vector<std::string> raw_lines;
+    std::vector<unsigned long long> record_sequences;
     std::string result_class;
     std::string stop_reason;
     std::string signal_name;
