@@ -1,66 +1,76 @@
-# Evidence Model MVP
+# Evidence Model MVP（中文版）
 
-Every GDB action that captures data creates an evidence entry.
+每个会捕获数据的 GDB action 都会创建一条 evidence entry。
 
-MVP evidence files are written under:
+英文版文档保留在：
+
+```text
+docs/evidence_model.en.md
+```
+
+## 文件布局
+
+MVP evidence 文件写在：
 
 ```text
 <assets>/evidence/
 ```
 
-Open the top-level Markdown file first. It is the human-readable view:
+优先打开顶层 Markdown 文件。它是 human-readable view：
 
 ```text
 <assets>/evidence/E0002.backtrace.md
 ```
 
-Raw MI is intentionally stored one level deeper:
+Raw MI 会故意放在更深一层：
 
 ```text
 <assets>/evidence/raw/E0002.backtrace.mi.txt
 ```
 
-Summaries are also stored separately for compact Agent consumption:
+面向 Agent 的紧凑 summary 单独保存：
 
 ```text
 <assets>/evidence/summary/E0002.backtrace.summary.txt
 ```
 
-Each evidence entry has:
+## Evidence Entry 字段
 
-- id, such as `E0001`
-- kind, such as `GdbCommand`, `StopEvent`, or `ToolError`
+每条 evidence 包含：
+
+- id，例如 `E0001`
+- kind，例如 `GdbCommand`、`StopEvent` 或 `ToolError`
 - title
-- command or action name
+- command 或 action name
 - human-readable Markdown view
 - raw file
 - summary file
 - raw SHA-256
 - capture timestamp
-- raw byte count and kept summary byte count
-- `truncated` and `lossy_summary` flags
-- record attribution fields: `included_records`, `related_records`, and
-  `concurrent_records`
+- raw byte count 和 kept summary byte count
+- `truncated` 和 `lossy_summary` 标记
+- record attribution 字段：`included_records`、`related_records` 和 `concurrent_records`
 
-The machine-readable evidence index is:
+机器可读的 evidence index 是：
 
 ```text
 <assets>/evidence/index.json
 ```
 
-It contains the same metadata as the per-evidence Markdown view. Raw files are
-kept complete; summary files are capped by a byte limit recorded in the index.
-If a summary is capped, `truncated` is set to `true`. Summary text is treated as
-lossy whenever it is sanitized, decoded from MI streams, summarized, or
-truncated.
+它包含与每个 evidence Markdown view 相同的 metadata。Raw 文件完整保留；summary 文件受
+byte limit 限制，该限制记录在 index 中。如果 summary 被截断，`truncated` 会被设置为
+`true`。只要 summary 经历过 sanitizer、MI stream 解码、摘要化或截断，就应被视为有损，
+并设置 `lossy_summary`。
 
-The full MI session stream is stored as:
+## Session 文件
+
+完整 MI session stream 保存为：
 
 ```text
 <assets>/logs/session.mi.raw.log
 ```
 
-The MVP also writes machine-readable session files:
+MVP 还会写机器可读的 session 文件：
 
 ```text
 <assets>/task.normalized.json
@@ -68,6 +78,13 @@ The MVP also writes machine-readable session files:
 <assets>/session_snapshot.json
 ```
 
-Reports should cite evidence ids rather than relying on summaries alone.
-Reports now include each evidence item's raw hash so an Agent can verify that
-the cited raw file still matches the report.
+`session_snapshot.json` 和 `session_summary.json` 是历史记录与报告输入，不代表 live GDB
+session，也不能用于恢复旧 GDB 进程。重启后的恢复方式应该是 replay 高层 action。
+
+## 报告引用规则
+
+报告应该引用 evidence id，而不是只依赖 summary。报告现在也会包含每条 evidence 的
+raw hash，方便 Agent 验证报告引用的 raw 文件没有变化。
+
+Raw 文件和 session MI log 是审计时的权威来源；summary 是低噪声、有损视图，只适合作为
+Agent 上下文入口。

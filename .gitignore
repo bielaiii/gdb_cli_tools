@@ -2,7 +2,9 @@ build/
 draft/
 *.assets/
 *_report.md
+!examples/*_report.md
 *.log
 *.tmp
 core
+.DS_Store
 core.*

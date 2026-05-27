@@ -19,6 +19,7 @@
 #include <map>
 #include <vector>
 #include <cstdio>
+#include <chrono>
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -243,7 +244,9 @@ static std::string file_metadata_json(const fs::path &path) {
         if (fs::is_regular_file(path)) {
             out << ",\"size\":" << fs::file_size(path);
         }
-        auto ticks = fs::last_write_time(path).time_since_epoch().count();
+        auto ticks = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                         fs::last_write_time(path).time_since_epoch())
+                         .count();
         out << ",\"mtime_ticks\":" << ticks;
     } else {
         out << ",\"exists\":false";
