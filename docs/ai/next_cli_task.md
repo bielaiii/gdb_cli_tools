@@ -2,72 +2,109 @@
 
 ## 目标
 
-收敛 Probe Store 的运行期和持久化语义：运行中以内存 `ProbeState` 为权威状态，
-`assets/probes.json` 只作为 finish-time 报告产物写出，不再作为每次 probe 变化时同步落盘的
-运行时状态文件。
+强化 summary 和 MI 解析能力，降低 Agent 读 GDB 输出时的噪声，同时让 raw MI 审计字段更细。
+
+本轮聚焦四件事：
+
+1. 更完整的 MI value parser。
+2. C++ 类型 sanitizer。
+3. thread/backtrace summarizer。
+4. raw MI audit metadata 增强。
 
 ## 背景语义
 
-- `ProbeState` 是 live session 运行期权威状态，保存在内存中。
-- `assets/probes.json` 是从 `ProbeState` 派生出的最终报告快照。
-- `probes.json` 不是 live GDB session 恢复文件，也不是运行时同步数据库。
-- 跨 session 复现仍应依赖 replay 高层 action，而不是读取旧 `probes.json` 恢复 GDB 状态。
+- raw MI 始终是权威证据，必须完整保留。
+- summary 是有损、低噪声视图，任何 sanitizer、归一化、截断或摘要都必须通过
+  `lossy_summary` / `truncated` 等字段表达。
+- 工具只负责结构化观察和证据整理，不生成根因结论。
 
 ## 范围
 
-### 1. 调整 probe 持久化时机
+### 1. MI value parser
 
-- 移除或停止在以下 action 中立即写 `assets/probes.json`：
-  - `breakpoint_set`
-  - `watchpoint_set`
-  - `catchpoint_set`
-  - `probe_enable`
-  - `probe_disable`
-  - `probe_delete`
-  - probe hit 更新
-- 在 `finish` / `finish_session` 写最终报告产物时，统一从内存 `ProbeState` 写出
-  `assets/probes.json`。
-- daemon `finish` 和 `serve` stdin EOF/finish 路径都应写出最终 probe snapshot。
+补强 MI 输出解析能力，优先支持 GDB/MI 常见 value 结构：
 
-### 2. 保留运行期可观察性
+- const string，包括转义字符、空字符串、路径和模板类型文本。
+- tuple：`{name="value",frame={...}}`
+- list：`[item={...},item={...}]` 和 `["a","b"]`
+- result record 中的 key/value。
+- stream record 中的 console/log/target 输出。
 
-- `probe_list` 继续从内存 `ProbeState` 返回当前 metadata。
-- `probe_list` 如需产生 evidence，可以记录当前内存 metadata 的 snapshot，但不要求写
-  `assets/probes.json`。
-- on-hit、hit count、enabled/deleted、last stop reason 仍由内存 `ProbeState` 维护。
+要求：
 
-### 3. 命中 evidence 保留必要上下文
+- 不要用脆弱的简单 split 解析嵌套 tuple/list。
+- 解析失败时保留 raw，并产生稳定 fallback summary。
+- 为 parser 增加不依赖 GDB 的 fixture/unit smoke 测试。
 
-- `BreakpointHit` / `WatchpointHit` / `CatchpointHit` evidence 应包含当次命中的必要 probe
-  metadata 快照，例如：
-  - number
-  - kind
-  - location 或 expression/event
-  - condition
-  - comment
-  - purpose
-  - hit_count
-- 这样即使 session 异常退出，关键命中 evidence 仍能解释“为什么停在这里”。
+### 2. C++ 类型 sanitizer
 
-### 4. 文档同步
+新增或强化 summary 层的类型降噪，至少覆盖：
 
-- 更新 `docs/evidence_model.md`，说明 `probes.json` 是 finish-time report artifact，不是运行时
-  状态同步文件或恢复文件。
-- 如 action 文档中提到 probe metadata 持久化，要同步调整 `docs/agent_actions.md` 和
-  `docs/agent_actions.en.md`。
-- 更新 `docs/ai/progress.md` 和 `docs/ai/handoff.md`。
+- `std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >`
+  -> `std::string`
+- 常见 `std::basic_string<...>` -> `std::string`
+- 常见 allocator 噪声压缩，例如 `std::allocator<T>` 在容器类型中不淹没主类型。
+- 常见模板空格和 `> >` 归一化。
+
+要求：
+
+- 只作用于 summary/view，不改 raw。
+- 不要过度改写用户类型。
+- 为 sanitizer 增加 fixture 测试。
+
+### 3. Thread / Backtrace summarizer
+
+增强 backtrace 和 threads 的 summary 质量：
+
+- backtrace summary 应突出：
+  - frame number
+  - function
+  - file:line
+  - signal/top frame
+  - 简化后的参数和 C++ 类型
+- thread summary 应突出：
+  - thread id / GDB thread number
+  - 当前线程标记
+  - stop reason 或 top frame（可从现有 MI/console 输出中提取时）
+  - 每个线程一行或低噪声结构化块
+
+要求：
+
+- 长路径应尽量相对 working directory 或归一化。
+- 输出应稳定，便于 Agent 引用。
+- summary 不能替代 raw evidence。
+
+### 4. Raw MI 审计字段增强
+
+细化 evidence/session 中与 raw MI 相关的审计 metadata，例如：
+
+- command/action name。
+- record sequence id。
+- MI record kind：result / async / stream / prompt / unknown。
+- result class 或 async class。
+- stream type：console / target / log。
+- token（如果存在）。
+- included / related / concurrent records 的含义保持稳定。
+- raw hash、raw byte count、kept summary byte count 继续保留。
+
+要求：
+
+- 更新 `docs/evidence_model.md` 和英文版。
+- 如果 schema 字段变化，更新 session snapshot / evidence index 相关文档。
+- 保持旧 evidence 基本可读，不为本轮引入无关 schema 重构。
 
 ## 不做
 
-- 不实现从 `probes.json` 自动恢复 probe。
-- 不改变 replay schema。
-- 不扩展 catchpoint 类型。
-- 不重构 unrelated action。
+- 不新增调试 action。
+- 不改变 raw MI 保存路径。
+- 不做自动根因分析。
+- 不扩展 replay/probe/hypothesis 行为。
+- 不为了 macOS live debugging 做兼容；目标运行平台仍是 Linux。
 
 ## 完成标准
 
-- 运行期 probe 操作不再频繁写 `assets/probes.json`。
-- finish 后 `assets/probes.json` 存在，并反映最终内存 `ProbeState`。
-- `probe_list` 仍能返回当前 probe metadata。
-- probe hit evidence 包含足够的 probe metadata 上下文。
-- 现有 smoke/CTest 在当前平台通过；Linux + GDB live 测试如无法运行，要在 handoff 记录原因。
+- MI parser、type sanitizer、backtrace/thread summarizer 有不依赖 GDB 的测试或 fixture 覆盖。
+- README demo smoke 和现有 CTest 仍通过。
+- 生成的 summary 明显比 raw GDB 输出更短、更稳定，但 raw 文件完整保留。
+- evidence index 或 session metadata 中能看到更细的 MI audit 字段。
+- 文档、progress 和 handoff 更新完整。

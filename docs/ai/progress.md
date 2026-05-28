@@ -126,6 +126,14 @@
   `docs/agent_actions.en.md` 和 `docs/ai/decision.md`，明确 `probes.json` 是 finish-time
   report artifact，不是恢复文件。
 
+## 2026-05-29 任务口径更新（summary/MI）
+
+- 下一轮任务更新为强化 summary 和 MI 解析能力：
+  - 更完整的 MI value parser。
+  - C++ 类型 sanitizer。
+  - thread/backtrace summarizer。
+  - raw MI audit metadata 增强。
+
 ## Phase 1: Live Session 和证据闭环
 
 状态：Mostly Done
@@ -192,8 +200,10 @@ probe hit evidence；已有最小 `catch throw` catchpoint。
 
 ## 建议的下一步
 
-1. 在 Linux + GDB 环境跑 `scripts/smoke_daemon_action_flow.sh`，确认 live daemon flow 和
+1. 强化 summary/MI 解析能力：MI value parser、类型 sanitizer、thread/backtrace
+   summarizer、raw MI audit metadata。
+2. 在 Linux + GDB 环境跑 `scripts/smoke_daemon_action_flow.sh`，确认 live daemon flow 和
    finish-time `probes.json` 真实通过。
-2. 补 catchpoint 其他事件和 on-hit policy 限制。
-3. 强化 replay plan schema 与失败策略。
-4. 扩展 hypothesis assertion 与报告聚合。
+3. 补 catchpoint 其他事件和 on-hit policy 限制。
+4. 强化 replay plan schema 与失败策略。
+5. 扩展 hypothesis assertion 与报告聚合。
