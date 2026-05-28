@@ -20,6 +20,7 @@
 #include <vector>
 #include <cstdio>
 #include <chrono>
+#include <cctype>
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -41,6 +42,7 @@ struct ProbeState {
     struct ProbeInfo {
         std::string number;
         std::string kind;
+        std::string event;
         std::string location;
         std::string expression;
         std::string condition;
@@ -182,6 +184,20 @@ static std::string breakpoint_number_from(const CommandResult &result) {
         std::string number = field_value(raw, "number");
         if (!number.empty()) {
             return number;
+        }
+        const std::string catchpoint_prefix = "Catchpoint ";
+        auto catchpoint_pos = raw.find(catchpoint_prefix);
+        if (catchpoint_pos != std::string::npos) {
+            catchpoint_pos += catchpoint_prefix.size();
+            std::string catchpoint_number;
+            while (catchpoint_pos < raw.size() &&
+                   std::isdigit(static_cast<unsigned char>(raw[catchpoint_pos]))) {
+                catchpoint_number.push_back(raw[catchpoint_pos]);
+                ++catchpoint_pos;
+            }
+            if (!catchpoint_number.empty()) {
+                return catchpoint_number;
+            }
         }
     }
     return {};
@@ -327,6 +343,12 @@ static bool action_allowed_in_state(const SessionOutcome &outcome,
                    : deny(action + " requires ready, stopped, or exited state");
     }
 
+    if (action == "catchpoint_set") {
+        return (state == SessionState::Ready || state == SessionState::Stopped || state == SessionState::Exited)
+                   ? true
+                   : deny("catchpoint_set requires ready, stopped, or exited state");
+    }
+
     if (action == "probe_list" || action == "probe_delete" || action == "probe_enable" ||
         action == "probe_disable" || action == "threads") {
         return (state == SessionState::Ready || state == SessionState::Stopped ||
@@ -419,6 +441,7 @@ static void write_probe_snapshot(GdbSession &session, const ProbeState &probe_st
         out << "    {\n";
         out << "      \"number\": " << json_escape(probe.number) << ",\n";
         out << "      \"kind\": " << json_escape(probe.kind) << ",\n";
+        out << "      \"event\": " << json_escape(probe.event) << ",\n";
         out << "      \"location\": " << json_escape(probe.location) << ",\n";
         out << "      \"expression\": " << json_escape(probe.expression) << ",\n";
         out << "      \"condition\": " << json_escape(probe.condition) << ",\n";
@@ -441,6 +464,7 @@ static std::string probe_info_json(const ProbeState::ProbeInfo &probe) {
     out << "{";
     out << "\"number\":" << json_escape(probe.number) << ",";
     out << "\"kind\":" << json_escape(probe.kind) << ",";
+    out << "\"event\":" << json_escape(probe.event) << ",";
     out << "\"location\":" << json_escape(probe.location) << ",";
     out << "\"expression\":" << json_escape(probe.expression) << ",";
     out << "\"condition\":" << json_escape(probe.condition) << ",";
@@ -540,6 +564,7 @@ static void record_probe_hit(GdbSession &session,
         text << ",\n";
         text << "  \"location\": " << json_escape(probe->location) << ",\n";
         text << "  \"expression\": " << json_escape(probe->expression) << ",\n";
+        text << "  \"event\": " << json_escape(probe->event) << ",\n";
         text << "  \"condition\": " << json_escape(probe->condition) << ",\n";
         text << "  \"comment\": " << json_escape(probe->comment) << ",\n";
         text << "  \"purpose\": " << json_escape(probe->purpose) << ",\n";
@@ -547,7 +572,12 @@ static void record_probe_hit(GdbSession &session,
     }
     text << "\n}\n";
 
-    std::string evidence_kind = kind == "watchpoint" ? "WatchpointHit" : "BreakpointHit";
+    std::string evidence_kind = "BreakpointHit";
+    if (kind == "watchpoint") {
+        evidence_kind = "WatchpointHit";
+    } else if (kind == "catchpoint") {
+        evidence_kind = "CatchpointHit";
+    }
     session.evidence_store().add_text(evidence_kind,
                                       evidence_kind + " " + result.breakpoint_number,
                                       result.stop_reason,
@@ -928,6 +958,61 @@ static void handle_action_line(GdbSession &session,
         out << "}\n";
         return;
     }
+    if (action_name == "catchpoint_set") {
+        std::string event = json_string_field(action, "event");
+        if (event.empty()) {
+            auto error_ev = add_tool_error(session,
+                                           "Catchpoint set failed",
+                                           "catchpoint_set",
+                                           "missing event");
+            out << "{\"ok\":false,\"action\":\"catchpoint_set\",\"error\":\"missing event\","
+                << "\"evidence\":" << json_escape(error_ev.id) << "}\n";
+            return;
+        }
+        if (event != "throw") {
+            auto error_ev = add_tool_error(session,
+                                           "Catchpoint set failed",
+                                           "catchpoint_set",
+                                           "unsupported catchpoint event: " + event);
+            out << "{\"ok\":false,\"action\":\"catchpoint_set\",\"error\":\"unsupported catchpoint event\","
+                << "\"event\":" << json_escape(event)
+                << ",\"evidence\":" << json_escape(error_ev.id) << "}\n";
+            return;
+        }
+
+        auto result = session.command("-interpreter-exec console " + mi_quote("catch throw"));
+        auto ev = session.evidence_store().add("GdbCommand", "Catchpoint set", result.command, result.raw_lines, false, result.record_sequences);
+        std::string number = breakpoint_number_from(result);
+        if (result.result_class == "error" || number.empty()) {
+            auto error_ev = add_tool_error(session,
+                                           "Catchpoint set failed",
+                                           "catchpoint_set",
+                                           number.empty() ? "GDB did not return a catchpoint number" : "GDB rejected the catchpoint");
+            out << "{\"ok\":false,\"action\":\"catchpoint_set\",\"error\":\"failed to set catchpoint\","
+                << "\"event\":" << json_escape(event)
+                << ",\"command_evidence\":" << json_escape(ev.id)
+                << ",\"evidence\":" << json_escape(error_ev.id) << "}\n";
+            return;
+        }
+
+        ProbeState::ProbeInfo probe;
+        probe.number = number;
+        probe.kind = "catchpoint";
+        probe.event = event;
+        probe.location = "catch throw";
+        probe.comment = json_string_field(action, "comment");
+        probe.purpose = json_string_field(action, "purpose");
+        probe.on_hit_actions = on_hit_actions_from(action);
+        probe_state.probes_by_number[number] = std::move(probe);
+        if (!probe_state.probes_by_number[number].on_hit_actions.empty()) {
+            probe_state.on_hit_actions_by_breakpoint[number] = probe_state.probes_by_number[number].on_hit_actions;
+        }
+        write_probe_snapshot(session, probe_state);
+        out << "{\"ok\":true,\"action\":\"catchpoint_set\",\"catchpoint\":" << json_escape(number)
+            << ",\"event\":" << json_escape(event)
+            << ",\"evidence\":" << json_escape(ev.id) << "}\n";
+        return;
+    }
     if (action_name == "probe_list") {
         auto result = session.command("-break-list");
         auto ev = session.evidence_store().add("GdbCommand", "Probe list", result.command, result.raw_lines, false, result.record_sequences);
@@ -1243,7 +1328,13 @@ static void handle_action_line(GdbSession &session,
                   << json_escape(replay_file.lexically_normal().string()) << "}\n";
         return;
     }
-    out << "{\"ok\":false,\"error\":\"unsupported action\"}\n";
+    auto ev = add_tool_error(session,
+                             "Unsupported action",
+                             action_name,
+                             "unsupported action");
+    out << "{\"ok\":false,\"action\":" << json_escape(action_name)
+        << ",\"error\":\"unsupported action\","
+        << "\"evidence\":" << json_escape(ev.id) << "}\n";
 }
 
 static void replay_action_text(GdbSession &session,

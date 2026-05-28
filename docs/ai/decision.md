@@ -125,3 +125,18 @@ inferior、记录停止原因并执行 light evidence collection。
 
 - GDB 命令卡住和被调试程序长时间运行是两类故障。
 - 报告和状态机需要准确表达发生了什么。
+
+## D010: 目标运行平台只支持 Linux
+
+状态：Accepted
+
+项目的目标运行平台是 Linux。macOS 可以用于文档、编译、`check`、smoke test 等非 live
+debugging 工作，但 macOS 上 GDB target、Mach-O、代码签名或架构不匹配导致的 live
+session 失败不作为当前阶段阻塞项。
+
+原因：
+
+- 项目的核心目标是提供 Linux 上稳定的 GDB/MI 调试执行层。
+- macOS GDB 支持、target 架构和调试权限差异会制造与产品目标无关的噪声。
+- 回归测试可以分层：不依赖 GDB 的测试可在 macOS 跑，daemon/live session 测试以 Linux
+  环境结果为准。

@@ -48,6 +48,7 @@ MVP action 行保持有意的小而稳定：
 {"action":"evaluate","expression":"ptr"}
 {"action":"breakpoint_set","location":"examples/segfault.cpp:14","condition":"session == 0"}
 {"action":"watchpoint_set","expression":"global_counter","condition":"global_counter > 10"}
+{"action":"catchpoint_set","event":"throw"}
 {"action":"probe_list"}
 {"action":"probe_disable","number":1}
 {"action":"probe_enable","number":1}
@@ -95,13 +96,22 @@ evidence，并继续执行后续 enabled step。
 
 ## Probe 和 On-hit Action
 
-断点和观察点可以带上 `condition`、`comment`、`purpose` 和 `on_hit` metadata。
+断点、观察点和最小 catchpoint 可以带上 `comment`、`purpose` 和 `on_hit` metadata；
+断点和观察点还支持 `condition`。
 Probe metadata 会持久化到 `assets/probes.json`；probe 命中时记录为
-`BreakpointHit` 或 `WatchpointHit` evidence。如果 GDB 拒绝 probe 或 condition，
-action 返回 `ok:false` 并记录 `ToolError` evidence。
+`BreakpointHit`、`WatchpointHit` 或 `CatchpointHit` evidence。如果 GDB 拒绝 probe
+或 condition，action 返回 `ok:false` 并记录 `ToolError` evidence。
 
-使用 `probe_list` 可以捕获 GDB 的 breakpoint/watchpoint 表，并返回工具保存的 metadata，
+使用 `probe_list` 可以捕获 GDB 的 breakpoint/watchpoint/catchpoint 表，并返回工具保存的 metadata，
 包括 comment、purpose、hit count 和 on-hit action。
+
+本轮 catchpoint 只支持 C++ exception throw：
+
+```json
+{"action":"catchpoint_set","event":"throw","comment":"stop on C++ throw","purpose":"exception path"}
+```
+
+其他 `event` 会稳定返回 `ok:false`，并写入 `ToolError` evidence。
 
 ```json
 {

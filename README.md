@@ -151,6 +151,7 @@ examples/segfault_report.md
 
 ## 设计边界
 
+- 目标运行平台是 Linux；macOS 可用于非 live debugging 的构建和文档校验。
 - 不支持 PTY。
 - 不支持交互式 inferior stdin；默认 stdin 是 `/dev/null`。
 - `session_snapshot.json` 和 `session_summary.json` 不是 live GDB 会话恢复文件。

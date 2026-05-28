@@ -40,6 +40,7 @@ Supported action lines are intentionally small in MVP form:
 {"action":"evaluate","expression":"ptr"}
 {"action":"breakpoint_set","location":"examples/segfault.cpp:14","condition":"session == 0"}
 {"action":"watchpoint_set","expression":"global_counter","condition":"global_counter > 10"}
+{"action":"catchpoint_set","event":"throw"}
 {"action":"probe_list"}
 {"action":"probe_disable","number":1}
 {"action":"probe_enable","number":1}
@@ -62,14 +63,24 @@ apply actions such as breakpoints before the first run.
 {"action":"breakpoint_set","location":"examples/segfault.cpp:14","condition":"session == 0"}
 ```
 
-Breakpoints and watchpoints may include `condition`, `comment`, `purpose`, and
-`on_hit` metadata. Probe metadata is persisted in `assets/probes.json`; probe
-hits are recorded as `BreakpointHit` or `WatchpointHit` evidence. If GDB rejects
-a probe or its condition, the action returns `ok:false` and records `ToolError`
+Breakpoints, watchpoints, and the minimal catchpoint action may include
+`comment`, `purpose`, and `on_hit` metadata; breakpoints and watchpoints also
+support `condition`. Probe metadata is persisted in `assets/probes.json`; probe
+hits are recorded as `BreakpointHit`, `WatchpointHit`, or `CatchpointHit`
+evidence. If GDB rejects a probe or its condition, the action returns
+`ok:false` and records `ToolError` evidence.
+Use `probe_list` to capture GDB's breakpoint/watchpoint/catchpoint table and
+return the tool's stored metadata, including comments, purpose, hit count, and
+on-hit actions.
+
+The current catchpoint action only supports C++ exception throws:
+
+```json
+{"action":"catchpoint_set","event":"throw","comment":"stop on C++ throw","purpose":"exception path"}
+```
+
+Other `event` values return stable `ok:false` output and write `ToolError`
 evidence.
-Use `probe_list` to capture GDB's breakpoint/watchpoint table and return the
-tool's stored metadata, including comments, purpose, hit count, and on-hit
-actions.
 
 ```json
 {

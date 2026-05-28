@@ -4,30 +4,34 @@
 
 ## 本轮完成
 
-- 新增 `scripts/smoke_segfault_demo.sh`，用于一键执行 README 最小 demo 的 configure、
-  build 和 `gdb-agent check` 输出校验。
-- 在 `CMakeLists.txt` 中启用 CTest，并新增 `segfault_demo_check` 测试，在已构建的
-  `build/` 目录上复跑同一个输出检查。
-- 更新 `README.md` 的最小 Demo 章节，补充 smoke script 和 CTest 命令。
-- 更新 `docs/ai/progress.md` 记录 demo smoke 的当前状态。
+- 新增 `catchpoint_set` 高层 action，本轮只支持 `{"event":"throw"}`，映射到 GDB
+  `catch throw`。
+- catchpoint 复用 probe store，支持 `comment`、`purpose` 和 `on_hit` metadata；
+  `probe_list`/`assets/probes.json` 会展示 `kind: "catchpoint"` 和 `event: "throw"`。
+- probe hit evidence 增加 `CatchpointHit`；unsupported action 和 unsupported catchpoint
+  event 会记录 `ToolError` evidence。
+- 新增 `scripts/smoke_daemon_action_flow.sh`，Linux + GDB 下覆盖 daemon/create/status/连续
+  action/catchpoint/probe_list/非法 event/finish/shutdown，并检查 report、snapshot、
+  summary、evidence index 和 probe store。
+- CTest 新增 `daemon_action_flow`，macOS 会按 Linux-only 口径跳过 live 部分。
+- 更新 `docs/agent_actions.md` 和 `docs/agent_actions.en.md`。
+- 更新 `docs/ai/progress.md` 记录本轮状态。
 
 ## 验证
 
 - `cmake -S . -B build` 通过。
 - `cmake --build build` 通过。
-- `./build/gdb-agent check examples/segfault_task.md` 通过，输出包含 `ok`、示例
-  executable、working directory、`argv:`、`stdin: /dev/null` 和 `run timeout ms: 30000`。
+- `./build/gdb-agent check examples/segfault_task.md` 通过。
 - `./scripts/smoke_segfault_demo.sh` 通过。
-- `ctest --test-dir build --output-on-failure` 通过，`segfault_demo_check` 通过。
-- 已尝试运行 live session/report/assets：
-  `./build/gdb-agent serve examples/segfault_task.md --out /private/tmp/gdb-agent-smoke-report.md --assets /private/tmp/gdb-agent-smoke.assets`。
-  命令生成 report/assets，但进程返回 1，session state 为 `error`，初始 run evidence 为
-  `Don't know how to run.  Try "help target".`
+- `./scripts/smoke_daemon_action_flow.sh` 在当前 macOS 环境按平台口径输出
+  `skip: daemon/action live smoke requires Linux + GDB` 并返回成功。
+- `ctest --test-dir build --output-on-failure` 通过，包含 `segfault_demo_check` 和
+  `daemon_action_flow`。
 
 ## 限制和注意事项
 
-- 当前机器安装了 GNU gdb 17.2，但该 GDB 显示 `--target=x86_64-apple-darwin20`，而
-  `build/segfault` 是 Mach-O arm64 executable。因此本轮没有得到成功的 SIGSEGV live
-  session 端到端验证。
-- 本轮没有扩展 action、修改 evidence schema 或调整调试行为。
+- 当前环境是 macOS，不执行 live GDB session 作为验收；Linux + GDB 环境下仍需运行
+  `scripts/smoke_daemon_action_flow.sh` 做真实 daemon/action live 验证。
+- catchpoint 本轮只实现 `catch throw`，未实现 `catch catch`、`catch syscall`、
+  `catch fork` 等其他事件。
 - 本轮没有新增项目级设计决策，因此未更新 `docs/ai/decision.md`。

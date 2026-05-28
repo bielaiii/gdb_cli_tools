@@ -47,3 +47,9 @@ add_test(
     COMMAND /bin/bash ${CMAKE_SOURCE_DIR}/scripts/smoke_segfault_demo.sh --check-only
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
+
+add_test(
+    NAME daemon_action_flow
+    COMMAND /bin/bash ${CMAKE_SOURCE_DIR}/scripts/smoke_daemon_action_flow.sh
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)

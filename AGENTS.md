@@ -24,6 +24,7 @@
 ## 核心约束
 
 - 使用 C++20 和 CMake。
+- 目标运行平台只支持 Linux；macOS live GDB session 失败不作为当前阶段阻塞项。
 - GDB 接入只使用 GDB/MI，不使用 PTY。
 - 默认暴露高层 action，不要求 Agent 直接输入 MI。
 - `raw_mi` 只能作为高级 escape hatch，调用时必须显式标记 `risk: "advanced"`。
@@ -50,6 +51,17 @@
   `docs/ai/decision.md`。
 - 进度变化明显时，同步更新 `docs/ai/progress.md`。
 - 每轮任务结束时更新 `docs/ai/handoff.md`，记录实际完成的工作、验证结果和限制。
+
+## 提交与推送约定
+
+- 每次 Codex 完成一轮用户要求的代码或文档改动后，都要创建一次 git commit。
+- 如果本轮产生了新文件，必须先 `git add` 这些新文件，再提交。
+- 提交范围只包含本轮任务相关的已修改文件和新增文件；不要把工作区里无关的既有改动混进提交。
+- 提交前先查看 `git status --short`，确认 staged 文件范围符合本轮任务。
+- 提交信息要简洁说明本轮实际完成的内容。
+- 提交成功后推送到当前分支对应的远程 upstream；如果没有 upstream，就推送到当前分支的同名远程分支。
+- 如果因为网络、认证、权限或远程配置导致无法 push，要在最终回复和 `docs/ai/handoff.md`
+  中明确记录原因。
 
 ## 常用命令
 
@@ -124,7 +136,6 @@ session，并检查生成的 report 和 assets 目录。若当前机器没有 `g
    - expand scope
    - perform unrelated cleanup
    - change the stage goal unless explicitly requested
-   - commit 或 push，除非用户明确要求
 
 4. 任务结束之后：
    - 如果代码改变了，执行 build/test。
@@ -132,4 +143,5 @@ session，并检查生成的 report 和 assets 目录。若当前机器没有 `g
    - 如果产生新的项目级决策，追加或更新 `docs/ai/decision.md`。
    - 覆写 `docs/ai/handoff.md`，补充实际完成的工作、验证结果和遗留限制。
    - 更新progress.md
+   - 按“提交与推送约定”提交本轮相关改动并推送到远程。
    - 停止运行，等待用户下一步指令。

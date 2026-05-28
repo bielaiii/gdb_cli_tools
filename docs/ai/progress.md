@@ -38,6 +38,7 @@
   - `evaluate`
   - `breakpoint_set`
   - `watchpoint_set`
+  - `catchpoint_set`（仅 `event: "throw"`）
   - `probe_list`
   - `probe_enable`
   - `probe_disable`
@@ -54,8 +55,11 @@
 - Replay JSONL 和结构化 replay plan 输出。
 - `--replay-before-run`。
 - breakpoint/watchpoint metadata、condition、comment、purpose、on-hit action。
+- 最小 catchpoint metadata、on-hit action 和 `CatchpointHit` evidence。
 - hypothesis 记录文件和 `hypotheses/index.json`。
 - action state guard，非法状态下记录 `ToolError` evidence。
+- CTest 覆盖 README demo check；daemon/action live flow 有 Linux + GDB smoke 脚本，
+  macOS 会按平台口径跳过 live 部分。
 
 ## 2026-05-27 本轮更新
 
@@ -81,6 +85,25 @@
 - 在 `CMakeLists.txt` 中启用 CTest，并新增 `segfault_demo_check`，用于在已构建的
   `build/` 目录上复跑同一个输出检查。
 - README 的最小 Demo 章节已补充 smoke script 和 CTest 复现命令。
+
+## 2026-05-28 任务口径更新
+
+- 明确项目目标运行平台只支持 Linux；macOS 上 live GDB session 失败不作为阻塞项。
+- 下一轮任务更新为：
+  - 完成 daemon + action flow 的系统化回归测试。
+  - 新增最小 catchpoint 支持，本轮只支持 `catch throw`。
+
+## 2026-05-28 本轮更新（daemon/catchpoint）
+
+- 新增高层 action `catchpoint_set`，本轮只接受 `{"event":"throw"}`，映射到 GDB
+  `catch throw`。
+- catchpoint 复用 probe store，支持 `comment`、`purpose` 和 `on_hit` metadata；
+  `probe_list` 和 `assets/probes.json` 会展示 `kind: "catchpoint"` 与 `event: "throw"`。
+- probe 命中记录已支持 `CatchpointHit` evidence；unsupported action 和不支持的
+  catchpoint event 会记录 `ToolError` evidence。
+- 新增 `scripts/smoke_daemon_action_flow.sh` 和 CTest `daemon_action_flow`，Linux + GDB 下覆盖
+  daemon/create/status/连续 action/catchpoint/probe_list/非法 event/finish/shutdown 以及
+  report、snapshot、summary、evidence index、probe store 生成；macOS 按平台口径 skip。
 
 ## Phase 1: Live Session 和证据闭环
 
@@ -112,11 +135,11 @@ light evidence、evidence store、session log、report、snapshot 和 summary。
 状态：Partially Done
 
 已经支持 breakpoint/watchpoint、condition、comment、purpose、on-hit action、probe list 和
-probe hit evidence。
+probe hit evidence；已有最小 `catch throw` catchpoint。
 
 仍需关注：
 
-- catchpoint 还需要补齐。
+- catchpoint 仍只支持 `catch throw`，其他 catchpoint 类型尚未实现。
 - on-hit action 的超时、最大输出、最大行数等策略需要更完整。
 - Probe Store 的持久化恢复语义需要进一步明确。
 
@@ -147,8 +170,8 @@ probe hit evidence。
 
 ## 建议的下一步
 
-1. 为现有 daemon + action flow 增加自动化回归测试。
-2. 补 catchpoint 和 on-hit policy 限制。
+1. 在 Linux + GDB 环境跑 `scripts/smoke_daemon_action_flow.sh`，确认 live daemon flow 真实通过。
+2. 补 catchpoint 其他事件和 on-hit policy 限制。
 3. 强化 replay plan schema 与失败策略。
 4. 扩展 hypothesis assertion 与报告聚合。
 5. 继续把 `docs/agent_actions.md` 和代码中的 action 行为保持同步。
