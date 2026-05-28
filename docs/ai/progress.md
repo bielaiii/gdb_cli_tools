@@ -67,6 +67,21 @@
 - 修复了 macOS libc++ 下 `filesystem` 时间戳 `rep` 为 `__int128` 时无法直接写入
   ostream 的构建问题。
 
+## 2026-05-28 本轮更新
+
+- 新增根目录 `README.md`，介绍项目目标、当前功能、构建方式、最小 demo、daemon flow 和
+  设计边界。
+- 更新 `docs/ai/next_cli_task.md`，下一轮任务聚焦把 README demo 固化为可自动验证的
+  smoke test 或示例输出检查。
+
+## 2026-05-28 本轮更新（demo smoke）
+
+- 新增 `scripts/smoke_segfault_demo.sh`，一键执行 README 最小 demo 的 configure、build 和
+  `gdb-agent check` 输出校验。
+- 在 `CMakeLists.txt` 中启用 CTest，并新增 `segfault_demo_check`，用于在已构建的
+  `build/` 目录上复跑同一个输出检查。
+- README 的最小 Demo 章节已补充 smoke script 和 CTest 复现命令。
+
 ## Phase 1: Live Session 和证据闭环
 
 状态：Mostly Done

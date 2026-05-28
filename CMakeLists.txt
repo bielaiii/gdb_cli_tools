@@ -39,3 +39,11 @@ target_compile_options(segfault PRIVATE
     -g
     -O0
 )
+
+enable_testing()
+
+add_test(
+    NAME segfault_demo_check
+    COMMAND /bin/bash ${CMAKE_SOURCE_DIR}/scripts/smoke_segfault_demo.sh --check-only
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
