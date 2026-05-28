@@ -2,73 +2,72 @@
 
 ## 目标
 
-完成 daemon + action flow 的系统化回归测试，并补最小 catchpoint 能力。
+收敛 Probe Store 的运行期和持久化语义：运行中以内存 `ProbeState` 为权威状态，
+`assets/probes.json` 只作为 finish-time 报告产物写出，不再作为每次 probe 变化时同步落盘的
+运行时状态文件。
 
-## 平台口径
+## 背景语义
 
-- 目标运行平台只支持 Linux。
-- macOS 上 live GDB session 失败是允许的，不作为阻塞项。
-- 不依赖 GDB 的构建、`check`、smoke test 仍可在 macOS 上运行。
+- `ProbeState` 是 live session 运行期权威状态，保存在内存中。
+- `assets/probes.json` 是从 `ProbeState` 派生出的最终报告快照。
+- `probes.json` 不是 live GDB session 恢复文件，也不是运行时同步数据库。
+- 跨 session 复现仍应依赖 replay 高层 action，而不是读取旧 `probes.json` 恢复 GDB 状态。
 
 ## 范围
 
-### 1. Daemon + action flow 回归测试
+### 1. 调整 probe 持久化时机
 
-新增自动化测试或脚本，像 Agent 一样走完整 CLI 流程：
+- 移除或停止在以下 action 中立即写 `assets/probes.json`：
+  - `breakpoint_set`
+  - `watchpoint_set`
+  - `catchpoint_set`
+  - `probe_enable`
+  - `probe_disable`
+  - `probe_delete`
+  - probe hit 更新
+- 在 `finish` / `finish_session` 写最终报告产物时，统一从内存 `ProbeState` 写出
+  `assets/probes.json`。
+- daemon `finish` 和 `serve` stdin EOF/finish 路径都应写出最终 probe snapshot。
 
-- `gdb-agent daemon --socket ...`
-- `gdb-agent create ... --session S1`
-- `gdb-agent status S1`
-- `gdb-agent action S1 ...`
-- `gdb-agent finish S1 --out ...`
-- `gdb-agent shutdown ...`
+### 2. 保留运行期可观察性
 
-至少覆盖：
+- `probe_list` 继续从内存 `ProbeState` 返回当前 metadata。
+- `probe_list` 如需产生 evidence，可以记录当前内存 metadata 的 snapshot，但不要求写
+  `assets/probes.json`。
+- on-hit、hit count、enabled/deleted、last stop reason 仍由内存 `ProbeState` 维护。
 
-- daemon 能启动并接受 socket 请求。
-- create/status/finish/shutdown 基础生命周期。
-- 连续 action 能保持同一个 live session 状态。
-- action 返回稳定 JSON，包含 `ok`、`action`、必要时包含 `evidence`。
-- report、`session_snapshot.json`、`session_summary.json`、`evidence/index.json` 能生成。
-- 非法 action 或非法状态应返回 `ok:false`，并记录 `ToolError` evidence。
+### 3. 命中 evidence 保留必要上下文
 
-如果当前环境不是可用 Linux + GDB，测试应能优雅跳过 live session 部分，并在输出或
-handoff 中说明原因。
+- `BreakpointHit` / `WatchpointHit` / `CatchpointHit` evidence 应包含当次命中的必要 probe
+  metadata 快照，例如：
+  - number
+  - kind
+  - location 或 expression/event
+  - condition
+  - comment
+  - purpose
+  - hit_count
+- 这样即使 session 异常退出，关键命中 evidence 仍能解释“为什么停在这里”。
 
-### 2. 最小 catchpoint 支持
+### 4. 文档同步
 
-新增高层 action：
-
-```json
-{"action":"catchpoint_set","event":"throw"}
-```
-
-本轮只支持 `event: "throw"`，映射到 GDB：
-
-```gdb
-catch throw
-```
-
-要求：
-
-- 支持 `comment`、`purpose`、`on_hit` metadata，尽量复用现有 probe store 结构。
-- 命中时记录 `CatchpointHit` evidence，或在当前 probe hit 结构无法区分时先记录清楚的
-  stop/probe evidence。
-- `probe_list` 应能展示 catchpoint metadata。
-- GDB 拒绝 catchpoint 时返回 `ok:false`，并记录 `ToolError` evidence。
-- 更新 `docs/agent_actions.md`，必要时同步英文版 `docs/agent_actions.en.md`。
+- 更新 `docs/evidence_model.md`，说明 `probes.json` 是 finish-time report artifact，不是运行时
+  状态同步文件或恢复文件。
+- 如 action 文档中提到 probe metadata 持久化，要同步调整 `docs/agent_actions.md` 和
+  `docs/agent_actions.en.md`。
+- 更新 `docs/ai/progress.md` 和 `docs/ai/handoff.md`。
 
 ## 不做
 
-- 不支持 `catch catch`、`catch syscall`、`catch fork` 等其他 catchpoint。
-- 不扩展复杂 catchpoint 参数。
-- 不重构 replay schema。
-- 不实现 macOS live debugging 兼容。
+- 不实现从 `probes.json` 自动恢复 probe。
+- 不改变 replay schema。
+- 不扩展 catchpoint 类型。
+- 不重构 unrelated action。
 
 ## 完成标准
 
-- Linux + GDB 环境下 daemon + action flow 回归测试通过。
-- macOS 环境下非 live 部分仍能通过，live 部分可跳过且说明原因。
-- `catchpoint_set` 只接受 `event: "throw"`；其他 event 有稳定错误输出和 `ToolError`
-  evidence。
-- 文档、progress 和 handoff 更新完整。
+- 运行期 probe 操作不再频繁写 `assets/probes.json`。
+- finish 后 `assets/probes.json` 存在，并反映最终内存 `ProbeState`。
+- `probe_list` 仍能返回当前 probe metadata。
+- probe hit evidence 包含足够的 probe metadata 上下文。
+- 现有 smoke/CTest 在当前平台通过；Linux + GDB live 测试如无法运行，要在 handoff 记录原因。

@@ -105,6 +105,13 @@
   daemon/create/status/连续 action/catchpoint/probe_list/非法 event/finish/shutdown 以及
   report、snapshot、summary、evidence index、probe store 生成；macOS 按平台口径 skip。
 
+## 2026-05-29 任务口径更新
+
+- 下一轮任务更新为收敛 Probe Store 语义：
+  - 运行期以内存 `ProbeState` 为权威状态。
+  - `assets/probes.json` 只在 finish/report 阶段统一写出。
+  - probe hit evidence 保留必要 metadata 快照，便于异常退出后解释命中上下文。
+
 ## Phase 1: Live Session 和证据闭环
 
 状态：Mostly Done
@@ -141,7 +148,7 @@ probe hit evidence；已有最小 `catch throw` catchpoint。
 
 - catchpoint 仍只支持 `catch throw`，其他 catchpoint 类型尚未实现。
 - on-hit action 的超时、最大输出、最大行数等策略需要更完整。
-- Probe Store 的持久化恢复语义需要进一步明确。
+- Probe Store 的持久化恢复语义需要按下一轮任务收敛：运行期内存化，finish-time 落盘。
 
 ## Phase 4: Hypothesis Workflow
 
@@ -170,8 +177,9 @@ probe hit evidence；已有最小 `catch throw` catchpoint。
 
 ## 建议的下一步
 
-1. 在 Linux + GDB 环境跑 `scripts/smoke_daemon_action_flow.sh`，确认 live daemon flow 真实通过。
-2. 补 catchpoint 其他事件和 on-hit policy 限制。
-3. 强化 replay plan schema 与失败策略。
-4. 扩展 hypothesis assertion 与报告聚合。
-5. 继续把 `docs/agent_actions.md` 和代码中的 action 行为保持同步。
+1. 收敛 Probe Store 持久化语义：运行期只用内存 `ProbeState`，finish 时写
+   `assets/probes.json`。
+2. 在 Linux + GDB 环境跑 `scripts/smoke_daemon_action_flow.sh`，确认 live daemon flow 真实通过。
+3. 补 catchpoint 其他事件和 on-hit policy 限制。
+4. 强化 replay plan schema 与失败策略。
+5. 扩展 hypothesis assertion 与报告聚合。
