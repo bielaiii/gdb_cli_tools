@@ -50,6 +50,8 @@ Raw MI 会故意放在更深一层：
 - raw byte count 和 kept summary byte count
 - `truncated` 和 `lossy_summary` 标记
 - record attribution 字段：`included_records`、`related_records` 和 `concurrent_records`
+- raw MI audit 字段：`raw_records`，每条记录包含 sequence、token、record kind、
+  result/async class 和 stream type（如果适用）
 
 机器可读的 evidence index 是：
 
@@ -61,6 +63,11 @@ Raw MI 会故意放在更深一层：
 byte limit 限制，该限制记录在 index 中。如果 summary 被截断，`truncated` 会被设置为
 `true`。只要 summary 经历过 sanitizer、MI stream 解码、摘要化或截断，就应被视为有损，
 并设置 `lossy_summary`。
+
+`raw_records` 用于审计 raw MI 的结构，而不替代 raw 文件。当前 record kind 包括：
+`result`、`async`、`stream`、`prompt` 和 `unknown`；stream type 包括 `console`、`target`
+和 `log`。`included_records`、`related_records`、`concurrent_records` 继续表示 evidence
+归属关系，raw hash、raw byte count 和 kept summary byte count 仍是完整性审计字段。
 
 ## Session 文件
 
@@ -101,3 +108,6 @@ raw hash，方便 Agent 验证报告引用的 raw 文件没有变化。
 
 Raw 文件和 session MI log 是审计时的权威来源；summary 是低噪声、有损视图，只适合作为
 Agent 上下文入口。
+
+Summary 层会做有限降噪，例如 C++ `std::string` 类型归一化、常见 allocator 噪声压缩、
+路径相对化，以及 backtrace/thread 的稳定摘要。所有这些都不修改 raw MI。

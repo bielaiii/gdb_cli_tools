@@ -5,6 +5,7 @@
 
 #include <array>
 #include <chrono>
+#include <cctype>
 #include <cstdint>
 #include <filesystem>
 #include <iomanip>
@@ -148,6 +149,31 @@ std::string number_array_json(const std::vector<unsigned long long> &items) {
     return out.str();
 }
 
+std::string mi_record_audit_json(const MiRecordAudit &record) {
+    std::ostringstream out;
+    out << "{";
+    out << "\"sequence\":" << record.sequence << ",";
+    out << "\"token\":" << json_escape(record.token) << ",";
+    out << "\"record_kind\":" << json_escape(record.record_kind) << ",";
+    out << "\"record_class\":" << json_escape(record.record_class) << ",";
+    out << "\"stream_type\":" << json_escape(record.stream_type);
+    out << "}";
+    return out.str();
+}
+
+std::string mi_record_audit_array_json(const std::vector<MiRecordAudit> &records) {
+    std::ostringstream out;
+    out << "[";
+    for (size_t i = 0; i < records.size(); ++i) {
+        if (i != 0) {
+            out << ",";
+        }
+        out << mi_record_audit_json(records[i]);
+    }
+    out << "]";
+    return out.str();
+}
+
 std::string captured_at_now() {
     auto now = std::chrono::system_clock::now();
     std::time_t time = std::chrono::system_clock::to_time_t(now);
@@ -188,6 +214,7 @@ std::string evidence_json(const Evidence &ev) {
     out << "\"included_records\":" << number_array_json(ev.included_records) << ",";
     out << "\"related_records\":" << number_array_json(ev.related_records) << ",";
     out << "\"concurrent_records\":" << number_array_json(ev.concurrent_records) << ",";
+    out << "\"raw_records\":" << mi_record_audit_array_json(ev.raw_records) << ",";
     out << "\"raw_bytes\":" << ev.raw_bytes << ",";
     out << "\"kept_bytes\":" << ev.kept_bytes << ",";
     out << "\"truncated\":" << (ev.truncated ? "true" : "false") << ",";
@@ -198,6 +225,53 @@ std::string evidence_json(const Evidence &ev) {
 
 } // namespace
 
+static std::string simplify_frame_line(std::string line) {
+    line = trim(line);
+    if (!starts_with(line, "#")) {
+        return line;
+    }
+    std::string frame;
+    size_t pos = 1;
+    while (pos < line.size() && std::isspace(static_cast<unsigned char>(line[pos]))) {
+        ++pos;
+    }
+    while (pos < line.size() && std::isdigit(static_cast<unsigned char>(line[pos]))) {
+        frame.push_back(line[pos++]);
+    }
+    std::string function = line;
+    size_t in_pos = line.find(" in ");
+    if (in_pos != std::string::npos) {
+        size_t fn_start = in_pos + 4;
+        size_t arg_pos = line.find('(', fn_start);
+        function = trim(arg_pos == std::string::npos ? line.substr(fn_start) : line.substr(fn_start, arg_pos - fn_start));
+    } else {
+        size_t fn_start = pos;
+        while (fn_start < line.size() && std::isspace(static_cast<unsigned char>(line[fn_start]))) {
+            ++fn_start;
+        }
+        size_t arg_pos = line.find('(', fn_start);
+        size_t at_pos = line.find(" at ", fn_start);
+        size_t fn_end = arg_pos;
+        if (fn_end == std::string::npos || (at_pos != std::string::npos && at_pos < fn_end)) {
+            fn_end = at_pos;
+        }
+        if (fn_end != std::string::npos && fn_end > fn_start) {
+            function = trim(line.substr(fn_start, fn_end - fn_start));
+        }
+    }
+    std::string file_line;
+    size_t at_pos = line.rfind(" at ");
+    if (at_pos != std::string::npos) {
+        file_line = trim(line.substr(at_pos + 4));
+    }
+    std::ostringstream out;
+    out << "#" << (frame.empty() ? "?" : frame) << " " << function;
+    if (!file_line.empty()) {
+        out << " at " << file_line;
+    }
+    return out.str();
+}
+
 static std::string summarize_backtrace(const std::string &text) {
     std::istringstream in(text);
     std::ostringstream out;
@@ -205,7 +279,7 @@ static std::string summarize_backtrace(const std::string &text) {
     int frames = 0;
     while (std::getline(in, line)) {
         if (starts_with(trim_view(line), "#")) {
-            out << line << '\n';
+            out << simplify_frame_line(line) << '\n';
             ++frames;
             if (frames >= 12) {
                 out << "... truncated after 12 frames\n";
@@ -215,6 +289,52 @@ static std::string summarize_backtrace(const std::string &text) {
     }
     std::string summary = out.str();
     return summary.empty() ? text : summary;
+}
+
+static std::string summarize_threads(const std::string &text) {
+    std::istringstream in(text);
+    std::ostringstream out;
+    std::string line;
+    int threads = 0;
+    while (std::getline(in, line)) {
+        std::string trimmed = trim(line);
+        if (trimmed.empty()) {
+            continue;
+        }
+        bool current = starts_with(trimmed, "*");
+        if (current) {
+            trimmed = trim(trimmed.substr(1));
+        }
+        if (!current && !std::isdigit(static_cast<unsigned char>(trimmed.front()))) {
+            continue;
+        }
+        out << (current ? "* " : "- ") << trimmed << '\n';
+        ++threads;
+        if (threads >= 24) {
+            out << "... truncated after 24 threads\n";
+            break;
+        }
+    }
+    std::string summary = out.str();
+    return summary.empty() ? text : summary;
+}
+
+static std::string summarize_by_title(std::string_view title,
+                                      const std::string &decoded,
+                                      const std::vector<std::string> &raw_lines,
+                                      bool backtrace_summary) {
+    std::string title_lower = lower(std::string(title));
+    if (backtrace_summary || title_lower.find("backtrace") != std::string::npos) {
+        return summarize_backtrace(decoded);
+    }
+    if (title_lower.find("thread") != std::string::npos) {
+        return summarize_threads(decoded);
+    }
+    std::string mi_summary = summarize_mi_records(raw_lines);
+    if (!mi_summary.empty() && decoded == joined_raw(raw_lines)) {
+        return mi_summary;
+    }
+    return decoded;
 }
 
 static std::string evidence_view(const Evidence &ev) {
@@ -234,6 +354,19 @@ static std::string evidence_view(const Evidence &ev) {
     md << "- Included records: `" << ev.included_records.size() << "`\n";
     md << "- Related records: `" << ev.related_records.size() << "`\n";
     md << "- Concurrent records: `" << ev.concurrent_records.size() << "`\n\n";
+    if (!ev.raw_records.empty()) {
+        md << "## Raw MI Audit\n\n";
+        md << "| Seq | Token | Kind | Class | Stream |\n";
+        md << "| --- | --- | --- | --- | --- |\n";
+        for (const auto &record : ev.raw_records) {
+            md << "| " << record.sequence
+               << " | `" << record.token
+               << "` | `" << record.record_kind
+               << "` | `" << record.record_class
+               << "` | `" << record.stream_type << "` |\n";
+        }
+        md << "\n";
+    }
     md << "## Summary\n\n";
     md << "```text\n" << ev.summary << "\n```\n";
     return md.str();
@@ -271,7 +404,8 @@ Evidence EvidenceStore::add(std::string_view kind,
     std::string raw = joined_raw(raw_lines);
     std::string decoded = sanitize_output(decoded_streams(raw_lines), working_directory_);
     bool truncated = false;
-    std::string summary = truncate_summary(backtrace_summary ? summarize_backtrace(decoded) : std::move(decoded), truncated);
+    std::string summary = truncate_summary(summarize_by_title(title, decoded, raw_lines, backtrace_summary), truncated);
+    std::vector<MiRecordAudit> raw_records = audit_mi_records(raw_lines, included_records);
 
     Evidence ev{std::move(id),
                 std::string(kind),
@@ -285,6 +419,7 @@ Evidence EvidenceStore::add(std::string_view kind,
                 included_records,
                 {},
                 {},
+                std::move(raw_records),
                 raw.size(),
                 summary.size(),
                 truncated,
@@ -325,6 +460,7 @@ Evidence EvidenceStore::add_text(std::string_view kind,
                 view_file,
                 sha256_hex(raw),
                 captured_at_now(),
+                {},
                 {},
                 {},
                 {},

@@ -134,6 +134,19 @@
   - thread/backtrace summarizer。
   - raw MI audit metadata 增强。
 
+## 2026-05-29 本轮更新（summary/MI）
+
+- 新增递归 MI value parser，支持 const string、tuple、list、result payload 和 stream record
+  分类；解析失败时仍保留 raw，并回落到稳定 raw/decoded summary。
+- 增强 C++ summary sanitizer，覆盖常见 `std::basic_string`/`std::__cxx11::basic_string`
+  到 `std::string` 的归一化、allocator 噪声压缩、模板空格和 `> >` 归一化。
+- 增强 backtrace/thread summary：backtrace 摘要会提取 frame/function/file:line，threads
+  摘要按当前线程和普通线程生成低噪声行。
+- Evidence index 和 Markdown view 增加 raw MI audit metadata：record sequence、token、
+  record kind、result/async class、stream type。
+- 新增 `mi_summary_tests`，覆盖 MI parser、type sanitizer、backtrace/thread summarizer 和
+  raw MI audit，不依赖 GDB。
+
 ## Phase 1: Live Session 和证据闭环
 
 状态：Mostly Done
@@ -189,21 +202,21 @@ probe hit evidence；已有最小 `catch throw` catchpoint。
 
 状态：Early
 
-已有基础 summary 和 backtrace summary。`raw_mi` 已作为受限高级 escape hatch。
+已有 MI value parser、基础 C++ 类型 sanitizer、backtrace/thread summary 和 raw MI audit
+metadata。`raw_mi` 已作为受限高级 escape hatch。
 
 仍需关注：
 
-- 更完整的 MI value parser。
-- 更好的 C++ 类型 sanitizer。
-- 更强的 backtrace/thread summarizer。
-- raw MI 的审计字段和风险说明可以更细。
+- MI parser 还可以继续覆盖更多 GDB/MI 边界格式。
+- C++ 类型 sanitizer 仍需更多 STL 容器和用户类型 fixture。
+- thread/backtrace summarizer 需要在 Linux + GDB raw 输出上继续校准。
+- raw MI 的风险说明和跨 evidence 相关记录归因还可以更细。
 
 ## 建议的下一步
 
-1. 强化 summary/MI 解析能力：MI value parser、类型 sanitizer、thread/backtrace
-   summarizer、raw MI audit metadata。
-2. 在 Linux + GDB 环境跑 `scripts/smoke_daemon_action_flow.sh`，确认 live daemon flow 和
+1. 在 Linux + GDB 环境跑 `scripts/smoke_daemon_action_flow.sh`，确认 live daemon flow 和
    finish-time `probes.json` 真实通过。
+2. 用真实 Linux GDB raw 输出继续校准 MI parser、类型 sanitizer 和 backtrace/thread summary。
 3. 补 catchpoint 其他事件和 on-hit policy 限制。
 4. 强化 replay plan schema 与失败策略。
 5. 扩展 hypothesis assertion 与报告聚合。

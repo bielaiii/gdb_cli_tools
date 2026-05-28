@@ -5,6 +5,8 @@
 #include <string_view>
 #include <vector>
 
+#include "../gdb/mi_utils.hpp"
+
 struct Evidence {
     std::string id;
     std::string kind;
@@ -18,6 +20,7 @@ struct Evidence {
     std::vector<unsigned long long> included_records;
     std::vector<unsigned long long> related_records;
     std::vector<unsigned long long> concurrent_records;
+    std::vector<MiRecordAudit> raw_records;
     size_t raw_bytes = 0;
     size_t kept_bytes = 0;
     bool truncated = false;

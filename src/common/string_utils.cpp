@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <fstream>
+#include <regex>
 #include <stdexcept>
 
 std::string_view trim_view(std::string_view s) {
@@ -67,6 +68,23 @@ std::string sanitize_output(std::string s, const std::filesystem::path &working_
     replace_all(s,
                 "std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >",
                 "std::string");
+    replace_all(s,
+                "std::basic_string<char, std::char_traits<char>, std::allocator<char> >",
+                "std::string");
+    replace_all(s,
+                "std::__cxx11::basic_string<char,std::char_traits<char>,std::allocator<char> >",
+                "std::string");
+    replace_all(s,
+                "std::basic_string<char,std::char_traits<char>,std::allocator<char> >",
+                "std::string");
+    s = std::regex_replace(s,
+                           std::regex(R"(std::(__cxx11::)?basic_string<char,\s*std::char_traits<char>,\s*std::allocator<char>\s*>)"),
+                           "std::string");
+    s = std::regex_replace(s, std::regex(R"(\s*>\s*>)"), ">>");
+    s = std::regex_replace(s, std::regex(R"(,\s*std::allocator<([^<>]+)>)"), "");
+    s = std::regex_replace(s, std::regex(R"(<\s+)"), "<");
+    s = std::regex_replace(s, std::regex(R"(\s+>)"), ">");
+    s = std::regex_replace(s, std::regex(R"(,\s+)"), ", ");
     replace_all(s, working_directory.string() + "/", "");
     return s;
 }

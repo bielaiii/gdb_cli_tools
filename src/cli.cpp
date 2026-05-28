@@ -1537,7 +1537,8 @@ static std::string json_evidence_array(const std::vector<Evidence> &evidence) {
         out << "      \"lossy_summary\": " << (ev.lossy_summary ? "true" : "false") << ",\n";
         out << "      \"included_records\": " << ev.included_records.size() << ",\n";
         out << "      \"related_records\": " << ev.related_records.size() << ",\n";
-        out << "      \"concurrent_records\": " << ev.concurrent_records.size() << "\n";
+        out << "      \"concurrent_records\": " << ev.concurrent_records.size() << ",\n";
+        out << "      \"raw_record_count\": " << ev.raw_records.size() << "\n";
         out << "    }";
         if (i + 1 != evidence.size()) {
             out << ",";

@@ -40,6 +40,19 @@ target_compile_options(segfault PRIVATE
     -O0
 )
 
+add_executable(mi_summary_tests
+    tests/mi_summary_tests.cpp
+    src/common/string_utils.cpp
+    src/evidence/evidence_store.cpp
+    src/gdb/mi_utils.cpp
+)
+
+target_compile_options(mi_summary_tests PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+)
+
 enable_testing()
 
 add_test(
@@ -51,5 +64,11 @@ add_test(
 add_test(
     NAME daemon_action_flow
     COMMAND /bin/bash ${CMAKE_SOURCE_DIR}/scripts/smoke_daemon_action_flow.sh
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
+add_test(
+    NAME mi_summary_tests
+    COMMAND mi_summary_tests
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
