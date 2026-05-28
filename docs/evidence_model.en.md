@@ -68,6 +68,27 @@ The MVP also writes machine-readable session files:
 <assets>/session_snapshot.json
 ```
 
+`session_snapshot.json` and `session_summary.json` are historical records and
+report inputs. They do not represent a live GDB session and cannot restore an
+old GDB process. Restart reproduction should replay high-level actions.
+
+## Probe Store Snapshot
+
+The authoritative runtime probe state is the in-memory `ProbeState`.
+`assets/probes.json` is generated from `ProbeState` only during `finish`/report
+writing. It is a final report snapshot, not a runtime synchronization database
+and not a live GDB session restore file.
+
+Use `probe_list` to observe current probe metadata while the session is live.
+Cross-session reproduction should use replayed high-level actions rather than
+reading an old `probes.json` to restore breakpoints, watchpoints, or
+catchpoints.
+
+Probe hit evidence (`BreakpointHit`, `WatchpointHit`, `CatchpointHit`) stores
+the relevant metadata snapshot for that hit, such as number, kind,
+location/expression/event, condition, comment, purpose, and hit count. This
+keeps the stop context explainable even if the session exits unexpectedly.
+
 Reports should cite evidence ids rather than relying on summaries alone.
 Reports now include each evidence item's raw hash so an Agent can verify that
 the cited raw file still matches the report.

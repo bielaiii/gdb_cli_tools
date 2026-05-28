@@ -582,7 +582,6 @@ static void record_probe_hit(GdbSession &session,
                                       evidence_kind + " " + result.breakpoint_number,
                                       result.stop_reason,
                                       text.str());
-    write_probe_snapshot(session, probe_state);
 }
 
 static std::string next_hypothesis_id(ProbeState &probe_state) {
@@ -887,7 +886,6 @@ static void handle_action_line(GdbSession &session,
             if (!probe_state.probes_by_number[number].on_hit_actions.empty()) {
                 probe_state.on_hit_actions_by_breakpoint[number] = probe_state.probes_by_number[number].on_hit_actions;
             }
-            write_probe_snapshot(session, probe_state);
         }
 
         out << "{\"ok\":true,\"action\":\"breakpoint_set\",\"breakpoint\":" << json_escape(number);
@@ -949,7 +947,6 @@ static void handle_action_line(GdbSession &session,
         if (!probe_state.probes_by_number[number].on_hit_actions.empty()) {
             probe_state.on_hit_actions_by_breakpoint[number] = probe_state.probes_by_number[number].on_hit_actions;
         }
-        write_probe_snapshot(session, probe_state);
         out << "{\"ok\":true,\"action\":\"watchpoint_set\",\"watchpoint\":" << json_escape(number)
                   << ",\"evidence\":" << json_escape(ev.id);
         if (!condition_evidence.empty()) {
@@ -1007,7 +1004,6 @@ static void handle_action_line(GdbSession &session,
         if (!probe_state.probes_by_number[number].on_hit_actions.empty()) {
             probe_state.on_hit_actions_by_breakpoint[number] = probe_state.probes_by_number[number].on_hit_actions;
         }
-        write_probe_snapshot(session, probe_state);
         out << "{\"ok\":true,\"action\":\"catchpoint_set\",\"catchpoint\":" << json_escape(number)
             << ",\"event\":" << json_escape(event)
             << ",\"evidence\":" << json_escape(ev.id) << "}\n";
@@ -1016,7 +1012,6 @@ static void handle_action_line(GdbSession &session,
     if (action_name == "probe_list") {
         auto result = session.command("-break-list");
         auto ev = session.evidence_store().add("GdbCommand", "Probe list", result.command, result.raw_lines, false, result.record_sequences);
-        write_probe_snapshot(session, probe_state);
 
         std::ostringstream evidence_text;
         evidence_text << "{\n";
@@ -1063,7 +1058,6 @@ static void handle_action_line(GdbSession &session,
             } else if (action_name == "probe_disable") {
                 probe_it->second.enabled = false;
             }
-            write_probe_snapshot(session, probe_state);
         }
         out << "{\"ok\":true,\"action\":" << json_escape(action) << ",\"number\":" << number
                   << ",\"evidence\":" << json_escape(ev.id) << "}\n";
@@ -1900,6 +1894,7 @@ static std::string finish_live_session_response(const std::string &session_id,
         live.outcome.final_agent_conclusion = final_conclusion;
     }
     flush_inferior_output(*live.session, live.outcome);
+    write_probe_snapshot(*live.session, live.probe_state);
     write_session_files(live.opts, live.task, live.outcome, *live.session);
     write_report(live.opts.report, live.opts.assets, live.task, live.outcome, live.session->evidence_store().all());
     live.outcome.state = SessionState::Finishing;
@@ -2215,6 +2210,7 @@ static int run_serve(const CliOptions &opts, const DebugTask &task) {
         }
 
         flush_inferior_output(session, outcome);
+        write_probe_snapshot(session, probe_state);
         write_session_files(opts, task, outcome, session);
         write_report(opts.report, opts.assets, task, outcome, session.evidence_store().all());
         std::cout << "{\"ok\":true,\"report\":" << json_escape(opts.report.string())

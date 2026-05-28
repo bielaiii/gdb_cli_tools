@@ -98,7 +98,7 @@
 - 新增高层 action `catchpoint_set`，本轮只接受 `{"event":"throw"}`，映射到 GDB
   `catch throw`。
 - catchpoint 复用 probe store，支持 `comment`、`purpose` 和 `on_hit` metadata；
-  `probe_list` 和 `assets/probes.json` 会展示 `kind: "catchpoint"` 与 `event: "throw"`。
+  `probe_list` 和最终 `assets/probes.json` 会展示 `kind: "catchpoint"` 与 `event: "throw"`。
 - probe 命中记录已支持 `CatchpointHit` evidence；unsupported action 和不支持的
   catchpoint event 会记录 `ToolError` evidence。
 - 新增 `scripts/smoke_daemon_action_flow.sh` 和 CTest `daemon_action_flow`，Linux + GDB 下覆盖
@@ -111,6 +111,20 @@
   - 运行期以内存 `ProbeState` 为权威状态。
   - `assets/probes.json` 只在 finish/report 阶段统一写出。
   - probe hit evidence 保留必要 metadata 快照，便于异常退出后解释命中上下文。
+
+## 2026-05-29 本轮更新（probe store）
+
+- 收敛 Probe Store 持久化语义：运行期只维护内存 `ProbeState`，不再在
+  `breakpoint_set`、`watchpoint_set`、`catchpoint_set`、probe enable/disable/delete、
+  probe hit 或 `probe_list` 时同步写 `assets/probes.json`。
+- `finish`、daemon `finish` 和 `finish_session` 路径会在写 report/session files 前统一从
+  `ProbeState` 写出最终 `assets/probes.json`。
+- `probe_list` 仍返回当前内存 metadata，并可记录 metadata evidence；probe hit evidence
+  继续携带 number、kind、location/expression/event、condition、comment、purpose 和
+  hit_count 等上下文。
+- 更新 `docs/evidence_model.md`、`docs/evidence_model.en.md`、`docs/agent_actions.md`、
+  `docs/agent_actions.en.md` 和 `docs/ai/decision.md`，明确 `probes.json` 是 finish-time
+  report artifact，不是恢复文件。
 
 ## Phase 1: Live Session 和证据闭环
 
@@ -148,7 +162,8 @@ probe hit evidence；已有最小 `catch throw` catchpoint。
 
 - catchpoint 仍只支持 `catch throw`，其他 catchpoint 类型尚未实现。
 - on-hit action 的超时、最大输出、最大行数等策略需要更完整。
-- Probe Store 的持久化恢复语义需要按下一轮任务收敛：运行期内存化，finish-time 落盘。
+- Probe Store 已收敛为运行期内存化、finish-time 落盘；仍需在 Linux + GDB 下验证 live
+  daemon flow 的最终 `probes.json` 内容。
 
 ## Phase 4: Hypothesis Workflow
 
@@ -177,9 +192,8 @@ probe hit evidence；已有最小 `catch throw` catchpoint。
 
 ## 建议的下一步
 
-1. 收敛 Probe Store 持久化语义：运行期只用内存 `ProbeState`，finish 时写
-   `assets/probes.json`。
-2. 在 Linux + GDB 环境跑 `scripts/smoke_daemon_action_flow.sh`，确认 live daemon flow 真实通过。
-3. 补 catchpoint 其他事件和 on-hit policy 限制。
-4. 强化 replay plan schema 与失败策略。
-5. 扩展 hypothesis assertion 与报告聚合。
+1. 在 Linux + GDB 环境跑 `scripts/smoke_daemon_action_flow.sh`，确认 live daemon flow 和
+   finish-time `probes.json` 真实通过。
+2. 补 catchpoint 其他事件和 on-hit policy 限制。
+3. 强化 replay plan schema 与失败策略。
+4. 扩展 hypothesis assertion 与报告聚合。

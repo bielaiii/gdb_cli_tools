@@ -98,12 +98,13 @@ evidence，并继续执行后续 enabled step。
 
 断点、观察点和最小 catchpoint 可以带上 `comment`、`purpose` 和 `on_hit` metadata；
 断点和观察点还支持 `condition`。
-Probe metadata 会持久化到 `assets/probes.json`；probe 命中时记录为
-`BreakpointHit`、`WatchpointHit` 或 `CatchpointHit` evidence。如果 GDB 拒绝 probe
-或 condition，action 返回 `ok:false` 并记录 `ToolError` evidence。
+运行期 probe metadata 以内存 `ProbeState` 为权威状态；`assets/probes.json` 只在
+`finish`/报告写出阶段作为最终快照生成。probe 命中时记录为 `BreakpointHit`、
+`WatchpointHit` 或 `CatchpointHit` evidence，并包含当次命中的必要 metadata 快照。
+如果 GDB 拒绝 probe 或 condition，action 返回 `ok:false` 并记录 `ToolError` evidence。
 
 使用 `probe_list` 可以捕获 GDB 的 breakpoint/watchpoint/catchpoint 表，并返回工具保存的 metadata，
-包括 comment、purpose、hit count 和 on-hit action。
+包括 comment、purpose、hit count 和 on-hit action；它不把 `probes.json` 当作运行时同步数据库。
 
 本轮 catchpoint 只支持 C++ exception throw：
 

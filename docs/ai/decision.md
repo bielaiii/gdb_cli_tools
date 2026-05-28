@@ -92,14 +92,17 @@ Replay Store 保存高层 action 列表，结构化文件使用 `gdb-agent-repla
 状态：Accepted
 
 breakpoint/watchpoint/catchpoint 需要保存 comment、purpose、condition、hit count、
-last stop reason 和 on-hit action。Probe 命中时写入 `BreakpointHit` 或
-`WatchpointHit` evidence。
+last stop reason 和 on-hit action。运行期以内存 `ProbeState` 为权威状态；
+`assets/probes.json` 只在 finish/report 写出阶段作为最终快照生成，不作为运行时同步数据库或
+live GDB 恢复文件。Probe 命中时写入 `BreakpointHit`、`WatchpointHit` 或
+`CatchpointHit` evidence，并保留当次命中的必要 metadata 快照。
 
 原因：
 
 - Agent 需要知道断点为什么存在，而不只是 GDB 编号。
 - on-hit 自动动作可以降低重复取证成本。
 - 命中记录能把 probe 设计和实际证据关联起来。
+- 重启后的复现应依赖 replay 高层 action，而不是读取旧 `probes.json` 恢复 GDB 状态。
 
 ## D008: Hypothesis workflow 分离工具观察和 AI 结论
 

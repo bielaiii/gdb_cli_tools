@@ -81,6 +81,19 @@ MVP 还会写机器可读的 session 文件：
 `session_snapshot.json` 和 `session_summary.json` 是历史记录与报告输入，不代表 live GDB
 session，也不能用于恢复旧 GDB 进程。重启后的恢复方式应该是 replay 高层 action。
 
+## Probe Store 快照
+
+Probe 的运行期权威状态是内存中的 `ProbeState`。`assets/probes.json` 只在
+`finish`/报告写出阶段从 `ProbeState` 派生生成，是最终报告快照，不是运行时同步数据库，
+也不是 live GDB session 恢复文件。
+
+运行中使用 `probe_list` 观察当前 probe metadata；跨 session 复现应依赖 replay 高层 action，
+不要读取旧 `probes.json` 恢复断点、观察点或 catchpoint。
+
+Probe 命中 evidence（`BreakpointHit`、`WatchpointHit`、`CatchpointHit`）会保存当次命中的
+必要 metadata 快照，例如 number、kind、location/expression/event、condition、comment、
+purpose 和 hit count。即使 session 异常结束，这些命中 evidence 仍能解释当时为什么停住。
+
 ## 报告引用规则
 
 报告应该引用 evidence id，而不是只依赖 summary。报告现在也会包含每条 evidence 的

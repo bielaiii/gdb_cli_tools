@@ -65,13 +65,16 @@ apply actions such as breakpoints before the first run.
 
 Breakpoints, watchpoints, and the minimal catchpoint action may include
 `comment`, `purpose`, and `on_hit` metadata; breakpoints and watchpoints also
-support `condition`. Probe metadata is persisted in `assets/probes.json`; probe
-hits are recorded as `BreakpointHit`, `WatchpointHit`, or `CatchpointHit`
-evidence. If GDB rejects a probe or its condition, the action returns
-`ok:false` and records `ToolError` evidence.
+support `condition`. Runtime probe metadata is authoritative in the in-memory
+`ProbeState`; `assets/probes.json` is generated only as a final snapshot during
+`finish`/report writing. Probe hits are recorded as `BreakpointHit`,
+`WatchpointHit`, or `CatchpointHit` evidence and include the relevant metadata
+snapshot for that hit. If GDB rejects a probe or its condition, the action
+returns `ok:false` and records `ToolError` evidence.
 Use `probe_list` to capture GDB's breakpoint/watchpoint/catchpoint table and
 return the tool's stored metadata, including comments, purpose, hit count, and
-on-hit actions.
+on-hit actions; it does not treat `probes.json` as a runtime synchronization
+database.
 
 The current catchpoint action only supports C++ exception throws:
 
