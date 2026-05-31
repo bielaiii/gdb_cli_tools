@@ -2,109 +2,122 @@
 
 ## 目标
 
-强化 summary 和 MI 解析能力，降低 Agent 读 GDB 输出时的噪声，同时让 raw MI 审计字段更细。
+把 Replay Store 做完整、做稳定，让 Agent 可以可靠保存一组高层 action，并在重启
+或新 session 中一次性重放，且 replay 的失败行为、适用范围和证据归属都可审计。
 
 本轮聚焦四件事：
 
-1. 更完整的 MI value parser。
-2. C++ 类型 sanitizer。
-3. thread/backtrace summarizer。
-4. raw MI audit metadata 增强。
+1. 明确 replay 失败策略，并让行为可配置、可记录。
+2. 强化 `gdb-agent-replay-plan-v1` schema 和 task metadata 校验。
+3. 增加重启后 replay 的端到端示例和自动化测试。
+4. 同步更新 action、evidence 和 task 相关文档。
 
 ## 背景语义
 
-- raw MI 始终是权威证据，必须完整保留。
-- summary 是有损、低噪声视图，任何 sanitizer、归一化、截断或摘要都必须通过
-  `lossy_summary` / `truncated` 等字段表达。
-- 工具只负责结构化观察和证据整理，不生成根因结论。
+- Replay Store 只保存高层 action，不保存或恢复 GDB 内部 live 状态。
+- replay 在新 session 中重新执行 action，并产生新的 evidence id；不能复用旧 evidence id。
+- replay 失败必须留下 `ToolError` 或 replay step evidence，方便 Agent 判断下一步。
+- `session_snapshot.json` 和 `session_summary.json` 不是恢复文件；重启恢复只能依赖 replay 高层 action。
+- 工具不基于 replay 自动宣称根因，只负责执行和证据整理。
 
 ## 范围
 
-### 1. MI value parser
+### 1. Replay 失败策略
 
-补强 MI 输出解析能力，优先支持 GDB/MI 常见 value 结构：
+补齐 replay 执行时的失败策略语义：
 
-- const string，包括转义字符、空字符串、路径和模板类型文本。
-- tuple：`{name="value",frame={...}}`
-- list：`[item={...},item={...}]` 和 `["a","b"]`
-- result record 中的 key/value。
-- stream record 中的 console/log/target 输出。
-
-要求：
-
-- 不要用脆弱的简单 split 解析嵌套 tuple/list。
-- 解析失败时保留 raw，并产生稳定 fallback summary。
-- 为 parser 增加不依赖 GDB 的 fixture/unit smoke 测试。
-
-### 2. C++ 类型 sanitizer
-
-新增或强化 summary 层的类型降噪，至少覆盖：
-
-- `std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >`
-  -> `std::string`
-- 常见 `std::basic_string<...>` -> `std::string`
-- 常见 allocator 噪声压缩，例如 `std::allocator<T>` 在容器类型中不淹没主类型。
-- 常见模板空格和 `> >` 归一化。
+- 支持 plan-level failure policy，例如：
+  - `continue_on_error`
+  - `stop_on_error`
+- 支持 step-level override；未指定时继承 plan-level policy。
+- 为兼容旧 replay plan，明确旧计划的默认策略，并在文档中写清楚。
+- 每个 replay step 都要记录：
+  - step index
+  - action name
+  - action payload 摘要
+  - status：success / failed / skipped
+  - failure policy
+  - evidence id 或 error evidence id
+  - 如果因为前一步失败而跳过，记录 skip reason。
 
 要求：
 
-- 只作用于 summary/view，不改 raw。
-- 不要过度改写用户类型。
-- 为 sanitizer 增加 fixture 测试。
+- 不吞掉失败，不只在 stdout/stderr 中展示错误。
+- `stop_on_error` 停止后，后续 step 应标记为 skipped 或在 replay result 中明确未执行。
+- replay result 要便于 Agent 直接判断哪些检查成功、哪些失败、是否需要新假设。
 
-### 3. Thread / Backtrace summarizer
+### 2. Replay plan schema 和 metadata 校验
 
-增强 backtrace 和 threads 的 summary 质量：
+强化结构化 replay plan，继续使用 `gdb-agent-replay-plan-v1`，但补齐必要 metadata：
 
-- backtrace summary 应突出：
-  - frame number
-  - function
-  - file:line
-  - signal/top frame
-  - 简化后的参数和 C++ 类型
-- thread summary 应突出：
-  - thread id / GDB thread number
-  - 当前线程标记
-  - stop reason 或 top frame（可从现有 MI/console 输出中提取时）
-  - 每个线程一行或低噪声结构化块
+- schema version。
+- plan name。
+- optional tags。
+- source session id。
+- created_at。
+- task metadata，例如 executable、working directory、args、core dump、problem 摘要。
+- task fingerprint，用于判断 replay plan 是否可能应用到了不同调试目标。
+- action list，每步保留高层 action payload 和 step metadata。
 
-要求：
+校验要求：
 
-- 长路径应尽量相对 working directory 或归一化。
-- 输出应稳定，便于 Agent 引用。
-- summary 不能替代 raw evidence。
+- replay 时检查 schema version。
+- replay 时检查 task metadata / fingerprint。
+- 如果当前 task 与 replay plan 不匹配，默认拒绝执行，除非用户显式传入 force 选项。
+- force replay 时必须在 result 和 evidence 中记录 mismatch warning。
+- 旧 JSONL 或旧结构化 plan 应尽量保持可读；如果不能完整校验，要给出稳定错误信息。
 
-### 4. Raw MI 审计字段增强
+### 3. 重启后 replay 端到端示例和测试
 
-细化 evidence/session 中与 raw MI 相关的审计 metadata，例如：
+增加一个最小端到端回归，覆盖：
 
-- command/action name。
-- record sequence id。
-- MI record kind：result / async / stream / prompt / unknown。
-- result class 或 async class。
-- stream type：console / target / log。
-- token（如果存在）。
-- included / related / concurrent records 的含义保持稳定。
-- raw hash、raw byte count、kept summary byte count 继续保留。
+- 创建 session。
+- 执行若干高层 action。
+- 保存 replay plan。
+- 关闭或重启 session。
+- 新建 session 后 replay 同一 plan。
+- 检查新 replay 产生新的 evidence id。
+- 检查 replay result、session summary、evidence index 和 report 中能看到 replay step 归属。
 
-要求：
+测试建议：
 
-- 更新 `docs/evidence_model.md` 和英文版。
-- 如果 schema 字段变化，更新 session snapshot / evidence index 相关文档。
-- 保持旧 evidence 基本可读，不为本轮引入无关 schema 重构。
+- 不依赖 GDB 的部分用 fixture/unit smoke 覆盖 schema、metadata 校验和 failure policy。
+- Linux + GDB 环境下增加或扩展 daemon/action smoke，覆盖真实重启 replay flow。
+- macOS 或缺少 GDB 的环境按既有项目口径 skip live 部分，但 schema/policy 测试仍应运行。
+
+### 4. 文档和报告对齐
+
+同步更新文档：
+
+- `docs/agent_actions.md`
+- `docs/agent_actions.en.md`
+- `docs/evidence_model.md`
+- `docs/evidence_model.en.md`
+- 如 task 字段或 replay 调用参数变化，更新 `docs/task_format.md` 和英文版。
+
+报告和 evidence 要能说明：
+
+- replay plan 名称和 schema version。
+- replay 是否 force 执行。
+- task metadata 是否匹配。
+- 每个 replay step 的执行结果和 evidence id。
+- replay 失败、跳过和 warning 的区别。
 
 ## 不做
 
-- 不新增调试 action。
-- 不改变 raw MI 保存路径。
+- 不恢复旧 GDB 进程或旧 live session。
+- 不把 `session_snapshot.json` 当作 replay 输入。
+- 不新增 probe、hypothesis 或 summary/MI 解析功能，除非 replay evidence 归属确实需要。
+- 不扩展 catchpoint 类型。
 - 不做自动根因分析。
-- 不扩展 replay/probe/hypothesis 行为。
 - 不为了 macOS live debugging 做兼容；目标运行平台仍是 Linux。
 
 ## 完成标准
 
-- MI parser、type sanitizer、backtrace/thread summarizer 有不依赖 GDB 的测试或 fixture 覆盖。
-- README demo smoke 和现有 CTest 仍通过。
-- 生成的 summary 明显比 raw GDB 输出更短、更稳定，但 raw 文件完整保留。
-- evidence index 或 session metadata 中能看到更细的 MI audit 字段。
-- 文档、progress 和 handoff 更新完整。
+- replay 失败策略有明确实现、测试和文档。
+- replay plan schema 包含版本、tags、task metadata / fingerprint，并在 replay 前校验。
+- task mismatch 默认拒绝 replay，force replay 有明确 warning 和 evidence 记录。
+- 重启后 replay 有端到端示例或 smoke test；Linux + GDB 下覆盖真实 daemon flow。
+- 旧 replay plan 的兼容或拒绝行为稳定、可解释。
+- `docs/agent_actions.md`、`docs/evidence_model.md` 及英文版与实现一致。
+- `docs/ai/progress.md` 和 `docs/ai/handoff.md` 记录实际完成、验证结果和限制。
