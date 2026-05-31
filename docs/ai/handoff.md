@@ -48,6 +48,6 @@ smoke，而不是 skip。
   task mismatch，不是安全用途的密码学哈希。
 - 旧 JSONL 和缺少 task metadata/fingerprint 的旧结构化 plan 会尽量兼容读取并产生 warning；
   未知 schema 或 schema version 会稳定拒绝。
-- 本轮无法创建 git commit 或 push：当前环境将 `/home/xiang/gdb_cli_tools/.git` 挂载为只读，
-  `git add` 失败于 `fatal: Unable to create '.git/index.lock': Read-only file system`。
-  工作区文件已修改并通过验证，但提交需要在 `.git` 可写的环境中完成。
+- 已创建并推送提交：
+  - `81954ca Complete replay store hardening`
+  - `git push` 已将 `main` 从 `097c0d8` 推进到 `81954ca`。
