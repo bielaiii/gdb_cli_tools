@@ -2,88 +2,99 @@
 
 ## 目标
 
-把 Replay Store 做完整、做稳定，让 Agent 可以可靠保存一组高层 action，并在重启
-或新 session 中一次性重放，且 replay 的失败行为、适用范围和证据归属都可审计。
+完善 Probe on-hit policy 和命中证据闭环，让 breakpoint/watchpoint/catchpoint 命中后
+自动执行的动作更可控、更可审计，并能在 report、session summary 和 evidence index 中
+稳定呈现。
 
 本轮聚焦四件事：
 
-1. 明确 replay 失败策略，并让行为可配置、可记录。
-2. 强化 `gdb-agent-replay-plan-v1` schema 和 task metadata 校验。
-3. 增加重启后 replay 的端到端示例和自动化测试。
-4. 同步更新 action、evidence 和 task 相关文档。
+1. 明确 on-hit action 的执行策略和限制。
+2. 强化 probe hit 与 on-hit action evidence 的关联。
+3. 扩展 Linux + GDB daemon smoke，覆盖真实命中和自动取证。
+4. 同步更新 action、evidence 和报告相关文档。
 
 ## 背景语义
 
-- Replay Store 只保存高层 action，不保存或恢复 GDB 内部 live 状态。
-- replay 在新 session 中重新执行 action，并产生新的 evidence id；不能复用旧 evidence id。
-- replay 失败必须留下 `ToolError` 或 replay step evidence，方便 Agent 判断下一步。
-- `session_snapshot.json` 和 `session_summary.json` 不是恢复文件；重启恢复只能依赖 replay 高层 action。
-- 工具不基于 replay 自动宣称根因，只负责执行和证据整理。
+- Probe metadata 属于运行期工具状态，`assets/probes.json` 只在 finish/report 阶段写出。
+- Probe 命中必须保留当次 metadata 快照，避免之后 probe 被修改或删除导致历史证据失真。
+- on-hit action 是减少重复取证成本的执行策略，不代表工具自动判断根因。
+- on-hit action 只能调用已有高层 action；不要默认暴露 raw MI。
+- raw evidence 仍是权威数据，summary/view 只是低噪声、有损视图。
 
 ## 范围
 
-### 1. Replay 失败策略
+### 1. on-hit policy schema
 
-补齐 replay 执行时的失败策略语义：
+为 breakpoint/watchpoint/catchpoint 的 `on_hit` metadata 补齐可控策略。建议支持：
 
-- 支持 plan-level failure policy，例如：
+- `actions`：命中后按顺序执行的高层 action 列表。
+- `timeout_ms`：单个 on-hit action 的超时上限。
+- `max_output_bytes`：单个 on-hit action 可写入 summary/view 的最大输出预算。
+- `max_summary_lines`：单个 on-hit action summary 的最大行数。
+- `failure_policy`：
   - `continue_on_error`
   - `stop_on_error`
-- 支持 step-level override；未指定时继承 plan-level policy。
-- 为兼容旧 replay plan，明确旧计划的默认策略，并在文档中写清楚。
-- 每个 replay step 都要记录：
-  - step index
-  - action name
-  - action payload 摘要
-  - status：success / failed / skipped
-  - failure policy
-  - evidence id 或 error evidence id
-  - 如果因为前一步失败而跳过，记录 skip reason。
+- `continue_after_hit`：on-hit actions 执行完后是否自动 continue。
 
 要求：
 
-- 不吞掉失败，不只在 stdout/stderr 中展示错误。
-- `stop_on_error` 停止后，后续 step 应标记为 skipped 或在 replay result 中明确未执行。
-- replay result 要便于 Agent 直接判断哪些检查成功、哪些失败、是否需要新假设。
+- 对旧格式 `on_hit` 尽量兼容；无法兼容时返回稳定 `ToolError` evidence。
+- 默认值必须保守，避免命中后无限输出或反复自动 continue。
+- policy 必须进入 probe metadata、hit evidence 和最终 `assets/probes.json`。
+- `continue_after_hit` 需要清晰表达风险，避免 Agent 误以为命中后一定停住。
 
-### 2. Replay plan schema 和 metadata 校验
+### 2. Probe hit 与 on-hit evidence 关联
 
-强化结构化 replay plan，继续使用 `gdb-agent-replay-plan-v1`，但补齐必要 metadata：
+增强命中证据，确保 Agent 能回答：
 
-- schema version。
-- plan name。
-- optional tags。
-- source session id。
-- created_at。
-- task metadata，例如 executable、working directory、args、core dump、problem 摘要。
-- task fingerprint，用于判断 replay plan 是否可能应用到了不同调试目标。
-- action list，每步保留高层 action payload 和 step metadata。
+- 哪个 probe 命中了。
+- 命中时 probe 的 kind、location/expression/event、condition、comment、purpose 是什么。
+- 当次命中是第几次 hit。
+- 命中后自动执行了哪些 action。
+- 每个 on-hit action 是否成功、失败或被跳过。
+- 每个 on-hit action 产生了哪些 evidence id。
 
-校验要求：
+建议新增或强化以下结构：
 
-- replay 时检查 schema version。
-- replay 时检查 task metadata / fingerprint。
-- 如果当前 task 与 replay plan 不匹配，默认拒绝执行，除非用户显式传入 force 选项。
-- force replay 时必须在 result 和 evidence 中记录 mismatch warning。
-- 旧 JSONL 或旧结构化 plan 应尽量保持可读；如果不能完整校验，要给出稳定错误信息。
+- `BreakpointHit` / `WatchpointHit` / `CatchpointHit` evidence 中增加：
+  - `on_hit_policy`
+  - `on_hit_results`
+  - `on_hit_evidence_ids`
+  - `on_hit_error_ids`
+- 如现有 evidence 模型更适合，也可以新增 `OnHitAction` evidence kind，但不要引入无关重构。
+- session summary 增加 probe hit 和 on-hit 相关计数，例如：
+  - `probe_hit_count`
+  - `on_hit_action_count`
+  - `on_hit_error_count`
 
-### 3. 重启后 replay 端到端示例和测试
+要求：
 
-增加一个最小端到端回归，覆盖：
+- on-hit action 失败不能吞掉；必须有 evidence 可查。
+- 如果 `failure_policy: stop_on_error` 导致后续 on-hit action 未执行，应标记 skipped 并写明原因。
+- on-hit action 的 evidence id 必须是本次命中新产生的 evidence，不能复用历史 id。
 
-- 创建 session。
-- 执行若干高层 action。
-- 保存 replay plan。
-- 关闭或重启 session。
-- 新建 session 后 replay 同一 plan。
-- 检查新 replay 产生新的 evidence id。
-- 检查 replay result、session summary、evidence index 和 report 中能看到 replay step 归属。
+### 3. daemon/live smoke 覆盖真实命中
 
-测试建议：
+扩展 `scripts/smoke_daemon_action_flow.sh` 或新增专门 smoke，覆盖 Linux + GDB 下真实 on-hit flow：
 
-- 不依赖 GDB 的部分用 fixture/unit smoke 覆盖 schema、metadata 校验和 failure policy。
-- Linux + GDB 环境下增加或扩展 daemon/action smoke，覆盖真实重启 replay flow。
-- macOS 或缺少 GDB 的环境按既有项目口径 skip live 部分，但 schema/policy 测试仍应运行。
+- 创建 live session。
+- 设置 breakpoint，附带 comment、purpose 和 on-hit policy。
+- 触发 breakpoint hit。
+- 验证 `BreakpointHit` evidence 包含 probe metadata 快照。
+- 验证 on-hit action 产生独立 evidence id。
+- 验证失败策略，例如一个成功 action 加一个非法/失败 action。
+- 验证 `stop_on_error` 下后续 action 被 skipped。
+- finish 后检查：
+  - report 中有 probe hit 和 on-hit 结果。
+  - `session_summary.json` 有相关计数。
+  - `assets/probes.json` 有最终 probe metadata。
+  - evidence index 能找到命中和 on-hit 证据。
+
+测试要求：
+
+- Linux + GDB 环境实际执行 live smoke。
+- 缺少 GDB 或非 Linux 时按现有项目口径 skip live 部分。
+- 如 policy 解析可独立测试，增加不依赖 GDB 的 fixture/unit smoke。
 
 ### 4. 文档和报告对齐
 
@@ -93,31 +104,37 @@
 - `docs/agent_actions.en.md`
 - `docs/evidence_model.md`
 - `docs/evidence_model.en.md`
-- 如 task 字段或 replay 调用参数变化，更新 `docs/task_format.md` 和英文版。
 
-报告和 evidence 要能说明：
+如 action payload 或 task/report 字段变化，按需更新：
 
-- replay plan 名称和 schema version。
-- replay 是否 force 执行。
-- task metadata 是否匹配。
-- 每个 replay step 的执行结果和 evidence id。
-- replay 失败、跳过和 warning 的区别。
+- `docs/task_format.md`
+- `docs/task_format.en.md`
+- `docs/ai/decision.md`
+
+报告应能稳定展示：
+
+- probe 列表和最终 metadata。
+- probe hit 记录。
+- on-hit policy。
+- 每个 on-hit action 的 status、evidence id 和错误信息。
+- on-hit 自动 continue 的行为说明。
 
 ## 不做
 
-- 不恢复旧 GDB 进程或旧 live session。
-- 不把 `session_snapshot.json` 当作 replay 输入。
-- 不新增 probe、hypothesis 或 summary/MI 解析功能，除非 replay evidence 归属确实需要。
-- 不扩展 catchpoint 类型。
-- 不做自动根因分析。
+- 不扩展新的 catchpoint event；本轮仍只要求已有 `catch throw` 行为不退化。
+- 不新增 hypothesis assertion，除非仅为验证 on-hit evidence 归属需要最小调整。
+- 不继续扩展 replay plan schema。
+- 不把 on-hit 结果包装成根因判断。
+- 不引入 PTY 或交互式 stdin。
 - 不为了 macOS live debugging 做兼容；目标运行平台仍是 Linux。
 
 ## 完成标准
 
-- replay 失败策略有明确实现、测试和文档。
-- replay plan schema 包含版本、tags、task metadata / fingerprint，并在 replay 前校验。
-- task mismatch 默认拒绝 replay，force replay 有明确 warning 和 evidence 记录。
-- 重启后 replay 有端到端示例或 smoke test；Linux + GDB 下覆盖真实 daemon flow。
-- 旧 replay plan 的兼容或拒绝行为稳定、可解释。
+- on-hit policy 有明确 schema、默认值、错误行为和文档。
+- breakpoint/watchpoint/catchpoint hit evidence 能关联 on-hit action results 和 evidence ids。
+- on-hit action 的 success / failed / skipped 状态稳定输出。
+- `stop_on_error`、`continue_on_error` 和 `continue_after_hit` 有测试覆盖或 smoke 覆盖。
+- Linux + GDB daemon smoke 覆盖真实 probe hit 和 on-hit 自动取证。
+- report、session summary、evidence index 和 `assets/probes.json` 能体现 probe/on-hit 闭环。
 - `docs/agent_actions.md`、`docs/evidence_model.md` 及英文版与实现一致。
 - `docs/ai/progress.md` 和 `docs/ai/handoff.md` 记录实际完成、验证结果和限制。
