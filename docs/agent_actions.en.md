@@ -89,11 +89,12 @@ support `condition`. Runtime probe metadata is authoritative in the in-memory
 `ProbeState`; `assets/probes.json` is generated only as a final snapshot during
 `finish`/report writing. Probe hits are recorded as `BreakpointHit`,
 `WatchpointHit`, or `CatchpointHit` evidence and include the relevant metadata
-snapshot for that hit. If GDB rejects a probe or its condition, the action
-returns `ok:false` and records `ToolError` evidence.
+snapshot for that hit, the on-hit policy, each on-hit action result, and the
+new evidence ids produced by this hit. If GDB rejects a probe or its condition,
+the action returns `ok:false` and records `ToolError` evidence.
 Use `probe_list` to capture GDB's breakpoint/watchpoint/catchpoint table and
 return the tool's stored metadata, including comments, purpose, hit count, and
-on-hit actions; it does not treat `probes.json` as a runtime synchronization
+on-hit policy; it does not treat `probes.json` as a runtime synchronization
 database.
 
 The current catchpoint action only supports C++ exception throws:
@@ -111,12 +112,43 @@ evidence.
   "location": "examples/segfault.cpp:14",
   "comment": "stop before null session dereference",
   "purpose": "hypothesis_check",
-  "on_hit": [
-    {"action":"args_info"},
-    {"action":"backtrace"}
-  ]
+  "on_hit": {
+    "actions": [
+      {"action":"args_info"},
+      {"action":"backtrace"}
+    ],
+    "timeout_ms": 5000,
+    "max_output_bytes": 8192,
+    "max_summary_lines": 80,
+    "failure_policy": "continue_on_error",
+    "continue_after_hit": false
+  }
 }
 ```
+
+The legacy array form, such as `on_hit: [{"action":"backtrace"}]`, remains
+compatible and is treated as `actions` with default policy values. The policy
+fields are:
+
+- `actions`: high-level actions to run in order after a probe hit; `raw_mi` is
+  not allowed as an on-hit action.
+- `timeout_ms`: default timeout/deadline for each on-hit action, default `5000`.
+- `max_output_bytes`: response budget for the `OnHitAction` wrapper evidence,
+  default `8192`; the underlying action evidence still follows normal evidence
+  store retention rules.
+- `max_summary_lines`: response line budget for the `OnHitAction` wrapper
+  evidence, default `80`.
+- `failure_policy`: `continue_on_error` or `stop_on_error`. With
+  `stop_on_error`, later on-hit actions are recorded as `skipped`.
+- `continue_after_hit`: default `false`. When set to `true`, the tool appends
+  an automatic `continue` after successful on-hit actions and records it as a
+  `continue_after_hit` result; this can let the inferior run to another stop
+  event.
+
+Each on-hit action writes `OnHitAction` evidence with status (`success`,
+`failed`, or `skipped`), action evidence ids, error evidence, and skip reason.
+The hit evidence aggregates `on_hit_policy`, `on_hit_results`,
+`on_hit_evidence_ids`, and `on_hit_error_ids`.
 
 Structured replay plan:
 

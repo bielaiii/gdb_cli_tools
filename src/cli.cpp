@@ -40,6 +40,44 @@ struct CliOptions {
 };
 
 struct ProbeState {
+    struct OnHitPolicy {
+        bool configured = false;
+        std::vector<std::string> actions;
+        int timeout_ms = 5000;
+        int max_output_bytes = 8192;
+        int max_summary_lines = 80;
+        std::string failure_policy = "continue_on_error";
+        bool continue_after_hit = false;
+    };
+
+    struct OnHitActionResult {
+        int index = 0;
+        std::string action_name;
+        std::string status;
+        std::string failure_policy;
+        std::string evidence_id;
+        std::vector<std::string> action_evidence_ids;
+        std::string error_evidence_id;
+        std::string error;
+        std::string skip_reason;
+    };
+
+    struct ProbeHitSnapshot {
+        std::string number;
+        std::string kind;
+        std::string stop_reason;
+        std::string signal_name;
+        std::string event;
+        std::string location;
+        std::string expression;
+        std::string condition;
+        std::string comment;
+        std::string purpose;
+        int hit_count = 0;
+        OnHitPolicy on_hit_policy;
+        bool known_probe = false;
+    };
+
     struct ProbeInfo {
         std::string number;
         std::string kind;
@@ -53,7 +91,7 @@ struct ProbeState {
         bool deleted = false;
         int hit_count = 0;
         std::string last_stop_reason;
-        std::vector<std::string> on_hit_actions;
+        OnHitPolicy on_hit_policy;
     };
 
     struct HypothesisCheck {
@@ -78,7 +116,6 @@ struct ProbeState {
 
     std::map<std::string, ProbeInfo> probes_by_number;
     std::map<std::string, HypothesisRecord> hypotheses_by_id;
-    std::map<std::string, std::vector<std::string>> on_hit_actions_by_breakpoint;
     int hypothesis_counter = 0;
 };
 
@@ -429,6 +466,37 @@ static std::string json_action_array(const std::vector<std::string> &actions) {
     return out.str();
 }
 
+static std::string json_string_vector(const std::vector<std::string> &items) {
+    std::ostringstream out;
+    out << "[";
+    for (size_t i = 0; i < items.size(); ++i) {
+        if (i != 0) {
+            out << ",";
+        }
+        out << json_escape(items[i]);
+    }
+    out << "]";
+    return out.str();
+}
+
+static bool valid_on_hit_failure_policy(const std::string &policy) {
+    return policy == "continue_on_error" || policy == "stop_on_error";
+}
+
+static std::string on_hit_policy_json(const ProbeState::OnHitPolicy &policy) {
+    std::ostringstream out;
+    out << "{";
+    out << "\"configured\":" << (policy.configured ? "true" : "false") << ",";
+    out << "\"actions\":" << json_action_array(policy.actions) << ",";
+    out << "\"timeout_ms\":" << policy.timeout_ms << ",";
+    out << "\"max_output_bytes\":" << policy.max_output_bytes << ",";
+    out << "\"max_summary_lines\":" << policy.max_summary_lines << ",";
+    out << "\"failure_policy\":" << json_escape(policy.failure_policy) << ",";
+    out << "\"continue_after_hit\":" << (policy.continue_after_hit ? "true" : "false");
+    out << "}";
+    return out.str();
+}
+
 static void write_probe_snapshot(GdbSession &session, const ProbeState &probe_state) {
     fs::path path = session.assets_dir() / "probes.json";
     std::ostringstream out;
@@ -454,7 +522,7 @@ static void write_probe_snapshot(GdbSession &session, const ProbeState &probe_st
         out << "      \"deleted\": " << (probe.deleted ? "true" : "false") << ",\n";
         out << "      \"hit_count\": " << probe.hit_count << ",\n";
         out << "      \"last_stop_reason\": " << json_escape(probe.last_stop_reason) << ",\n";
-        out << "      \"on_hit\": " << json_action_array(probe.on_hit_actions) << "\n";
+        out << "      \"on_hit\": " << on_hit_policy_json(probe.on_hit_policy) << "\n";
         out << "    }";
     }
     out << "\n  ]\n";
@@ -477,7 +545,7 @@ static std::string probe_info_json(const ProbeState::ProbeInfo &probe) {
     out << "\"deleted\":" << (probe.deleted ? "true" : "false") << ",";
     out << "\"hit_count\":" << probe.hit_count << ",";
     out << "\"last_stop_reason\":" << json_escape(probe.last_stop_reason) << ",";
-    out << "\"on_hit\":" << json_action_array(probe.on_hit_actions);
+    out << "\"on_hit\":" << on_hit_policy_json(probe.on_hit_policy);
     out << "}";
     return out.str();
 }
@@ -497,8 +565,7 @@ static std::string probe_array_json(const ProbeState &probe_state) {
     return out.str();
 }
 
-static std::vector<std::string> on_hit_actions_from(const Json &action) {
-    std::vector<std::string> actions;
+static const Json *on_hit_json_from(const Json &action) {
     const Json *on_hit = action.find("on_hit");
     if (on_hit == nullptr) {
         const Json *params = action.find("params");
@@ -506,85 +573,464 @@ static std::vector<std::string> on_hit_actions_from(const Json &action) {
             on_hit = params->find("on_hit");
         }
     }
-    if (on_hit == nullptr || !on_hit->is_array()) {
-        return actions;
+    return on_hit;
+}
+
+static bool parse_on_hit_action(const Json &item,
+                                std::vector<std::string> &actions,
+                                std::string &error) {
+    if (!item.is_object()) {
+        error = "on_hit actions must be JSON objects";
+        return false;
     }
-    for (const auto &item : on_hit->array_value) {
-        if (item.is_object()) {
-            actions.push_back(dump_json(item));
+    std::string action_name = item.string_or("action");
+    if (action_name == "raw_mi") {
+        error = "on_hit raw_mi action is not allowed";
+        return false;
+    }
+    actions.push_back(dump_json(item));
+    return true;
+}
+
+static bool parse_on_hit_actions_array(const Json &actions_json,
+                                       std::vector<std::string> &actions,
+                                       std::string &error) {
+    if (!actions_json.is_array()) {
+        error = "on_hit actions must be an array";
+        return false;
+    }
+    for (const auto &item : actions_json.array_value) {
+        if (!parse_on_hit_action(item, actions, error)) {
+            return false;
         }
     }
-    return actions;
+    return true;
 }
 
-static void run_on_hit_actions(GdbSession &session,
-                               const DebugTask *task,
-                               SessionOutcome *outcome,
-                               ProbeState &probe_state,
-                               const CommandResult &result,
-                               std::ostream &out) {
-    if (result.breakpoint_number.empty()) {
-        return;
+static bool parse_on_hit_policy(const Json &action,
+                                ProbeState::OnHitPolicy &policy,
+                                std::string &error) {
+    const Json *on_hit = on_hit_json_from(action);
+    if (on_hit == nullptr || on_hit->is_null()) {
+        return true;
     }
-    auto it = probe_state.on_hit_actions_by_breakpoint.find(result.breakpoint_number);
-    if (it == probe_state.on_hit_actions_by_breakpoint.end()) {
-        return;
+
+    policy.configured = true;
+    if (on_hit->is_array()) {
+        return parse_on_hit_actions_array(*on_hit, policy.actions, error);
     }
-    bool ignored_finish = false;
-    for (const auto &action : it->second) {
-        handle_action_line(session, task, outcome, probe_state, action, ignored_finish, out);
-        ignored_finish = false;
+    if (!on_hit->is_object()) {
+        error = "on_hit must be an array or policy object";
+        return false;
     }
+
+    const Json *actions = on_hit->find("actions");
+    if (actions != nullptr && !parse_on_hit_actions_array(*actions, policy.actions, error)) {
+        return false;
+    }
+
+    if (const Json *timeout = on_hit->find("timeout_ms"); timeout != nullptr) {
+        if (!timeout->is_number() || timeout->number_value <= 0) {
+            error = "on_hit.timeout_ms must be a positive number";
+            return false;
+        }
+        policy.timeout_ms = static_cast<int>(timeout->number_value);
+    }
+    if (const Json *max_output = on_hit->find("max_output_bytes"); max_output != nullptr) {
+        if (!max_output->is_number() || max_output->number_value <= 0) {
+            error = "on_hit.max_output_bytes must be a positive number";
+            return false;
+        }
+        policy.max_output_bytes = static_cast<int>(max_output->number_value);
+    }
+    if (const Json *max_lines = on_hit->find("max_summary_lines"); max_lines != nullptr) {
+        if (!max_lines->is_number() || max_lines->number_value <= 0) {
+            error = "on_hit.max_summary_lines must be a positive number";
+            return false;
+        }
+        policy.max_summary_lines = static_cast<int>(max_lines->number_value);
+    }
+    std::string failure_policy = on_hit->string_or("failure_policy");
+    if (!failure_policy.empty()) {
+        if (!valid_on_hit_failure_policy(failure_policy)) {
+            error = "on_hit.failure_policy must be continue_on_error or stop_on_error";
+            return false;
+        }
+        policy.failure_policy = failure_policy;
+    }
+    policy.continue_after_hit = on_hit->bool_or("continue_after_hit", false);
+    return true;
 }
 
-static void record_probe_hit(GdbSession &session,
-                             ProbeState &probe_state,
-                             const CommandResult &result) {
+static std::string truncate_on_hit_response(std::string text,
+                                            int max_output_bytes,
+                                            int max_summary_lines) {
+    if (max_summary_lines > 0) {
+        int lines = 0;
+        size_t pos = 0;
+        while (pos < text.size()) {
+            if (text[pos] == '\n') {
+                ++lines;
+                if (lines >= max_summary_lines) {
+                    text.resize(pos + 1);
+                    text += "... truncated by on_hit.max_summary_lines ...\n";
+                    break;
+                }
+            }
+            ++pos;
+        }
+    }
+    if (max_output_bytes > 0 && text.size() > static_cast<size_t>(max_output_bytes)) {
+        text.resize(static_cast<size_t>(max_output_bytes));
+        text += "\n... truncated by on_hit.max_output_bytes ...\n";
+    }
+    return text;
+}
+
+static ProbeState::ProbeHitSnapshot prepare_probe_hit(ProbeState &probe_state,
+                                                      const CommandResult &result) {
+    ProbeState::ProbeHitSnapshot hit;
+    hit.number = result.breakpoint_number;
+    hit.stop_reason = result.stop_reason;
+    hit.signal_name = result.signal_name;
     if (result.breakpoint_number.empty()) {
-        return;
+        return hit;
     }
 
     auto it = probe_state.probes_by_number.find(result.breakpoint_number);
-    std::string kind = result.stop_reason == "watchpoint-trigger" ? "watchpoint" : "breakpoint";
+    hit.kind = result.stop_reason == "watchpoint-trigger" ? "watchpoint" : "breakpoint";
     if (it != probe_state.probes_by_number.end() && !it->second.kind.empty()) {
-        kind = it->second.kind;
+        hit.kind = it->second.kind;
     }
 
-    ProbeState::ProbeInfo *probe = nullptr;
     if (it != probe_state.probes_by_number.end()) {
-        probe = &it->second;
-        ++probe->hit_count;
-        probe->last_stop_reason = result.stop_reason;
+        ProbeState::ProbeInfo &probe = it->second;
+        ++probe.hit_count;
+        probe.last_stop_reason = result.stop_reason;
+        hit.known_probe = true;
+        hit.event = probe.event;
+        hit.location = probe.location;
+        hit.expression = probe.expression;
+        hit.condition = probe.condition;
+        hit.comment = probe.comment;
+        hit.purpose = probe.purpose;
+        hit.hit_count = probe.hit_count;
+        hit.on_hit_policy = probe.on_hit_policy;
+    }
+    return hit;
+}
+
+static std::vector<std::string> evidence_ids_since(const GdbSession &session, size_t first_index) {
+    std::vector<std::string> ids;
+    const auto &all = session.evidence_store().all();
+    for (size_t i = first_index; i < all.size(); ++i) {
+        ids.push_back(all[i].id);
+    }
+    return ids;
+}
+
+static bool on_hit_response_failed(const std::string &response_text,
+                                   std::string &error,
+                                   std::string &evidence_id) {
+    std::istringstream in(response_text);
+    std::string line;
+    bool saw_json = false;
+    while (std::getline(in, line)) {
+        line = trim(line);
+        if (line.empty() || line.front() != '{') {
+            continue;
+        }
+        Json response;
+        try {
+            response = parse_json(line);
+        } catch (const std::exception &ex) {
+            error = std::string("on_hit action returned invalid JSON: ") + ex.what();
+            return true;
+        }
+        if (!response.is_object()) {
+            continue;
+        }
+        saw_json = true;
+        std::string response_evidence = response.string_or("evidence");
+        if (!response_evidence.empty()) {
+            evidence_id = response_evidence;
+        }
+        std::string response_error_evidence = response.string_or("error_evidence");
+        if (!response_error_evidence.empty()) {
+            evidence_id = response_error_evidence;
+        }
+        const Json *ok = response.find("ok");
+        if (ok != nullptr && ok->is_bool() && !ok->bool_value) {
+            error = response.string_or("error", "on_hit action returned ok:false");
+            return true;
+        }
+    }
+    if (!saw_json && !trim(response_text).empty()) {
+        error = "on_hit action did not return JSON status";
+        return true;
+    }
+    return false;
+}
+
+static std::string on_hit_action_result_json(const ProbeState::OnHitActionResult &result) {
+    std::ostringstream out;
+    out << "{";
+    out << "\"index\":" << result.index << ",";
+    out << "\"action_name\":" << json_escape(result.action_name) << ",";
+    out << "\"status\":" << json_escape(result.status) << ",";
+    out << "\"failure_policy\":" << json_escape(result.failure_policy) << ",";
+    out << "\"evidence\":" << json_escape(result.evidence_id) << ",";
+    out << "\"action_evidence_ids\":" << json_string_vector(result.action_evidence_ids) << ",";
+    out << "\"error_evidence\":" << json_escape(result.error_evidence_id) << ",";
+    out << "\"error\":" << json_escape(result.error) << ",";
+    out << "\"skip_reason\":" << json_escape(result.skip_reason);
+    out << "}";
+    return out.str();
+}
+
+static std::string on_hit_action_results_json(const std::vector<ProbeState::OnHitActionResult> &results) {
+    std::ostringstream out;
+    out << "[";
+    for (size_t i = 0; i < results.size(); ++i) {
+        if (i != 0) {
+            out << ",";
+        }
+        out << on_hit_action_result_json(results[i]);
+    }
+    out << "]";
+    return out.str();
+}
+
+static std::vector<std::string> on_hit_result_evidence_ids(const std::vector<ProbeState::OnHitActionResult> &results) {
+    std::vector<std::string> ids;
+    for (const auto &result : results) {
+        if (!result.evidence_id.empty()) {
+            ids.push_back(result.evidence_id);
+        }
+        for (const auto &id : result.action_evidence_ids) {
+            ids.push_back(id);
+        }
+    }
+    return ids;
+}
+
+static std::vector<std::string> on_hit_result_error_ids(const std::vector<ProbeState::OnHitActionResult> &results) {
+    std::vector<std::string> ids;
+    for (const auto &result : results) {
+        if (!result.error_evidence_id.empty()) {
+            ids.push_back(result.error_evidence_id);
+        }
+    }
+    return ids;
+}
+
+static std::string action_name_from_text(const std::string &action_text) {
+    try {
+        Json action = parse_json(action_text);
+        if (action.is_object()) {
+            return action.string_or("action");
+        }
+    } catch (const std::exception &) {
+    }
+    return {};
+}
+
+static void add_timeout_to_on_hit_action(std::string &action_text, int timeout_ms) {
+    Json action = parse_json(action_text);
+    if (!action.is_object()) {
+        return;
+    }
+    if (action.find("timeout_ms") == nullptr) {
+        Json timeout;
+        timeout.type = Json::Type::Number;
+        timeout.number_value = timeout_ms;
+        action.object_value["timeout_ms"] = timeout;
+    }
+    if (action.find("deadline_ms") == nullptr) {
+        Json deadline;
+        deadline.type = Json::Type::Number;
+        deadline.number_value = timeout_ms;
+        action.object_value["deadline_ms"] = deadline;
+    }
+    action_text = dump_json(action);
+}
+
+static ProbeState::OnHitActionResult add_on_hit_wrapper_evidence(
+    GdbSession &session,
+    const ProbeState::ProbeHitSnapshot &hit,
+    const ProbeState::OnHitPolicy &policy,
+    ProbeState::OnHitActionResult result,
+    const std::string &action_text,
+    const std::string &response_text) {
+    std::ostringstream evidence_text;
+    evidence_text << "{\n";
+    evidence_text << "  \"probe_number\": " << json_escape(hit.number) << ",\n";
+    evidence_text << "  \"probe_kind\": " << json_escape(hit.kind) << ",\n";
+    evidence_text << "  \"hit_count\": " << hit.hit_count << ",\n";
+    evidence_text << "  \"index\": " << result.index << ",\n";
+    evidence_text << "  \"action_name\": " << json_escape(result.action_name) << ",\n";
+    evidence_text << "  \"status\": " << json_escape(result.status) << ",\n";
+    evidence_text << "  \"failure_policy\": " << json_escape(result.failure_policy) << ",\n";
+    evidence_text << "  \"action\": " << action_text << ",\n";
+    evidence_text << "  \"action_evidence_ids\": " << json_string_vector(result.action_evidence_ids) << ",\n";
+    evidence_text << "  \"error_evidence\": " << json_escape(result.error_evidence_id) << ",\n";
+    evidence_text << "  \"error\": " << json_escape(result.error) << ",\n";
+    evidence_text << "  \"skip_reason\": " << json_escape(result.skip_reason) << ",\n";
+    evidence_text << "  \"response\": "
+                  << json_escape(truncate_on_hit_response(response_text,
+                                                          policy.max_output_bytes,
+                                                          policy.max_summary_lines))
+                  << "\n";
+    evidence_text << "}\n";
+    auto ev = session.evidence_store().add_text("OnHitAction",
+                                                "On-hit action " + std::to_string(result.index) +
+                                                    " for " + hit.kind + " " + hit.number,
+                                                result.action_name,
+                                                evidence_text.str());
+    result.evidence_id = ev.id;
+    return result;
+}
+
+static std::vector<ProbeState::OnHitActionResult> run_on_hit_actions(
+    GdbSession &session,
+    const DebugTask *task,
+    SessionOutcome *outcome,
+    ProbeState &probe_state,
+    const ProbeState::ProbeHitSnapshot &hit,
+    std::ostream &out) {
+    std::vector<ProbeState::OnHitActionResult> results;
+    const auto &policy = hit.on_hit_policy;
+    if (hit.number.empty() || policy.actions.empty()) {
+        return results;
     }
 
+    bool stop_remaining = false;
+    for (size_t i = 0; i < policy.actions.size(); ++i) {
+        ProbeState::OnHitActionResult result;
+        result.index = static_cast<int>(i + 1);
+        result.failure_policy = policy.failure_policy;
+        result.action_name = action_name_from_text(policy.actions[i]);
+        if (result.action_name.empty()) {
+            result.action_name = "unknown";
+        }
+
+        if (stop_remaining) {
+            result.status = "skipped";
+            result.skip_reason = "previous on_hit action failed with stop_on_error";
+            result = add_on_hit_wrapper_evidence(session, hit, policy, std::move(result), policy.actions[i], "");
+            results.push_back(std::move(result));
+            continue;
+        }
+
+        std::string action_text = policy.actions[i];
+        add_timeout_to_on_hit_action(action_text, policy.timeout_ms);
+        size_t evidence_start = session.evidence_store().all().size();
+        bool ignored_finish = false;
+        std::ostringstream response;
+        handle_action_line(session, task, outcome, probe_state, action_text, ignored_finish, response);
+        result.action_evidence_ids = evidence_ids_since(session, evidence_start);
+        std::string error_evidence;
+        if (on_hit_response_failed(response.str(), result.error, error_evidence)) {
+            result.status = "failed";
+            result.error_evidence_id = error_evidence;
+            if (result.error_evidence_id.empty() && !result.action_evidence_ids.empty()) {
+                result.error_evidence_id = result.action_evidence_ids.back();
+            }
+            if (policy.failure_policy == "stop_on_error") {
+                stop_remaining = true;
+            }
+        } else {
+            result.status = "success";
+        }
+        out << response.str();
+        result = add_on_hit_wrapper_evidence(session, hit, policy, std::move(result), action_text, response.str());
+        results.push_back(std::move(result));
+    }
+
+    if (policy.continue_after_hit && !stop_remaining) {
+        ProbeState::OnHitActionResult result;
+        result.index = static_cast<int>(results.size() + 1);
+        result.action_name = "continue_after_hit";
+        result.failure_policy = policy.failure_policy;
+        std::ostringstream action_text;
+        action_text << "{\"action\":\"continue\",\"deadline_ms\":" << policy.timeout_ms << "}";
+        size_t evidence_start = session.evidence_store().all().size();
+        bool ignored_finish = false;
+        std::ostringstream response;
+        handle_action_line(session, task, outcome, probe_state, action_text.str(), ignored_finish, response);
+        result.action_evidence_ids = evidence_ids_since(session, evidence_start);
+        std::string error_evidence;
+        if (on_hit_response_failed(response.str(), result.error, error_evidence)) {
+            result.status = "failed";
+            result.error_evidence_id = error_evidence;
+            if (result.error_evidence_id.empty() && !result.action_evidence_ids.empty()) {
+                result.error_evidence_id = result.action_evidence_ids.back();
+            }
+        } else {
+            result.status = "success";
+        }
+        out << response.str();
+        result = add_on_hit_wrapper_evidence(session, hit, policy, std::move(result), action_text.str(), response.str());
+        results.push_back(std::move(result));
+    }
+
+    return results;
+}
+
+static void record_probe_hit(GdbSession &session,
+                             const ProbeState::ProbeHitSnapshot &hit,
+                             const std::vector<ProbeState::OnHitActionResult> &on_hit_results) {
+    if (hit.number.empty()) {
+        return;
+    }
     std::ostringstream text;
     text << "{\n";
-    text << "  \"number\": " << json_escape(result.breakpoint_number) << ",\n";
-    text << "  \"kind\": " << json_escape(kind) << ",\n";
-    text << "  \"stop_reason\": " << json_escape(result.stop_reason) << ",\n";
-    text << "  \"signal\": " << json_escape(result.signal_name);
-    if (probe != nullptr) {
+    text << "  \"number\": " << json_escape(hit.number) << ",\n";
+    text << "  \"kind\": " << json_escape(hit.kind) << ",\n";
+    text << "  \"stop_reason\": " << json_escape(hit.stop_reason) << ",\n";
+    text << "  \"signal\": " << json_escape(hit.signal_name);
+    if (hit.known_probe) {
         text << ",\n";
-        text << "  \"location\": " << json_escape(probe->location) << ",\n";
-        text << "  \"expression\": " << json_escape(probe->expression) << ",\n";
-        text << "  \"event\": " << json_escape(probe->event) << ",\n";
-        text << "  \"condition\": " << json_escape(probe->condition) << ",\n";
-        text << "  \"comment\": " << json_escape(probe->comment) << ",\n";
-        text << "  \"purpose\": " << json_escape(probe->purpose) << ",\n";
-        text << "  \"hit_count\": " << probe->hit_count;
+        text << "  \"location\": " << json_escape(hit.location) << ",\n";
+        text << "  \"expression\": " << json_escape(hit.expression) << ",\n";
+        text << "  \"event\": " << json_escape(hit.event) << ",\n";
+        text << "  \"condition\": " << json_escape(hit.condition) << ",\n";
+        text << "  \"comment\": " << json_escape(hit.comment) << ",\n";
+        text << "  \"purpose\": " << json_escape(hit.purpose) << ",\n";
+        text << "  \"hit_count\": " << hit.hit_count << ",\n";
+        text << "  \"on_hit_policy\": " << on_hit_policy_json(hit.on_hit_policy) << ",\n";
+        text << "  \"on_hit_results\": " << on_hit_action_results_json(on_hit_results) << ",\n";
+        text << "  \"on_hit_evidence_ids\": " << json_string_vector(on_hit_result_evidence_ids(on_hit_results)) << ",\n";
+        text << "  \"on_hit_error_ids\": " << json_string_vector(on_hit_result_error_ids(on_hit_results));
     }
     text << "\n}\n";
 
     std::string evidence_kind = "BreakpointHit";
-    if (kind == "watchpoint") {
+    if (hit.kind == "watchpoint") {
         evidence_kind = "WatchpointHit";
-    } else if (kind == "catchpoint") {
+    } else if (hit.kind == "catchpoint") {
         evidence_kind = "CatchpointHit";
     }
     session.evidence_store().add_text(evidence_kind,
-                                      evidence_kind + " " + result.breakpoint_number,
-                                      result.stop_reason,
+                                      evidence_kind + " " + hit.number,
+                                      hit.stop_reason,
                                       text.str());
+}
+
+static void handle_probe_stop(GdbSession &session,
+                              const DebugTask *task,
+                              SessionOutcome *outcome,
+                              ProbeState &probe_state,
+                              const CommandResult &result,
+                              std::ostream &out) {
+    auto hit = prepare_probe_hit(probe_state, result);
+    if (outcome != nullptr && !hit.number.empty()) {
+        outcome->state = SessionState::Stopped;
+        outcome->stop_reason = hit.stop_reason;
+        outcome->signal_name = hit.signal_name;
+    }
+    auto on_hit_results = run_on_hit_actions(session, task, outcome, probe_state, hit, out);
+    record_probe_hit(session, hit, on_hit_results);
 }
 
 static std::string next_hypothesis_id(ProbeState &probe_state) {
@@ -754,33 +1200,33 @@ static void handle_action_line(GdbSession &session,
         return;
     }
     if (action_name == "backtrace") {
-        auto ev = collect_console(session, "Backtrace", "bt", true);
+        auto ev = collect_console(session, "Backtrace", "bt", true, std::chrono::milliseconds(json_int_field(action, "timeout_ms", 5000)));
         out << "{\"ok\":true,\"action\":\"backtrace\",\"evidence\":" << json_escape(ev.id) << "}\n";
         return;
     }
     if (action_name == "locals") {
-        auto ev = collect_console(session, "Local variables", "info locals");
+        auto ev = collect_console(session, "Local variables", "info locals", false, std::chrono::milliseconds(json_int_field(action, "timeout_ms", 5000)));
         out << "{\"ok\":true,\"action\":\"locals\",\"evidence\":" << json_escape(ev.id) << "}\n";
         return;
     }
     if (action_name == "args_info") {
-        auto ev = collect_console(session, "Frame arguments", "info args");
+        auto ev = collect_console(session, "Frame arguments", "info args", false, std::chrono::milliseconds(json_int_field(action, "timeout_ms", 5000)));
         out << "{\"ok\":true,\"action\":\"args_info\",\"evidence\":" << json_escape(ev.id) << "}\n";
         return;
     }
     if (action_name == "registers") {
-        auto ev = collect_console(session, "Registers", "info registers");
+        auto ev = collect_console(session, "Registers", "info registers", false, std::chrono::milliseconds(json_int_field(action, "timeout_ms", 5000)));
         out << "{\"ok\":true,\"action\":\"registers\",\"evidence\":" << json_escape(ev.id) << "}\n";
         return;
     }
     if (action_name == "threads") {
-        auto ev = collect_console(session, "Threads", "info threads");
+        auto ev = collect_console(session, "Threads", "info threads", false, std::chrono::milliseconds(json_int_field(action, "timeout_ms", 5000)));
         out << "{\"ok\":true,\"action\":\"threads\",\"evidence\":" << json_escape(ev.id) << "}\n";
         return;
     }
     if (action_name == "frame_select") {
         int frame = json_int_field(action, "frame", 0);
-        auto ev = collect_console(session, "Frame select", "frame " + std::to_string(frame));
+        auto ev = collect_console(session, "Frame select", "frame " + std::to_string(frame), false, std::chrono::milliseconds(json_int_field(action, "timeout_ms", 5000)));
         out << "{\"ok\":true,\"action\":\"frame_select\",\"frame\":" << frame
                   << ",\"evidence\":" << json_escape(ev.id) << "}\n";
         return;
@@ -791,7 +1237,7 @@ static void handle_action_line(GdbSession &session,
             out << "{\"ok\":false,\"error\":\"missing expression\"}\n";
             return;
         }
-        auto ev = collect_console(session, "Evaluate", "p " + expr);
+        auto ev = collect_console(session, "Evaluate", "p " + expr, false, std::chrono::milliseconds(json_int_field(action, "timeout_ms", 5000)));
         out << "{\"ok\":true,\"action\":\"evaluate\",\"evidence\":" << json_escape(ev.id) << "}\n";
         return;
     }
@@ -799,6 +1245,18 @@ static void handle_action_line(GdbSession &session,
         std::string location = json_string_field(action, "location");
         if (location.empty()) {
             out << "{\"ok\":false,\"error\":\"missing location\"}\n";
+            return;
+        }
+        ProbeState::OnHitPolicy on_hit_policy;
+        std::string on_hit_error;
+        if (!parse_on_hit_policy(action, on_hit_policy, on_hit_error)) {
+            auto error_ev = add_tool_error(session,
+                                           "Breakpoint on-hit policy failed",
+                                           "breakpoint_set",
+                                           on_hit_error);
+            out << "{\"ok\":false,\"action\":\"breakpoint_set\","
+                << "\"error\":\"invalid on_hit policy\","
+                << "\"evidence\":" << json_escape(error_ev.id) << "}\n";
             return;
         }
 
@@ -834,10 +1292,6 @@ static void handle_action_line(GdbSession &session,
             }
         }
 
-        auto on_hit = on_hit_actions_from(action);
-        if (!number.empty() && !on_hit.empty()) {
-            probe_state.on_hit_actions_by_breakpoint[number] = std::move(on_hit);
-        }
         if (!number.empty()) {
             ProbeState::ProbeInfo probe;
             probe.number = number;
@@ -846,12 +1300,8 @@ static void handle_action_line(GdbSession &session,
             probe.condition = condition;
             probe.comment = json_string_field(action, "comment");
             probe.purpose = json_string_field(action, "purpose");
-            auto stored_on_hit = on_hit_actions_from(action);
-            probe.on_hit_actions = std::move(stored_on_hit);
+            probe.on_hit_policy = std::move(on_hit_policy);
             probe_state.probes_by_number[number] = std::move(probe);
-            if (!probe_state.probes_by_number[number].on_hit_actions.empty()) {
-                probe_state.on_hit_actions_by_breakpoint[number] = probe_state.probes_by_number[number].on_hit_actions;
-            }
         }
 
         out << "{\"ok\":true,\"action\":\"breakpoint_set\",\"breakpoint\":" << json_escape(number);
@@ -865,6 +1315,18 @@ static void handle_action_line(GdbSession &session,
         std::string expression = json_string_field(action, "expression");
         if (expression.empty()) {
             out << "{\"ok\":false,\"error\":\"missing expression\"}\n";
+            return;
+        }
+        ProbeState::OnHitPolicy on_hit_policy;
+        std::string on_hit_error;
+        if (!parse_on_hit_policy(action, on_hit_policy, on_hit_error)) {
+            auto error_ev = add_tool_error(session,
+                                           "Watchpoint on-hit policy failed",
+                                           "watchpoint_set",
+                                           on_hit_error);
+            out << "{\"ok\":false,\"action\":\"watchpoint_set\","
+                << "\"error\":\"invalid on_hit policy\","
+                << "\"evidence\":" << json_escape(error_ev.id) << "}\n";
             return;
         }
 
@@ -908,11 +1370,8 @@ static void handle_action_line(GdbSession &session,
         probe.condition = condition;
         probe.comment = json_string_field(action, "comment");
         probe.purpose = json_string_field(action, "purpose");
-        probe.on_hit_actions = on_hit_actions_from(action);
+        probe.on_hit_policy = std::move(on_hit_policy);
         probe_state.probes_by_number[number] = std::move(probe);
-        if (!probe_state.probes_by_number[number].on_hit_actions.empty()) {
-            probe_state.on_hit_actions_by_breakpoint[number] = probe_state.probes_by_number[number].on_hit_actions;
-        }
         out << "{\"ok\":true,\"action\":\"watchpoint_set\",\"watchpoint\":" << json_escape(number)
                   << ",\"evidence\":" << json_escape(ev.id);
         if (!condition_evidence.empty()) {
@@ -942,6 +1401,18 @@ static void handle_action_line(GdbSession &session,
                 << ",\"evidence\":" << json_escape(error_ev.id) << "}\n";
             return;
         }
+        ProbeState::OnHitPolicy on_hit_policy;
+        std::string on_hit_error;
+        if (!parse_on_hit_policy(action, on_hit_policy, on_hit_error)) {
+            auto error_ev = add_tool_error(session,
+                                           "Catchpoint on-hit policy failed",
+                                           "catchpoint_set",
+                                           on_hit_error);
+            out << "{\"ok\":false,\"action\":\"catchpoint_set\","
+                << "\"error\":\"invalid on_hit policy\","
+                << "\"evidence\":" << json_escape(error_ev.id) << "}\n";
+            return;
+        }
 
         auto result = session.command("-interpreter-exec console " + mi_quote("catch throw"));
         auto ev = session.evidence_store().add("GdbCommand", "Catchpoint set", result.command, result.raw_lines, false, result.record_sequences);
@@ -965,11 +1436,8 @@ static void handle_action_line(GdbSession &session,
         probe.location = "catch throw";
         probe.comment = json_string_field(action, "comment");
         probe.purpose = json_string_field(action, "purpose");
-        probe.on_hit_actions = on_hit_actions_from(action);
+        probe.on_hit_policy = std::move(on_hit_policy);
         probe_state.probes_by_number[number] = std::move(probe);
-        if (!probe_state.probes_by_number[number].on_hit_actions.empty()) {
-            probe_state.on_hit_actions_by_breakpoint[number] = probe_state.probes_by_number[number].on_hit_actions;
-        }
         out << "{\"ok\":true,\"action\":\"catchpoint_set\",\"catchpoint\":" << json_escape(number)
             << ",\"event\":" << json_escape(event)
             << ",\"evidence\":" << json_escape(ev.id) << "}\n";
@@ -1060,11 +1528,10 @@ static void handle_action_line(GdbSession &session,
         if (outcome != nullptr) {
             update_outcome_from_stop(*outcome, result);
         }
-        record_probe_hit(session, probe_state, result);
         if (outcome != nullptr) {
             collect_stop_followup(session, *outcome, result);
         }
-        run_on_hit_actions(session, task, outcome, probe_state, result, out);
+        handle_probe_stop(session, task, outcome, probe_state, result, out);
         out << "{\"ok\":true,\"action\":\"run\",\"stop_reason\":" << json_escape(result.stop_reason)
                   << ",\"signal\":" << json_escape(result.signal_name)
                   << ",\"evidence\":" << json_escape(ev.id) << "}\n";
@@ -1080,11 +1547,10 @@ static void handle_action_line(GdbSession &session,
         if (outcome != nullptr) {
             update_outcome_from_stop(*outcome, result);
         }
-        record_probe_hit(session, probe_state, result);
         if (outcome != nullptr) {
             collect_stop_followup(session, *outcome, result);
         }
-        run_on_hit_actions(session, task, outcome, probe_state, result, out);
+        handle_probe_stop(session, task, outcome, probe_state, result, out);
         out << "{\"ok\":true,\"action\":\"continue\",\"stop_reason\":" << json_escape(result.stop_reason)
                   << ",\"signal\":" << json_escape(result.signal_name)
                   << ",\"evidence\":" << json_escape(ev.id) << "}\n";
@@ -1954,11 +2420,22 @@ static void write_session_files(const CliOptions &opts,
     std::ostringstream summary;
     int replay_step_count = 0;
     int replay_warning_count = 0;
+    int probe_hit_count = 0;
+    int on_hit_action_count = 0;
+    int on_hit_error_count = 0;
     for (const auto &ev : session.evidence_store().all()) {
         if (ev.kind == "ReplayStep") {
             ++replay_step_count;
         } else if (ev.kind == "ReplayWarning") {
             ++replay_warning_count;
+        } else if (ev.kind == "BreakpointHit" || ev.kind == "WatchpointHit" || ev.kind == "CatchpointHit") {
+            ++probe_hit_count;
+        } else if (ev.kind == "OnHitAction") {
+            ++on_hit_action_count;
+            if (ev.summary.find("\"status\": \"failed\"") != std::string::npos ||
+                ev.summary.find("\"status\":\"failed\"") != std::string::npos) {
+                ++on_hit_error_count;
+            }
         }
     }
     summary << "{\n";
@@ -1975,7 +2452,10 @@ static void write_session_files(const CliOptions &opts,
     summary << "  \"stderr\": " << json_escape(outcome.inferior_stderr) << ",\n";
     summary << "  \"evidence_count\": " << session.evidence_store().all().size() << ",\n";
     summary << "  \"replay_step_count\": " << replay_step_count << ",\n";
-    summary << "  \"replay_warning_count\": " << replay_warning_count << "\n";
+    summary << "  \"replay_warning_count\": " << replay_warning_count << ",\n";
+    summary << "  \"probe_hit_count\": " << probe_hit_count << ",\n";
+    summary << "  \"on_hit_action_count\": " << on_hit_action_count << ",\n";
+    summary << "  \"on_hit_error_count\": " << on_hit_error_count << "\n";
     summary << "}\n";
     write_text_file(opts.assets / "session_summary.json", summary.str());
 
@@ -2217,9 +2697,8 @@ static void start_live_session(LiveSession &live) {
         live.outcome.segfault = run.signal_name == "SIGSEGV";
         live.outcome.run_timed_out = run.timed_out;
         update_outcome_from_stop(live.outcome, run);
-        record_probe_hit(*live.session, live.probe_state, run);
         collect_stop_followup(*live.session, live.outcome, run);
-        run_on_hit_actions(*live.session, &live.task, &live.outcome, live.probe_state, run, replay_output);
+        handle_probe_stop(*live.session, &live.task, &live.outcome, live.probe_state, run, replay_output);
     }
 }
 
@@ -2602,9 +3081,8 @@ static int run_serve(const CliOptions &opts, const DebugTask &task) {
             outcome.segfault = run.signal_name == "SIGSEGV";
             outcome.run_timed_out = run.timed_out;
             update_outcome_from_stop(outcome, run);
-            record_probe_hit(session, probe_state, run);
             collect_stop_followup(session, outcome, run);
-            run_on_hit_actions(session, &task, &outcome, probe_state, run, std::cout);
+            handle_probe_stop(session, &task, &outcome, probe_state, run, std::cout);
         }
 
         std::cout << "{\"ok\":true,\"session_id\":" << json_escape(opts.session_id)

@@ -81,9 +81,11 @@ The MVP also writes machine-readable session files:
 report inputs. They do not represent a live GDB session and cannot restore an
 old GDB process. Restart reproduction should replay high-level actions.
 
-`session_summary.json` records `replay_step_count` and `replay_warning_count`
-so an Agent can quickly tell whether replay ran in the session and whether any
-force replay or legacy-plan compatibility warning was recorded.
+`session_summary.json` records `replay_step_count`, `replay_warning_count`,
+`probe_hit_count`, `on_hit_action_count`, and `on_hit_error_count` so an Agent
+can quickly tell whether replay ran, whether force replay or legacy-plan
+compatibility warnings were recorded, and whether probe/on-hit evidence or
+errors were produced.
 
 ## Replay Evidence
 
@@ -135,8 +137,28 @@ catchpoints.
 
 Probe hit evidence (`BreakpointHit`, `WatchpointHit`, `CatchpointHit`) stores
 the relevant metadata snapshot for that hit, such as number, kind,
-location/expression/event, condition, comment, purpose, and hit count. This
-keeps the stop context explainable even if the session exits unexpectedly.
+location/expression/event, condition, comment, purpose, hit count, and
+`on_hit_policy`. This keeps the stop context explainable even if the session
+exits unexpectedly.
+
+When a probe has an on-hit policy, each automatic action also writes
+`OnHitAction` evidence. That evidence records the action name, status
+(`success`, `failed`, or `skipped`), `failure_policy`, newly produced
+`action_evidence_ids`, `error_evidence`, `skip_reason`, and a policy-limited
+response summary. The underlying action evidence still keeps its own raw and
+summary files independently.
+
+Hit evidence aggregates:
+
+- `on_hit_policy`
+- `on_hit_results`
+- `on_hit_evidence_ids`
+- `on_hit_error_ids`
+
+When `stop_on_error` triggers, later on-hit actions are not executed, but they
+are still recorded as `skipped` `OnHitAction` evidence. `continue_after_hit:true`
+appends an automatic continue and records it as a `continue_after_hit` result;
+the report records this behavior without turning it into a root-cause judgment.
 
 Reports should cite evidence ids rather than relying on summaries alone.
 Reports now include each evidence item's raw hash so an Agent can verify that

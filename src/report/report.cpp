@@ -140,6 +140,22 @@ void write_report(const fs::path &report,
     if (fs::exists(probes_file)) {
         md << "## Probes\n\n";
         md << "- Probe store: `" << display_path(probes_file) << "`\n\n";
+
+        std::vector<const Evidence *> probe_events;
+        for (const auto &ev : evidence) {
+            if (ev.kind == "BreakpointHit" || ev.kind == "WatchpointHit" ||
+                ev.kind == "CatchpointHit" || ev.kind == "OnHitAction") {
+                probe_events.push_back(&ev);
+            }
+        }
+        if (!probe_events.empty()) {
+            md << "### Probe Hit And On-Hit Evidence\n\n";
+            for (const auto *ev : probe_events) {
+                md << "- `" << ev->id << "` `" << ev->kind << "` " << ev->title
+                   << " (summary: `" << display_path(ev->summary_file) << "`)\n";
+            }
+            md << "\n";
+        }
     }
 
     fs::path replay_dir = assets / "replay";

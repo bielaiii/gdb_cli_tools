@@ -88,8 +88,10 @@ MVP 还会写机器可读的 session 文件：
 `session_snapshot.json` 和 `session_summary.json` 是历史记录与报告输入，不代表 live GDB
 session，也不能用于恢复旧 GDB 进程。重启后的恢复方式应该是 replay 高层 action。
 
-`session_summary.json` 会记录 `replay_step_count` 和 `replay_warning_count`，用于快速判断
-本 session 是否执行过 replay，以及是否存在 force replay 或旧 plan 兼容警告。
+`session_summary.json` 会记录 `replay_step_count`、`replay_warning_count`、
+`probe_hit_count`、`on_hit_action_count` 和 `on_hit_error_count`，用于快速判断本 session
+是否执行过 replay，是否存在 force replay 或旧 plan 兼容警告，以及 probe/on-hit 是否产生了
+命中证据或错误。
 
 ## Replay Evidence
 
@@ -135,7 +137,26 @@ Probe 的运行期权威状态是内存中的 `ProbeState`。`assets/probes.json
 
 Probe 命中 evidence（`BreakpointHit`、`WatchpointHit`、`CatchpointHit`）会保存当次命中的
 必要 metadata 快照，例如 number、kind、location/expression/event、condition、comment、
-purpose 和 hit count。即使 session 异常结束，这些命中 evidence 仍能解释当时为什么停住。
+purpose、hit count 和 `on_hit_policy`。即使 session 异常结束，这些命中 evidence 仍能解释
+当时为什么停住。
+
+如果 probe 配置了 on-hit policy，每个自动 action 会额外写入 `OnHitAction` evidence。
+该 evidence 记录 action name、status（`success`、`failed` 或 `skipped`）、
+`failure_policy`、本 action 新产生的 `action_evidence_ids`、`error_evidence`、
+`skip_reason` 和经过 policy 预算截断的 response 摘要。底层 action 自己产生的 raw/summary
+evidence 仍独立保留。
+
+命中 evidence 会汇总：
+
+- `on_hit_policy`
+- `on_hit_results`
+- `on_hit_evidence_ids`
+- `on_hit_error_ids`
+
+`stop_on_error` 触发时，后续 on-hit action 不会执行，但会以 `skipped` 状态写入
+`OnHitAction` evidence，便于 Agent 区分“没有配置”“执行成功”和“因前序错误跳过”。
+`continue_after_hit:true` 会追加一个自动 continue，并作为 `continue_after_hit` result 记录；
+报告只记录该行为，不把它解释为根因判断。
 
 ## 报告引用规则
 

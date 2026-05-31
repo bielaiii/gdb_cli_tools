@@ -138,11 +138,12 @@ evidence。显式 `force:true` 或 CLI `--force` 会允许执行，但 result �
 断点和观察点还支持 `condition`。
 运行期 probe metadata 以内存 `ProbeState` 为权威状态；`assets/probes.json` 只在
 `finish`/报告写出阶段作为最终快照生成。probe 命中时记录为 `BreakpointHit`、
-`WatchpointHit` 或 `CatchpointHit` evidence，并包含当次命中的必要 metadata 快照。
+`WatchpointHit` 或 `CatchpointHit` evidence，并包含当次命中的必要 metadata 快照、
+on-hit policy、每个 on-hit action 的执行结果和本次新产生的 evidence id。
 如果 GDB 拒绝 probe 或 condition，action 返回 `ok:false` 并记录 `ToolError` evidence。
 
 使用 `probe_list` 可以捕获 GDB 的 breakpoint/watchpoint/catchpoint 表，并返回工具保存的 metadata，
-包括 comment、purpose、hit count 和 on-hit action；它不把 `probes.json` 当作运行时同步数据库。
+包括 comment、purpose、hit count 和 on-hit policy；它不把 `probes.json` 当作运行时同步数据库。
 
 本轮 catchpoint 只支持 C++ exception throw：
 
@@ -158,12 +159,38 @@ evidence。显式 `force:true` 或 CLI `--force` 会允许执行，但 result �
   "location": "examples/segfault.cpp:14",
   "comment": "stop before null session dereference",
   "purpose": "hypothesis_check",
-  "on_hit": [
-    {"action":"args_info"},
-    {"action":"backtrace"}
-  ]
+  "on_hit": {
+    "actions": [
+      {"action":"args_info"},
+      {"action":"backtrace"}
+    ],
+    "timeout_ms": 5000,
+    "max_output_bytes": 8192,
+    "max_summary_lines": 80,
+    "failure_policy": "continue_on_error",
+    "continue_after_hit": false
+  }
 }
 ```
+
+旧格式 `on_hit: [{"action":"backtrace"}]` 仍兼容读取，等价于只设置 `actions` 并使用默认
+policy。新格式的字段含义：
+
+- `actions`：命中后按顺序执行的高层 action 列表；`raw_mi` 不能作为 on-hit action。
+- `timeout_ms`：单个 on-hit action 的 timeout/deadline 默认值，默认 `5000`。
+- `max_output_bytes`：`OnHitAction` wrapper evidence 中 response 摘要的最大字节数，
+  默认 `8192`；原始 action evidence 仍按 evidence store 规则保留。
+- `max_summary_lines`：`OnHitAction` wrapper evidence 中 response 摘要的最大行数，
+  默认 `80`。
+- `failure_policy`：`continue_on_error` 或 `stop_on_error`。`stop_on_error` 下失败后的
+  后续 on-hit action 会记录为 `skipped`。
+- `continue_after_hit`：默认 `false`。设为 `true` 时，on-hit actions 成功执行后工具会追加
+  一个自动 `continue`，并把它作为 `continue_after_hit` on-hit result 记录；这可能让 inferior
+  继续运行到下一个 stop event。
+
+每个 on-hit action 会产生 `OnHitAction` evidence，记录 status（`success`、`failed` 或
+`skipped`）、action evidence ids、error evidence 和 skip reason。命中 evidence 会汇总
+`on_hit_policy`、`on_hit_results`、`on_hit_evidence_ids` 和 `on_hit_error_ids`。
 
 ## 状态保护
 

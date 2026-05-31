@@ -27,6 +27,8 @@ report_path="$work_dir/report.md"
 assets_dir="$work_dir/report.assets"
 report_path_replay="$work_dir/replay-report.md"
 assets_dir_replay="$work_dir/replay-report.assets"
+report_path_continue="$work_dir/continue-report.md"
+assets_dir_continue="$work_dir/continue-report.assets"
 daemon_log="$work_dir/daemon.log"
 daemon_pid=""
 
@@ -107,6 +109,19 @@ require_contains "$invalid_response" '"action":"catchpoint_set"'
 require_contains "$invalid_response" '"error":"unsupported catchpoint event"'
 require_contains "$invalid_response" '"evidence":"'
 
+on_hit_breakpoint_response="$("$agent" action S1 '{"action":"breakpoint_set","location":"examples/segfault.cpp:14","comment":"on-hit smoke breakpoint","purpose":"verify on-hit policy evidence","on_hit":{"actions":[{"action":"evaluate","expression":"session"},{"action":"not_a_real_action"},{"action":"backtrace"}],"timeout_ms":5000,"max_output_bytes":4096,"max_summary_lines":40,"failure_policy":"stop_on_error","continue_after_hit":false}}' --socket "$socket_path")"
+require_contains "$on_hit_breakpoint_response" '"ok":true'
+require_contains "$on_hit_breakpoint_response" '"action":"breakpoint_set"'
+require_contains "$on_hit_breakpoint_response" '"breakpoint":"'
+
+on_hit_run_response="$("$agent" action S1 '{"action":"run","deadline_ms":30000}' --socket "$socket_path")"
+require_contains "$on_hit_run_response" '"ok":true'
+require_contains "$on_hit_run_response" '"action":"evaluate"'
+require_contains "$on_hit_run_response" '"action":"not_a_real_action"'
+require_contains "$on_hit_run_response" '"error":"unsupported action"'
+require_contains "$on_hit_run_response" '"action":"run"'
+require_contains "$on_hit_run_response" '"stop_reason":"breakpoint-hit"'
+
 save_response="$("$agent" save-action S1 '{"action":"backtrace"}' --name smoke-replay --failure-policy stop_on_error --socket "$socket_path")"
 require_contains "$save_response" '"ok":true'
 require_contains "$save_response" '"action":"save_action"'
@@ -126,8 +141,20 @@ require_file "$assets_dir/probes.json"
 require_file "$assets_dir/replay/smoke-replay.json"
 
 grep -F '"kind":"ToolError"' "$assets_dir/evidence/index.json" >/dev/null
+grep -F '"kind":"BreakpointHit"' "$assets_dir/evidence/index.json" >/dev/null
+grep -F '"kind":"OnHitAction"' "$assets_dir/evidence/index.json" >/dev/null
 grep -F '"kind": "catchpoint"' "$assets_dir/probes.json" >/dev/null
 grep -F '"event": "throw"' "$assets_dir/probes.json" >/dev/null
+grep -F '"on_hit": {' "$assets_dir/probes.json" >/dev/null
+grep -F '"failure_policy":"stop_on_error"' "$assets_dir/probes.json" >/dev/null
+grep -F '"probe_hit_count": 1' "$assets_dir/session_summary.json" >/dev/null
+grep -F '"on_hit_action_count": 3' "$assets_dir/session_summary.json" >/dev/null
+grep -F '"on_hit_error_count": 1' "$assets_dir/session_summary.json" >/dev/null
+grep -R -F '"on_hit_policy"' "$assets_dir/evidence" >/dev/null
+grep -R -F '"on_hit_results"' "$assets_dir/evidence" >/dev/null
+grep -R -F '"status": "skipped"' "$assets_dir/evidence" >/dev/null
+grep -R -F '"action_evidence_ids"' "$assets_dir/evidence" >/dev/null
+grep -F 'Probe Hit And On-Hit Evidence' "$report_path" >/dev/null
 grep -F '"schema": "gdb-agent-replay-plan-v1"' "$assets_dir/replay/smoke-replay.json" >/dev/null
 grep -F '"failure_policy": "stop_on_error"' "$assets_dir/replay/smoke-replay.json" >/dev/null
 grep -F '"fingerprint":' "$assets_dir/replay/smoke-replay.json" >/dev/null
@@ -156,9 +183,33 @@ grep -F '"kind":"ReplayStep"' "$assets_dir_replay/evidence/index.json" >/dev/nul
 grep -F '"replay_step_count": 1' "$assets_dir_replay/session_summary.json" >/dev/null
 grep -F 'Replay step a1 success' "$report_path_replay" >/dev/null
 
+create_continue_response="$("$agent" create "$task_file" --socket "$socket_path" --session S3 --out "$report_path_continue" --assets "$assets_dir_continue")"
+require_contains "$create_continue_response" '"ok":true'
+require_contains "$create_continue_response" '"session_id":"S3"'
+
+continue_breakpoint_response="$("$agent" action S3 '{"action":"breakpoint_set","location":"examples/segfault.cpp:14","comment":"auto continue smoke breakpoint","purpose":"verify continue_after_hit","on_hit":{"actions":[{"action":"evaluate","expression":"session"}],"timeout_ms":5000,"max_output_bytes":4096,"max_summary_lines":40,"failure_policy":"continue_on_error","continue_after_hit":true}}' --socket "$socket_path")"
+require_contains "$continue_breakpoint_response" '"ok":true'
+
+continue_run_response="$("$agent" action S3 '{"action":"run","deadline_ms":30000}' --socket "$socket_path")"
+require_contains "$continue_run_response" '"ok":true'
+require_contains "$continue_run_response" '"action":"continue"'
+require_contains "$continue_run_response" '"signal":"SIGSEGV"'
+
+finish_continue_response="$("$agent" finish S3 --socket "$socket_path" --out "$report_path_continue")"
+require_contains "$finish_continue_response" '"ok":true'
+
+require_file "$report_path_continue"
+require_file "$assets_dir_continue/session_summary.json"
+require_file "$assets_dir_continue/evidence/index.json"
+grep -F '"probe_hit_count": 1' "$assets_dir_continue/session_summary.json" >/dev/null
+grep -F '"on_hit_action_count": 2' "$assets_dir_continue/session_summary.json" >/dev/null
+grep -F '"on_hit_error_count": 0' "$assets_dir_continue/session_summary.json" >/dev/null
+grep -R -F '"action_name": "continue_after_hit"' "$assets_dir_continue/evidence" >/dev/null
+grep -R -F '"continue_after_hit":true' "$assets_dir_continue/evidence" >/dev/null
+
 shutdown_response="$("$agent" shutdown --socket "$socket_path")"
 require_contains "$shutdown_response" '"ok":true'
 wait "$daemon_pid" >/dev/null 2>&1 || true
 daemon_pid=""
 
-echo "smoke ok: daemon/action flow, catchpoint_set, and restart replay passed"
+echo "smoke ok: daemon/action flow, catchpoint_set, on-hit policy, and restart replay passed"

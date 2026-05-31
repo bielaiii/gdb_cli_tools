@@ -100,10 +100,12 @@ Replay 前必须校验 schema 和 task fingerprint。task 不匹配时默认拒�
 状态：Accepted
 
 breakpoint/watchpoint/catchpoint 需要保存 comment、purpose、condition、hit count、
-last stop reason 和 on-hit action。运行期以内存 `ProbeState` 为权威状态；
+last stop reason 和 on-hit policy。on-hit policy 包含高层 action 列表、timeout/output
+预算、failure policy 和可选 `continue_after_hit`。运行期以内存 `ProbeState` 为权威状态；
 `assets/probes.json` 只在 finish/report 写出阶段作为最终快照生成，不作为运行时同步数据库或
 live GDB 恢复文件。Probe 命中时写入 `BreakpointHit`、`WatchpointHit` 或
-`CatchpointHit` evidence，并保留当次命中的必要 metadata 快照。
+`CatchpointHit` evidence，并保留当次命中的必要 metadata 快照、on-hit result、on-hit
+evidence id 和 error id。每个自动 on-hit action 额外写入 `OnHitAction` evidence。
 
 原因：
 

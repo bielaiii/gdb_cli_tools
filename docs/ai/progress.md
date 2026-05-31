@@ -165,6 +165,25 @@
 - 新增 `replay_plan_tests` 覆盖 schema、fingerprint、force mismatch、legacy plan 和
   failure policy；扩展 `scripts/smoke_daemon_action_flow.sh` 覆盖重启后 replay flow。
 
+## 2026-05-31 本轮更新（probe on-hit policy）
+
+- 将 probe `on_hit` 从旧 action 数组扩展为 policy object，并保留旧数组格式兼容。
+  新 policy 支持 `actions`、`timeout_ms`、`max_output_bytes`、`max_summary_lines`、
+  `failure_policy` 和 `continue_after_hit`。
+- `breakpoint_set`、`watchpoint_set` 和 `catchpoint_set` 会解析并保存 on-hit policy；
+  `raw_mi` 不能作为 on-hit action。
+- probe hit evidence 现在包含 `on_hit_policy`、`on_hit_results`、`on_hit_evidence_ids` 和
+  `on_hit_error_ids`。每个自动 action 会写入独立 `OnHitAction` evidence。
+- 支持 on-hit `continue_on_error` / `stop_on_error`；`stop_on_error` 会把后续 action 记录为
+  `skipped`。`continue_after_hit:true` 会追加自动 continue，并作为 `continue_after_hit`
+  result 记录。
+- `session_summary.json` 新增 `probe_hit_count`、`on_hit_action_count` 和
+  `on_hit_error_count`。
+- 报告的 Probes 区域会列出 probe hit 与 on-hit evidence，便于从 report 跳转到对应 summary。
+- 扩展 `scripts/smoke_daemon_action_flow.sh`，Linux + GDB 下覆盖真实 breakpoint hit、
+  on-hit 成功/失败/skipped、`continue_after_hit`、session summary、report、probes.json 和
+  evidence index。
+
 ## Phase 1: Live Session 和证据闭环
 
 状态：Mostly Done
@@ -193,17 +212,18 @@ fingerprint 校验、force replay warning、replay run evidence 和 replay step 
 
 ## Phase 3: Probe 和自动命中动作
 
-状态：Partially Done
+状态：Mostly Done
 
 已经支持 breakpoint/watchpoint、condition、comment、purpose、on-hit action、probe list 和
-probe hit evidence；已有最小 `catch throw` catchpoint。
+probe hit evidence；已有最小 `catch throw` catchpoint。on-hit 已有 policy schema、failure
+policy、自动 continue 行为记录、`OnHitAction` evidence 和 Linux + GDB live smoke 覆盖。
 
 仍需关注：
 
 - catchpoint 仍只支持 `catch throw`，其他 catchpoint 类型尚未实现。
-- on-hit action 的超时、最大输出、最大行数等策略需要更完整。
-- Probe Store 已收敛为运行期内存化、finish-time 落盘；仍需在 Linux + GDB 下验证 live
-  daemon flow 的最终 `probes.json` 内容。
+- on-hit policy 目前只限制 `OnHitAction` wrapper evidence 的 response 摘要预算；底层 action
+  evidence 仍按 evidence store 的全局规则保留。
+- 还可以增加更多 watchpoint/catchpoint 命中 fixture，覆盖非 breakpoint 的 on-hit 归属。
 
 ## Phase 4: Hypothesis Workflow
 
@@ -234,6 +254,7 @@ metadata。`raw_mi` 已作为受限高级 escape hatch。
 ## 建议的下一步
 
 1. 用真实 Linux GDB raw 输出继续校准 MI parser、类型 sanitizer 和 backtrace/thread summary。
-2. 补 catchpoint 其他事件和 on-hit policy 限制。
+2. 补 catchpoint 其他事件。
 3. 扩展 hypothesis assertion 与报告聚合。
-4. 增加更多真实项目 replay fixture，覆盖失败策略和跨 assets 目录报告展示。
+4. 增加更多真实项目 replay/probe fixture，覆盖失败策略、watchpoint/catchpoint on-hit 和跨
+   assets 目录报告展示。
