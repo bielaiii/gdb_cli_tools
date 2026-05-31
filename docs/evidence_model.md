@@ -88,6 +88,42 @@ MVP 还会写机器可读的 session 文件：
 `session_snapshot.json` 和 `session_summary.json` 是历史记录与报告输入，不代表 live GDB
 session，也不能用于恢复旧 GDB 进程。重启后的恢复方式应该是 replay 高层 action。
 
+`session_summary.json` 会记录 `replay_step_count` 和 `replay_warning_count`，用于快速判断
+本 session 是否执行过 replay，以及是否存在 force replay 或旧 plan 兼容警告。
+
+## Replay Evidence
+
+Replay Store 只保存和重放高层 action。结构化 plan 使用
+`gdb-agent-replay-plan-v1`，包含 `schema_version`、plan name、tags、source session id、
+created_at、task metadata、task fingerprint、plan-level failure policy 和 action list。
+`session_snapshot.json` 不是 replay 输入；跨 session 复现必须使用 replay plan 或 JSONL
+高层 action。
+
+每次 replay 会写一条 `ReplayRun` evidence，保存 replay result 的整体快照，包括 plan
+名称、schema version、force 状态、task metadata 是否匹配、warning、error 和 step
+结果列表。
+
+每个 replay step 都会写 `ReplayStep` evidence。该 evidence 的 summary 中包含：
+
+- plan name
+- step id 和 index
+- action name
+- action JSON
+- status：`success`、`failed` 或 `skipped`
+- failure policy：`continue_on_error` 或 `stop_on_error`
+- action evidence id
+- error evidence id
+- skip reason
+
+如果 replay action 返回 `ok:false` 或执行异常，会额外写 `ToolError` evidence，并在
+`ReplayStep` 中引用 `error_evidence`。如果 plan task fingerprint 与当前 task 不匹配，
+默认拒绝 replay 并写 `ToolError` evidence；force replay 时写 `ReplayWarning` evidence，
+并在 replay result 中保留 warning、`force:true` 和 `task_metadata_match:false`。
+
+旧 JSONL replay 文件和缺少 failure policy 的旧 plan 默认按 `continue_on_error` 执行。
+缺少 task metadata 或 fingerprint 的旧 plan 可以读取，但会产生 warning；无法识别的
+schema 或 schema version 会被稳定拒绝。
+
 ## Probe Store 快照
 
 Probe 的运行期权威状态是内存中的 `ProbeState`。`assets/probes.json` 只在

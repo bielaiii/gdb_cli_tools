@@ -4,6 +4,7 @@
 #include "common/json.hpp"
 #include "gdb/gdb_session.hpp"
 #include "gdb/mi_utils.hpp"
+#include "replay/replay_plan.hpp"
 #include "report/report.hpp"
 #include "task/debug_task.hpp"
 #include "workflow/crash_workflow.hpp"
@@ -132,7 +133,9 @@ static void replay_action_file(GdbSession &session,
                                SessionOutcome *outcome,
                                ProbeState &probe_state,
                                const fs::path &path,
-                               std::ostream &out);
+                               std::ostream &out,
+                               bool force = false,
+                               const std::string &failure_policy_override = "");
 static std::string json_escape(const std::string &s);
 static std::string json_string_array(const std::vector<std::string> &items);
 static std::string json_string_map(const std::map<std::string, std::string> &items);
@@ -646,20 +649,6 @@ static void write_hypothesis_index(GdbSession &session, const ProbeState &probe_
     write_text_file(path, out.str());
 }
 
-static std::string replay_action_display_name(const Json &action, int index) {
-    std::string name = action.string_or("name");
-    if (!name.empty()) {
-        return name;
-    }
-    name = action.string_or("action");
-    if (!name.empty()) {
-        return name;
-    }
-    std::ostringstream fallback;
-    fallback << "step-" << index;
-    return fallback.str();
-}
-
 static std::vector<std::string> load_replay_jsonl_actions(const fs::path &path) {
     std::ifstream in(path);
     if (!in) {
@@ -678,41 +667,18 @@ static std::vector<std::string> load_replay_jsonl_actions(const fs::path &path) 
     return actions;
 }
 
-static void write_replay_plan(const fs::path &path,
-                              const std::string &name,
-                              const std::vector<std::string> &actions) {
-    std::ostringstream plan;
-    plan << "{\n";
-    plan << "  \"schema\": \"gdb-agent-replay-plan-v1\",\n";
-    plan << "  \"id\": " << json_escape("replay-" + slugify(name)) << ",\n";
-    plan << "  \"name\": " << json_escape(name) << ",\n";
-    plan << "  \"actions\": [\n";
-    for (size_t i = 0; i < actions.size(); ++i) {
-        Json action = parse_json(actions[i]);
-        int index = static_cast<int>(i + 1);
-        std::ostringstream id;
-        id << 'a' << index;
-        plan << "    {\n";
-        plan << "      \"id\": " << json_escape(id.str()) << ",\n";
-        plan << "      \"name\": " << json_escape(replay_action_display_name(action, index)) << ",\n";
-        plan << "      \"enabled\": true,\n";
-        plan << "      \"tags\": [],\n";
-        plan << "      \"action\": " << dump_json(action) << "\n";
-        plan << "    }";
-        if (i + 1 != actions.size()) {
-            plan << ",";
-        }
-        plan << "\n";
-    }
-    plan << "  ]\n";
-    plan << "}\n";
-    write_text_file(path, plan.str());
-}
-
 static void rebuild_replay_plan_from_jsonl(const fs::path &jsonl_file,
                                            const fs::path &plan_file,
-                                           const std::string &name) {
-    write_replay_plan(plan_file, name, load_replay_jsonl_actions(jsonl_file));
+                                           const std::string &name,
+                                           const DebugTask *task,
+                                           const std::string &source_session_id,
+                                           const std::string &failure_policy) {
+    write_replay_plan(plan_file,
+                      name,
+                      load_replay_jsonl_actions(jsonl_file),
+                      task,
+                      source_session_id,
+                      failure_policy);
 }
 
 static void append_text(const fs::path &path, const std::string &text) {
@@ -1262,6 +1228,7 @@ static void handle_action_line(GdbSession &session,
     }
     if (action_name == "save_action") {
         std::string name = json_string_field(action, "name");
+        std::string failure_policy = normalize_replay_failure_policy(json_string_field(action, "failure_policy"));
         const Json *saved = json_field(action, "saved_action");
         std::string saved_action;
         if (saved != nullptr && saved->is_string()) {
@@ -1287,7 +1254,12 @@ static void handle_action_line(GdbSession &session,
         replay_out << saved_action << '\n';
         replay_out.close();
         try {
-            rebuild_replay_plan_from_jsonl(replay_file, replay_plan, name);
+            rebuild_replay_plan_from_jsonl(replay_file,
+                                           replay_plan,
+                                           name,
+                                           task,
+                                           session.session_id(),
+                                           failure_policy);
         } catch (const std::exception &ex) {
             auto ev = session.evidence_store().add_text("ToolError",
                                                         "Replay plan write failed",
@@ -1299,12 +1271,19 @@ static void handle_action_line(GdbSession &session,
         }
         out << "{\"ok\":true,\"action\":\"save_action\",\"file\":"
                   << json_escape(replay_file.lexically_normal().string()) << ",\"plan\":"
-                  << json_escape(replay_plan.lexically_normal().string()) << "}\n";
+                  << json_escape(replay_plan.lexically_normal().string())
+                  << ",\"failure_policy\":" << json_escape(failure_policy) << "}\n";
         return;
     }
     if (action_name == "replay") {
         std::string file = json_string_field(action, "file");
         std::string name = json_string_field(action, "name");
+        bool force = action.bool_or("force", false);
+        const Json *params = action.find("params");
+        if (params != nullptr && params->is_object()) {
+            force = params->bool_or("force", force);
+        }
+        std::string failure_policy_override = json_string_field(action, "failure_policy");
         fs::path replay_file;
         if (!file.empty()) {
             replay_file = file;
@@ -1317,9 +1296,14 @@ static void handle_action_line(GdbSession &session,
             out << "{\"ok\":false,\"error\":\"replay requires file or name\"}\n";
             return;
         }
-        replay_action_file(session, task, outcome, probe_state, replay_file, out);
-        out << "{\"ok\":true,\"action\":\"replay\",\"file\":"
-                  << json_escape(replay_file.lexically_normal().string()) << "}\n";
+        replay_action_file(session,
+                           task,
+                           outcome,
+                           probe_state,
+                           replay_file,
+                           out,
+                           force,
+                           failure_policy_override);
         return;
     }
     auto ev = add_tool_error(session,
@@ -1331,65 +1315,336 @@ static void handle_action_line(GdbSession &session,
         << "\"evidence\":" << json_escape(ev.id) << "}\n";
 }
 
-static void replay_action_text(GdbSession &session,
-                               const DebugTask *task,
-                               SessionOutcome *outcome,
-                               ProbeState &probe_state,
-                               const std::string &plan_name,
-                               const std::string &step_id,
-                               int index,
-                               const std::string &line,
-                               std::ostream &out) {
+struct ReplayStepRunResult {
+    int index = 0;
+    std::string step_id;
+    std::string action_name;
+    std::string status = "success";
+    std::string failure_policy = kReplayPolicyContinue;
+    std::string evidence_id;
+    std::string error_evidence_id;
+    std::string action_evidence_id;
+    std::string error;
+    std::string skip_reason;
+};
+
+struct ReplayRunResult {
+    bool ok = true;
+    bool force = false;
+    bool task_metadata_match = true;
+    std::string plan_name;
+    std::string schema = kReplayPlanSchema;
+    int schema_version = kReplayPlanSchemaVersion;
+    std::string failure_policy = kReplayPolicyContinue;
+    std::string warning;
+    std::string warning_evidence_id;
+    std::string error;
+    std::string error_evidence_id;
+    std::string run_evidence_id;
+    std::vector<ReplayStepRunResult> steps;
+};
+
+static std::string response_evidence_id(const Json &response) {
+    std::string evidence = response.string_or("evidence");
+    if (!evidence.empty()) {
+        return evidence;
+    }
+    const Json *steps = response.find("steps");
+    if (steps != nullptr && steps->is_array() && !steps->array_value.empty()) {
+        const Json &last = steps->array_value.back();
+        if (last.is_object()) {
+            evidence = last.string_or("evidence");
+            if (!evidence.empty()) {
+                return evidence;
+            }
+            return last.string_or("error_evidence");
+        }
+    }
+    return {};
+}
+
+static bool response_failed(const std::string &response_text,
+                            std::string &error,
+                            std::string &evidence_id) {
+    std::istringstream in(response_text);
+    std::string line;
+    bool saw_json = false;
+    while (std::getline(in, line)) {
+        line = trim(line);
+        if (line.empty() || line.front() != '{') {
+            continue;
+        }
+        Json response = parse_json(line);
+        if (!response.is_object()) {
+            continue;
+        }
+        saw_json = true;
+        std::string response_evidence = response_evidence_id(response);
+        if (!response_evidence.empty()) {
+            evidence_id = response_evidence;
+        }
+        const Json *ok = response.find("ok");
+        if (ok != nullptr && ok->is_bool() && !ok->bool_value) {
+            error = response.string_or("error", "replayed action returned ok:false");
+            return true;
+        }
+    }
+    if (!saw_json && !trim(response_text).empty()) {
+        error = "replayed action did not return JSON status";
+        return true;
+    }
+    return false;
+}
+
+static std::string replay_step_json_fragment(const ReplayStepRunResult &step) {
+    std::ostringstream out;
+    out << "{"
+        << "\"index\":" << step.index << ","
+        << "\"step_id\":" << json_escape(step.step_id) << ","
+        << "\"action_name\":" << json_escape(step.action_name) << ","
+        << "\"status\":" << json_escape(step.status) << ","
+        << "\"failure_policy\":" << json_escape(step.failure_policy) << ","
+        << "\"evidence\":" << json_escape(step.evidence_id) << ","
+        << "\"action_evidence\":" << json_escape(step.action_evidence_id) << ","
+        << "\"error_evidence\":" << json_escape(step.error_evidence_id) << ","
+        << "\"error\":" << json_escape(step.error) << ","
+        << "\"skip_reason\":" << json_escape(step.skip_reason)
+        << "}";
+    return out.str();
+}
+
+static std::string replay_result_json(const fs::path &path, const ReplayRunResult &result) {
+    std::ostringstream out;
+    out << "{\"ok\":" << (result.ok ? "true" : "false")
+        << ",\"action\":\"replay\""
+        << ",\"file\":" << json_escape(path.lexically_normal().string())
+        << ",\"plan\":" << json_escape(result.plan_name)
+        << ",\"schema\":" << json_escape(result.schema)
+        << ",\"schema_version\":" << result.schema_version
+        << ",\"force\":" << (result.force ? "true" : "false")
+        << ",\"task_metadata_match\":" << (result.task_metadata_match ? "true" : "false")
+        << ",\"failure_policy\":" << json_escape(result.failure_policy)
+        << ",\"warning\":" << json_escape(result.warning)
+        << ",\"warning_evidence\":" << json_escape(result.warning_evidence_id)
+        << ",\"error\":" << json_escape(result.error)
+        << ",\"error_evidence\":" << json_escape(result.error_evidence_id)
+        << ",\"run_evidence\":" << json_escape(result.run_evidence_id)
+        << ",\"steps\":[";
+    for (size_t i = 0; i < result.steps.size(); ++i) {
+        if (i != 0) {
+            out << ",";
+        }
+        out << replay_step_json_fragment(result.steps[i]);
+    }
+    out << "]}\n";
+    return out.str();
+}
+
+static void add_replay_run_evidence(GdbSession &session,
+                                    const fs::path &path,
+                                    ReplayRunResult &result) {
+    std::ostringstream evidence_text;
+    evidence_text << "{\n";
+    evidence_text << "  \"file\": " << json_escape(path.lexically_normal().string()) << ",\n";
+    evidence_text << "  \"result\": " << replay_result_json(path, result);
+    evidence_text << "}\n";
+    auto ev = session.evidence_store().add_text("ReplayRun", "Replay plan " + result.plan_name, result.plan_name, evidence_text.str());
+    result.run_evidence_id = ev.id;
+}
+
+static ReplayStepRunResult write_skipped_replay_step(GdbSession &session,
+                                                     const std::string &plan_name,
+                                                     const std::string &step_id,
+                                                     int index,
+                                                     const std::string &action_name,
+                                                     const std::string &failure_policy,
+                                                     const std::string &skip_reason) {
+    ReplayStepRunResult result;
+    result.index = index;
+    result.step_id = step_id;
+    result.action_name = action_name;
+    result.status = "skipped";
+    result.failure_policy = failure_policy;
+    result.skip_reason = skip_reason;
+    std::ostringstream evidence_text;
+    evidence_text << "{\n";
+    evidence_text << "  \"plan\": " << json_escape(plan_name) << ",\n";
+    evidence_text << "  \"step_id\": " << json_escape(step_id) << ",\n";
+    evidence_text << "  \"index\": " << index << ",\n";
+    evidence_text << "  \"action_name\": " << json_escape(action_name) << ",\n";
+    evidence_text << "  \"status\": \"skipped\",\n";
+    evidence_text << "  \"failure_policy\": " << json_escape(failure_policy) << ",\n";
+    evidence_text << "  \"skip_reason\": " << json_escape(skip_reason) << "\n";
+    evidence_text << "}\n";
+    auto ev = session.evidence_store().add_text("ReplayStep", "Replay step " + step_id + " skipped", action_name, evidence_text.str());
+    result.evidence_id = ev.id;
+    return result;
+}
+
+static ReplayStepRunResult replay_action_text(GdbSession &session,
+                                              const DebugTask *task,
+                                              SessionOutcome *outcome,
+                                              ProbeState &probe_state,
+                                              const std::string &plan_name,
+                                              const std::string &step_id,
+                                              int index,
+                                              const std::string &line,
+                                              const std::string &failure_policy,
+                                              std::ostream &out) {
+    ReplayStepRunResult result;
+    result.index = index;
+    result.step_id = step_id;
+    result.failure_policy = failure_policy;
+    std::string action_name = "unknown";
+    try {
+        Json parsed_action = parse_json(line);
+        if (parsed_action.is_object()) {
+            action_name = parsed_action.string_or("action", replay_action_display_name(parsed_action, index));
+        }
+    } catch (...) {
+    }
+    result.action_name = action_name;
+
     bool ignored_finish = false;
     std::ostringstream step_output;
     try {
         handle_action_line(session, task, outcome, probe_state, line, ignored_finish, step_output);
         ignored_finish = false;
+        std::string error;
+        std::string child_evidence;
+        bool failed = response_failed(step_output.str(), error, child_evidence);
+        result.status = failed ? "failed" : "success";
+        result.error = failed ? error : "";
+        result.action_evidence_id = child_evidence;
+        if (failed && result.error_evidence_id.empty()) {
+            std::ostringstream error_text;
+            error_text << "{\n";
+            error_text << "  \"plan\": " << json_escape(plan_name) << ",\n";
+            error_text << "  \"step_id\": " << json_escape(step_id) << ",\n";
+            error_text << "  \"index\": " << index << ",\n";
+            error_text << "  \"action_name\": " << json_escape(action_name) << ",\n";
+            error_text << "  \"failure_policy\": " << json_escape(failure_policy) << ",\n";
+            error_text << "  \"error\": " << json_escape(result.error) << ",\n";
+            error_text << "  \"response\": " << json_escape(step_output.str()) << "\n";
+            error_text << "}\n";
+            auto ev = session.evidence_store().add_text("ToolError", "Replay step reported failure " + step_id, action_name, error_text.str());
+            result.error_evidence_id = ev.id;
+        }
         std::ostringstream evidence_text;
         evidence_text << "{\n";
         evidence_text << "  \"plan\": " << json_escape(plan_name) << ",\n";
         evidence_text << "  \"step_id\": " << json_escape(step_id) << ",\n";
         evidence_text << "  \"index\": " << index << ",\n";
+        evidence_text << "  \"action_name\": " << json_escape(action_name) << ",\n";
+        evidence_text << "  \"status\": " << json_escape(result.status) << ",\n";
+        evidence_text << "  \"failure_policy\": " << json_escape(failure_policy) << ",\n";
         evidence_text << "  \"action_json\": " << json_escape(line) << ",\n";
+        evidence_text << "  \"action_evidence\": " << json_escape(result.action_evidence_id) << ",\n";
+        evidence_text << "  \"error_evidence\": " << json_escape(result.error_evidence_id) << ",\n";
+        evidence_text << "  \"error\": " << json_escape(result.error) << ",\n";
         evidence_text << "  \"response\": " << json_escape(step_output.str()) << "\n";
         evidence_text << "}\n";
-        session.evidence_store().add_text("ReplayStep", "Replay step " + step_id, line, evidence_text.str());
+        auto ev = session.evidence_store().add_text("ReplayStep", "Replay step " + step_id + " " + result.status, action_name, evidence_text.str());
+        result.evidence_id = ev.id;
         out << step_output.str();
     } catch (const std::exception &ex) {
+        result.status = "failed";
+        result.error = ex.what();
         std::ostringstream evidence_text;
         evidence_text << "{\n";
         evidence_text << "  \"plan\": " << json_escape(plan_name) << ",\n";
         evidence_text << "  \"step_id\": " << json_escape(step_id) << ",\n";
         evidence_text << "  \"index\": " << index << ",\n";
+        evidence_text << "  \"action_name\": " << json_escape(action_name) << ",\n";
+        evidence_text << "  \"status\": \"failed\",\n";
+        evidence_text << "  \"failure_policy\": " << json_escape(failure_policy) << ",\n";
         evidence_text << "  \"action\": " << json_escape(line) << ",\n";
         evidence_text << "  \"error\": " << json_escape(ex.what()) << "\n";
         evidence_text << "}\n";
-        auto ev = session.evidence_store().add_text("ToolError", "Replay step failed " + step_id, line, evidence_text.str());
+        auto ev = session.evidence_store().add_text("ToolError", "Replay step failed " + step_id, action_name, evidence_text.str());
+        result.evidence_id = ev.id;
+        result.error_evidence_id = ev.id;
         out << "{\"ok\":false,\"action\":\"replay_step\",\"step_id\":" << json_escape(step_id)
             << ",\"error\":" << json_escape(ex.what()) << ",\"evidence\":" << json_escape(ev.id) << "}\n";
     }
+    return result;
 }
 
-static void replay_json_plan(GdbSession &session,
-                             const DebugTask *task,
-                             SessionOutcome *outcome,
-                             ProbeState &probe_state,
-                             const fs::path &path,
-                             const Json &plan,
-                             std::ostream &out) {
+static ReplayRunResult replay_json_plan(GdbSession &session,
+                                        const DebugTask *task,
+                                        SessionOutcome *outcome,
+                                        ProbeState &probe_state,
+                                        const fs::path &path,
+                                        const Json &plan,
+                                        std::ostream &out,
+                                        bool force,
+                                        const std::string &failure_policy_override) {
+    ReplayRunResult result;
     std::string plan_name = plan.string_or("name", path.stem().string());
+    result.plan_name = plan_name;
+    result.force = force;
+    result.schema = plan.string_or("schema", kReplayPlanSchema);
+    result.schema_version = plan.int_or("schema_version", kReplayPlanSchemaVersion);
     const Json *actions = plan.find("actions");
     if (actions == nullptr || !actions->is_array()) {
         throw std::runtime_error("replay plan missing actions array: " + path.string());
     }
 
+    ReplayPlanValidation validation = validate_replay_plan(plan, task, force);
+    result.schema = validation.schema.empty() ? kReplayPlanSchema : validation.schema;
+    result.schema_version = validation.schema_version;
+    result.warning = validation.warning;
+    result.task_metadata_match = validation.task_metadata_match;
+    if (!validation.ok) {
+        result.ok = false;
+        result.error = validation.error;
+        std::ostringstream evidence_text;
+        evidence_text << "{\n";
+        evidence_text << "  \"plan\": " << json_escape(plan_name) << ",\n";
+        evidence_text << "  \"file\": " << json_escape(path.lexically_normal().string()) << ",\n";
+        evidence_text << "  \"force\": " << (force ? "true" : "false") << ",\n";
+        evidence_text << "  \"task_metadata_match\": " << (validation.task_metadata_match ? "true" : "false") << ",\n";
+        evidence_text << "  \"plan_fingerprint\": " << json_escape(validation.plan_fingerprint) << ",\n";
+        evidence_text << "  \"current_fingerprint\": " << json_escape(validation.current_fingerprint) << ",\n";
+        evidence_text << "  \"error\": " << json_escape(validation.error) << "\n";
+        evidence_text << "}\n";
+        auto ev = session.evidence_store().add_text("ToolError", "Replay plan rejected", plan_name, evidence_text.str());
+        result.error_evidence_id = ev.id;
+        return result;
+    }
+    if (!validation.warning.empty()) {
+        std::ostringstream evidence_text;
+        evidence_text << "{\n";
+        evidence_text << "  \"plan\": " << json_escape(plan_name) << ",\n";
+        evidence_text << "  \"file\": " << json_escape(path.lexically_normal().string()) << ",\n";
+        evidence_text << "  \"force\": " << (force ? "true" : "false") << ",\n";
+        evidence_text << "  \"task_metadata_match\": " << (validation.task_metadata_match ? "true" : "false") << ",\n";
+        evidence_text << "  \"plan_fingerprint\": " << json_escape(validation.plan_fingerprint) << ",\n";
+        evidence_text << "  \"current_fingerprint\": " << json_escape(validation.current_fingerprint) << ",\n";
+        evidence_text << "  \"warning\": " << json_escape(validation.warning) << "\n";
+        evidence_text << "}\n";
+        auto ev = session.evidence_store().add_text("ReplayWarning", "Replay plan warning", plan_name, evidence_text.str());
+        result.warning_evidence_id = ev.id;
+    }
+
+    std::string plan_policy = normalize_replay_failure_policy(failure_policy_override,
+                                                              plan.string_or("failure_policy", kReplayPolicyContinue));
+    result.failure_policy = plan_policy;
+    bool stop_due_to_failure = false;
+    std::string stop_reason;
     int index = 0;
     for (const auto &step : actions->array_value) {
         ++index;
         if (!step.is_object()) {
-            continue;
-        }
-        if (!step.bool_or("enabled", true)) {
+            std::ostringstream step_id;
+            step_id << 'a' << index;
+            result.steps.push_back(write_skipped_replay_step(session,
+                                                             plan_name,
+                                                             step_id.str(),
+                                                             index,
+                                                             "unknown",
+                                                             plan_policy,
+                                                             "step is not an object"));
             continue;
         }
         std::string step_id = step.string_or("id");
@@ -1398,17 +1653,78 @@ static void replay_json_plan(GdbSession &session,
             fallback << 'a' << index;
             step_id = fallback.str();
         }
-        const Json *action = step.find("action");
-        if (action == nullptr || !action->is_object()) {
-            std::ostringstream evidence_text;
-            evidence_text << "Replay step " << step_id << " has no action object.\n";
-            auto ev = session.evidence_store().add_text("ToolError", "Replay step missing action " + step_id, plan_name, evidence_text.str());
-            out << "{\"ok\":false,\"action\":\"replay_step\",\"step_id\":" << json_escape(step_id)
-                << ",\"error\":\"missing action object\",\"evidence\":" << json_escape(ev.id) << "}\n";
+        std::string action_name = step.string_or("name", "unknown");
+        std::string step_policy = normalize_replay_failure_policy(step.string_or("failure_policy"), plan_policy);
+        if (stop_due_to_failure) {
+            result.steps.push_back(write_skipped_replay_step(session,
+                                                             plan_name,
+                                                             step_id,
+                                                             index,
+                                                             action_name,
+                                                             step_policy,
+                                                             stop_reason));
             continue;
         }
-        replay_action_text(session, task, outcome, probe_state, plan_name, step_id, index, dump_json(*action), out);
+        if (!step.bool_or("enabled", true)) {
+            result.steps.push_back(write_skipped_replay_step(session,
+                                                             plan_name,
+                                                             step_id,
+                                                             index,
+                                                             action_name,
+                                                             step_policy,
+                                                             "step disabled"));
+            continue;
+        }
+        const Json *action = step.find("action");
+        if (action == nullptr || !action->is_object()) {
+            ReplayStepRunResult step_result;
+            step_result.index = index;
+            step_result.step_id = step_id;
+            step_result.action_name = action_name;
+            step_result.status = "failed";
+            step_result.failure_policy = step_policy;
+            step_result.error = "missing action object";
+            std::ostringstream evidence_text;
+            evidence_text << "{\n";
+            evidence_text << "  \"plan\": " << json_escape(plan_name) << ",\n";
+            evidence_text << "  \"step_id\": " << json_escape(step_id) << ",\n";
+            evidence_text << "  \"index\": " << index << ",\n";
+            evidence_text << "  \"action_name\": " << json_escape(action_name) << ",\n";
+            evidence_text << "  \"status\": \"failed\",\n";
+            evidence_text << "  \"failure_policy\": " << json_escape(step_policy) << ",\n";
+            evidence_text << "  \"error\": \"missing action object\"\n";
+            evidence_text << "}\n";
+            auto ev = session.evidence_store().add_text("ToolError", "Replay step missing action " + step_id, plan_name, evidence_text.str());
+            step_result.evidence_id = ev.id;
+            step_result.error_evidence_id = ev.id;
+            result.steps.push_back(step_result);
+            result.ok = false;
+            if (step_policy == kReplayPolicyStop) {
+                stop_due_to_failure = true;
+                stop_reason = "previous step " + step_id + " failed under stop_on_error";
+            }
+            continue;
+        }
+        ReplayStepRunResult step_result = replay_action_text(session,
+                                                             task,
+                                                             outcome,
+                                                             probe_state,
+                                                             plan_name,
+                                                             step_id,
+                                                             index,
+                                                             dump_json(*action),
+                                                             step_policy,
+                                                             out);
+        if (step_result.status == "failed") {
+            result.ok = false;
+            if (step_policy == kReplayPolicyStop) {
+                stop_due_to_failure = true;
+                stop_reason = "previous step " + step_id + " failed under stop_on_error";
+            }
+        }
+        result.steps.push_back(std::move(step_result));
     }
+    return result;
 }
 
 static void replay_action_file(GdbSession &session,
@@ -1416,7 +1732,12 @@ static void replay_action_file(GdbSession &session,
                                SessionOutcome *outcome,
                                ProbeState &probe_state,
                                const fs::path &path,
-                               std::ostream &out) {
+                               std::ostream &out,
+                               bool force,
+                               const std::string &failure_policy_override) {
+    ReplayRunResult result;
+    result.plan_name = path.stem().string();
+    result.force = force;
     std::ifstream in(path);
     if (!in) {
         throw std::runtime_error("failed to open replay file: " + path.string());
@@ -1426,6 +1747,8 @@ static void replay_action_file(GdbSession &session,
     content_stream << in.rdbuf();
     std::string content = trim(content_stream.str());
     if (content.empty()) {
+        add_replay_run_evidence(session, path, result);
+        out << replay_result_json(path, result);
         return;
     }
 
@@ -1433,10 +1756,32 @@ static void replay_action_file(GdbSession &session,
         Json plan = parse_json(content);
         const Json *actions = plan.find("actions");
         if (actions != nullptr && actions->is_array()) {
-            replay_json_plan(session, task, outcome, probe_state, path, plan, out);
+            result = replay_json_plan(session,
+                                      task,
+                                      outcome,
+                                      probe_state,
+                                      path,
+                                      plan,
+                                      out,
+                                      force,
+                                      failure_policy_override);
         } else {
-            replay_action_text(session, task, outcome, probe_state, path.stem().string(), "a1", 1, dump_json(plan), out);
+            std::string policy = normalize_replay_failure_policy(failure_policy_override);
+            result.failure_policy = policy;
+            result.steps.push_back(replay_action_text(session,
+                                                      task,
+                                                      outcome,
+                                                      probe_state,
+                                                      path.stem().string(),
+                                                      "a1",
+                                                      1,
+                                                      dump_json(plan),
+                                                      policy,
+                                                      out));
+            result.ok = result.steps.back().status != "failed";
         }
+        add_replay_run_evidence(session, path, result);
+        out << replay_result_json(path, result);
         return;
     }
 
@@ -1444,6 +1789,11 @@ static void replay_action_file(GdbSession &session,
     std::string line;
     int index = 0;
     std::string plan_name = path.stem().string();
+    std::string plan_policy = normalize_replay_failure_policy(failure_policy_override);
+    result.plan_name = plan_name;
+    result.failure_policy = plan_policy;
+    bool stop_due_to_failure = false;
+    std::string stop_reason;
     while (std::getline(lines, line)) {
         line = trim(line);
         if (line.empty() || line[0] == '#') {
@@ -1452,8 +1802,37 @@ static void replay_action_file(GdbSession &session,
         ++index;
         std::ostringstream step_id;
         step_id << 'a' << index;
-        replay_action_text(session, task, outcome, probe_state, plan_name, step_id.str(), index, line, out);
+        if (stop_due_to_failure) {
+            result.steps.push_back(write_skipped_replay_step(session,
+                                                             plan_name,
+                                                             step_id.str(),
+                                                             index,
+                                                             "unknown",
+                                                             plan_policy,
+                                                             stop_reason));
+            continue;
+        }
+        ReplayStepRunResult step_result = replay_action_text(session,
+                                                             task,
+                                                             outcome,
+                                                             probe_state,
+                                                             plan_name,
+                                                             step_id.str(),
+                                                             index,
+                                                             line,
+                                                             plan_policy,
+                                                             out);
+        if (step_result.status == "failed") {
+            result.ok = false;
+            if (plan_policy == kReplayPolicyStop) {
+                stop_due_to_failure = true;
+                stop_reason = "previous step " + step_id.str() + " failed under stop_on_error";
+            }
+        }
+        result.steps.push_back(std::move(step_result));
     }
+    add_replay_run_evidence(session, path, result);
+    out << replay_result_json(path, result);
 }
 
 static int run_check(const DebugTask &task) {
@@ -1573,6 +1952,15 @@ static void write_session_files(const CliOptions &opts,
     write_text_file(opts.assets / "task.normalized.json", task_json.str());
 
     std::ostringstream summary;
+    int replay_step_count = 0;
+    int replay_warning_count = 0;
+    for (const auto &ev : session.evidence_store().all()) {
+        if (ev.kind == "ReplayStep") {
+            ++replay_step_count;
+        } else if (ev.kind == "ReplayWarning") {
+            ++replay_warning_count;
+        }
+    }
     summary << "{\n";
     summary << "  \"session_id\": " << json_escape(opts.session_id) << ",\n";
     summary << "  \"state\": " << json_escape(std::string(session_state_name(outcome.state))) << ",\n";
@@ -1585,7 +1973,9 @@ static void write_session_files(const CliOptions &opts,
     summary << "  \"stdin\": " << json_escape(task.stdin_path.string()) << ",\n";
     summary << "  \"stdout\": " << json_escape(outcome.inferior_stdout) << ",\n";
     summary << "  \"stderr\": " << json_escape(outcome.inferior_stderr) << ",\n";
-    summary << "  \"evidence_count\": " << session.evidence_store().all().size() << "\n";
+    summary << "  \"evidence_count\": " << session.evidence_store().all().size() << ",\n";
+    summary << "  \"replay_step_count\": " << replay_step_count << ",\n";
+    summary << "  \"replay_warning_count\": " << replay_warning_count << "\n";
     summary << "}\n";
     write_text_file(opts.assets / "session_summary.json", summary.str());
 
@@ -1792,6 +2182,7 @@ static void start_live_session(LiveSession &live) {
     validate_task(live.task);
     fs::create_directories(live.opts.assets);
     live.session = std::make_unique<GdbSession>(live.opts.assets, live.task.working_directory);
+    live.session->set_session_id(live.opts.session_id);
     live.outcome.run_timeout_ms = effective_run_timeout_ms(live.opts, live.task);
     set_inferior_output_paths(live.outcome, live.opts.assets);
     live.outcome.state = SessionState::Starting;
@@ -2068,11 +2459,12 @@ static int run_client_command(int argc, char **argv) {
                 << "}";
     } else if (cmd == "save-action") {
         if (argc < 5) {
-            throw std::runtime_error("usage: gdb-agent save-action SESSION_ID JSON_OR_FILE --name NAME [--socket path]");
+            throw std::runtime_error("usage: gdb-agent save-action SESSION_ID JSON_OR_FILE --name NAME [--socket path] [--failure-policy POLICY]");
         }
         std::string session_id = argv[2];
         Json saved_action = parse_json(read_text_file_arg(argv[3]));
         std::string name = option_value(argc, argv, "--name");
+        std::string failure_policy = option_value(argc, argv, "--failure-policy", "");
         if (name.empty()) {
             throw std::runtime_error("save-action requires --name");
         }
@@ -2082,14 +2474,25 @@ static int run_client_command(int argc, char **argv) {
                 << "\"payload\":{"
                 << "\"action\":\"save_action\","
                 << "\"name\":" << json_escape(name) << ","
-                << "\"saved_action\":" << dump_json(saved_action)
+                << "\"saved_action\":" << dump_json(saved_action);
+        if (!failure_policy.empty()) {
+            request << ",\"failure_policy\":" << json_escape(failure_policy);
+        }
+        request
                 << "}}";
     } else if (cmd == "replay") {
         if (argc < 4) {
-            throw std::runtime_error("usage: gdb-agent replay SESSION_ID NAME [--socket path] or gdb-agent replay SESSION_ID --file PATH [--socket path]");
+            throw std::runtime_error("usage: gdb-agent replay SESSION_ID NAME [--socket path] [--force] [--failure-policy POLICY] or gdb-agent replay SESSION_ID --file PATH [--socket path] [--force] [--failure-policy POLICY]");
         }
         std::string session_id = argv[2];
         std::string file = option_value(argc, argv, "--file");
+        std::string failure_policy = option_value(argc, argv, "--failure-policy", "");
+        bool force = false;
+        for (int i = 1; i < argc; ++i) {
+            if (std::string(argv[i]) == "--force") {
+                force = true;
+            }
+        }
         std::string name;
         if (file.empty()) {
             name = argv[3];
@@ -2103,6 +2506,10 @@ static int run_client_command(int argc, char **argv) {
             request << "\"file\":" << json_escape(file);
         } else {
             request << "\"name\":" << json_escape(name);
+        }
+        request << ",\"force\":" << (force ? "true" : "false");
+        if (!failure_policy.empty()) {
+            request << ",\"failure_policy\":" << json_escape(failure_policy);
         }
         request << "}}";
     } else if (cmd == "finish") {
@@ -2157,6 +2564,7 @@ static int run_serve(const CliOptions &opts, const DebugTask &task) {
     fs::create_directories(opts.assets);
 
     GdbSession session(opts.assets, task.working_directory);
+    session.set_session_id(opts.session_id);
     SessionOutcome outcome;
     outcome.run_timeout_ms = effective_run_timeout_ms(opts, task);
     set_inferior_output_paths(outcome, opts.assets);

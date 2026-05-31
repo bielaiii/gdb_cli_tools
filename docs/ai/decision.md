@@ -78,14 +78,22 @@ evidence id，并记录 raw SHA-256。summary 可以被 sanitizer、截断或归
 状态：Accepted
 
 Replay Store 保存高层 action 列表，结构化文件使用 `gdb-agent-replay-plan-v1`。
-重放时每步 action 在新 session 中重新执行，并产生新的 evidence id。失败步骤记录
-`ToolError` evidence，是否继续由 replay/action policy 决定。
+结构化 plan 必须包含 schema version、plan name、source session id、created_at、task
+metadata、task fingerprint、failure policy 和 action list。重放时每步 action 在新
+session 中重新执行，并产生新的 evidence id。失败步骤记录 `ReplayStep` 和/或
+`ToolError` evidence，是否继续由 plan-level 或 step-level failure policy 决定。
+旧 JSONL 和旧 plan 默认按 `continue_on_error` 兼容读取。
+
+Replay 前必须校验 schema 和 task fingerprint。task 不匹配时默认拒绝执行并记录
+`ToolError`；只有显式 force 时才允许执行，并通过 result 与 `ReplayWarning` evidence
+记录 mismatch warning。
 
 原因：
 
 - 高层 action 比 raw MI 更稳定。
 - 新 session 的证据不能复用旧 evidence id。
 - replay 是 repeat-run 的核心能力。
+- task fingerprint 能降低把 replay plan 用到错误调试目标上的风险。
 
 ## D007: Probe metadata 属于工具状态
 

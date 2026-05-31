@@ -15,6 +15,7 @@ add_executable(gdb-agent
     src/gdb/gdb_process.cpp
     src/gdb/gdb_session.cpp
     src/gdb/mi_utils.cpp
+    src/replay/replay_plan.cpp
     src/report/report.cpp
     src/task/debug_task.cpp
     src/workflow/crash_workflow.cpp
@@ -53,6 +54,19 @@ target_compile_options(mi_summary_tests PRIVATE
     -Wpedantic
 )
 
+add_executable(replay_plan_tests
+    tests/replay_plan_tests.cpp
+    src/common/json.cpp
+    src/common/string_utils.cpp
+    src/replay/replay_plan.cpp
+)
+
+target_compile_options(replay_plan_tests PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+)
+
 enable_testing()
 
 add_test(
@@ -70,5 +84,11 @@ add_test(
 add_test(
     NAME mi_summary_tests
     COMMAND mi_summary_tests
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
+add_test(
+    NAME replay_plan_tests
+    COMMAND replay_plan_tests
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )

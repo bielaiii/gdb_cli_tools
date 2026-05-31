@@ -15,8 +15,9 @@ gdb-agent list --socket /tmp/gdb-agent.sock
 gdb-agent status S1 --socket /tmp/gdb-agent.sock
 gdb-agent action S1 '{"action":"evaluate","expression":"session"}' --socket /tmp/gdb-agent.sock
 gdb-agent action S1 action.json --socket /tmp/gdb-agent.sock
-gdb-agent save-action S1 action.json --name repro-checks --socket /tmp/gdb-agent.sock
+gdb-agent save-action S1 action.json --name repro-checks --failure-policy stop_on_error --socket /tmp/gdb-agent.sock
 gdb-agent replay S1 repro-checks --socket /tmp/gdb-agent.sock
+gdb-agent replay S1 --file report.assets/replay/repro-checks.json --force --socket /tmp/gdb-agent.sock
 gdb-agent finish S1 --socket /tmp/gdb-agent.sock --out report.md \
   --agent-inference inference.md \
   --final-conclusion conclusion.md
@@ -47,7 +48,9 @@ Supported action lines are intentionally small in MVP form:
 {"action":"probe_delete","number":1}
 {"action":"continue"}
 {"action":"save_action","name":"fd-checks","saved_action":"{\"action\":\"backtrace\"}"}
-{"action":"replay","name":"fd-checks"}
+{"action":"save_action","name":"fd-checks","failure_policy":"stop_on_error","saved_action":{"action":"backtrace"}}
+{"action":"replay","name":"fd-checks","failure_policy":"stop_on_error"}
+{"action":"replay","file":"report.assets/replay/fd-checks.json","force":true}
 {"action":"hypothesis_create","id":"H-stale-session","title":"session is null before dereference"}
 {"action":"hypothesis_check","hypothesis":"H-stale-session","description":"session argument is null","expression":"session","assertion":"is_null"}
 {"action":"hypothesis_conclude","hypothesis":"H-stale-session","conclusion":"Supported","inference":"The check shows session is null at the breakpoint."}
@@ -58,6 +61,23 @@ Supported action lines are intentionally small in MVP form:
 Saved replay plans are written as both a compatibility JSONL file and a
 structured `replay/<name>.json` plan. Use `--replay-before-run plan.json` to
 apply actions such as breakpoints before the first run.
+The default structured-plan `failure_policy` is `continue_on_error`; plans or
+individual steps may use `stop_on_error`. Older JSONL files and older
+structured plans without a policy default to `continue_on_error`.
+
+CLI examples:
+
+```bash
+gdb-agent save-action S1 action.json --name repro-checks --failure-policy stop_on_error
+gdb-agent replay S1 repro-checks --failure-policy stop_on_error
+gdb-agent replay S1 --file report.assets/replay/repro-checks.json --force
+```
+
+Before replaying a structured plan, the tool checks `schema`,
+`schema_version`, and task fingerprint metadata. A task mismatch is rejected by
+default and recorded as `ToolError` evidence. Explicit `force:true` or CLI
+`--force` allows the replay, but the result and `ReplayWarning` evidence record
+the mismatch warning.
 
 ```json
 {"action":"breakpoint_set","location":"examples/segfault.cpp:14","condition":"session == 0"}
@@ -103,22 +123,42 @@ Structured replay plan:
 ```json
 {
   "schema": "gdb-agent-replay-plan-v1",
+  "schema_version": 1,
   "id": "replay-bt-check",
   "name": "bt-check",
+  "tags": [],
+  "source_session_id": "S1",
+  "created_at": "2026-05-31T00:00:00Z",
+  "failure_policy": "stop_on_error",
+  "task": {
+    "problem_summary": "segfault in callback",
+    "executable": "/abs/path/build/segfault",
+    "working_directory": "/abs/path",
+    "args": "",
+    "argv": [],
+    "core_dump": null,
+    "fingerprint": "fnv1a64:..."
+  },
   "actions": [
     {
       "id": "a1",
       "name": "backtrace",
       "enabled": true,
       "tags": [],
+      "failure_policy": null,
       "action": {"action":"backtrace"}
     }
   ]
 }
 ```
 
-Each replayed step records `ReplayStep` evidence. Replay failures record
-`ToolError` evidence and replay continues with later enabled steps.
+The replay result includes each step's `index`, `step_id`, `action_name`,
+`status` (`success`, `failed`, or `skipped`), `failure_policy`, `evidence`,
+`action_evidence`, `error_evidence`, `skip_reason`, and the replay run's
+`run_evidence`. Each replay records `ReplayRun` evidence, and every step
+records `ReplayStep` evidence. Failed action responses or execution exceptions
+also record `ToolError` evidence. When `stop_on_error` triggers, later steps
+are recorded as `skipped` with a skip reason.
 
 Actions are checked against the live session state before execution. For
 example, `backtrace`, `locals`, `evaluate`, and hypothesis checks require a

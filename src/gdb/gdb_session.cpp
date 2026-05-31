@@ -85,6 +85,14 @@ const fs::path &GdbSession::assets_dir() const {
     return assets_;
 }
 
+void GdbSession::set_session_id(std::string session_id) {
+    session_id_ = std::move(session_id);
+}
+
+const std::string &GdbSession::session_id() const {
+    return session_id_;
+}
+
 void GdbSession::shutdown() {
     if (process_.pid > 0) {
         try {

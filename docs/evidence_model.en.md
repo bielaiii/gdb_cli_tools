@@ -81,6 +81,46 @@ The MVP also writes machine-readable session files:
 report inputs. They do not represent a live GDB session and cannot restore an
 old GDB process. Restart reproduction should replay high-level actions.
 
+`session_summary.json` records `replay_step_count` and `replay_warning_count`
+so an Agent can quickly tell whether replay ran in the session and whether any
+force replay or legacy-plan compatibility warning was recorded.
+
+## Replay Evidence
+
+Replay Store saves and replays only high-level actions. Structured plans use
+`gdb-agent-replay-plan-v1` and include `schema_version`, plan name, tags,
+source session id, created_at, task metadata, task fingerprint, plan-level
+failure policy, and action list. `session_snapshot.json` is not replay input;
+cross-session reproduction must use a replay plan or JSONL high-level actions.
+
+Each replay writes one `ReplayRun` evidence entry with an overall replay result
+snapshot, including plan name, schema version, force status, task metadata
+match status, warning, error, and the step result list.
+
+Every replay step writes `ReplayStep` evidence. Its summary includes:
+
+- plan name
+- step id and index
+- action name
+- action JSON
+- status: `success`, `failed`, or `skipped`
+- failure policy: `continue_on_error` or `stop_on_error`
+- action evidence id
+- error evidence id
+- skip reason
+
+If a replayed action returns `ok:false` or execution throws, the tool also
+writes `ToolError` evidence and references it from the step's `error_evidence`.
+If the plan task fingerprint does not match the current task, replay is
+rejected by default and recorded as `ToolError` evidence. Force replay writes
+`ReplayWarning` evidence and keeps the warning, `force:true`, and
+`task_metadata_match:false` visible in the replay result.
+
+Older JSONL replay files and older plans without a failure policy default to
+`continue_on_error`. Older plans without task metadata or a fingerprint remain
+readable but produce a warning. Unknown schema names or schema versions are
+rejected with stable errors.
+
 ## Probe Store Snapshot
 
 The authoritative runtime probe state is the in-memory `ProbeState`.

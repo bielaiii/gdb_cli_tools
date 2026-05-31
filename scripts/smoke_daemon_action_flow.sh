@@ -25,6 +25,8 @@ work_dir="$(mktemp -d "${TMPDIR:-/tmp}/gdb-agent-daemon-smoke.XXXXXX")"
 socket_path="$work_dir/gdb-agent.sock"
 report_path="$work_dir/report.md"
 assets_dir="$work_dir/report.assets"
+report_path_replay="$work_dir/replay-report.md"
+assets_dir_replay="$work_dir/replay-report.assets"
 daemon_log="$work_dir/daemon.log"
 daemon_pid=""
 
@@ -105,6 +107,12 @@ require_contains "$invalid_response" '"action":"catchpoint_set"'
 require_contains "$invalid_response" '"error":"unsupported catchpoint event"'
 require_contains "$invalid_response" '"evidence":"'
 
+save_response="$("$agent" save-action S1 '{"action":"backtrace"}' --name smoke-replay --failure-policy stop_on_error --socket "$socket_path")"
+require_contains "$save_response" '"ok":true'
+require_contains "$save_response" '"action":"save_action"'
+require_contains "$save_response" '"failure_policy":"stop_on_error"'
+require_contains "$save_response" '"plan":"'
+
 finish_response="$("$agent" finish S1 --socket "$socket_path" --out "$report_path")"
 require_contains "$finish_response" '"ok":true'
 require_contains "$finish_response" '"report":"'
@@ -115,14 +123,42 @@ require_file "$assets_dir/session_snapshot.json"
 require_file "$assets_dir/session_summary.json"
 require_file "$assets_dir/evidence/index.json"
 require_file "$assets_dir/probes.json"
+require_file "$assets_dir/replay/smoke-replay.json"
 
-grep -F '"kind": "ToolError"' "$assets_dir/evidence/index.json" >/dev/null
+grep -F '"kind":"ToolError"' "$assets_dir/evidence/index.json" >/dev/null
 grep -F '"kind": "catchpoint"' "$assets_dir/probes.json" >/dev/null
 grep -F '"event": "throw"' "$assets_dir/probes.json" >/dev/null
+grep -F '"schema": "gdb-agent-replay-plan-v1"' "$assets_dir/replay/smoke-replay.json" >/dev/null
+grep -F '"failure_policy": "stop_on_error"' "$assets_dir/replay/smoke-replay.json" >/dev/null
+grep -F '"fingerprint":' "$assets_dir/replay/smoke-replay.json" >/dev/null
+
+create_replay_response="$("$agent" create "$task_file" --socket "$socket_path" --session S2 --out "$report_path_replay" --assets "$assets_dir_replay")"
+require_contains "$create_replay_response" '"ok":true'
+require_contains "$create_replay_response" '"session_id":"S2"'
+
+replay_response="$("$agent" replay S2 --file "$assets_dir/replay/smoke-replay.json" --socket "$socket_path")"
+require_contains "$replay_response" '"ok":true'
+require_contains "$replay_response" '"action":"replay"'
+require_contains "$replay_response" '"plan":"smoke-replay"'
+require_contains "$replay_response" '"task_metadata_match":true'
+require_contains "$replay_response" '"failure_policy":"stop_on_error"'
+require_contains "$replay_response" '"status":"success"'
+require_contains "$replay_response" '"evidence":"'
+
+finish_replay_response="$("$agent" finish S2 --socket "$socket_path" --out "$report_path_replay")"
+require_contains "$finish_replay_response" '"ok":true'
+
+require_file "$report_path_replay"
+require_file "$assets_dir_replay/session_summary.json"
+require_file "$assets_dir_replay/evidence/index.json"
+
+grep -F '"kind":"ReplayStep"' "$assets_dir_replay/evidence/index.json" >/dev/null
+grep -F '"replay_step_count": 1' "$assets_dir_replay/session_summary.json" >/dev/null
+grep -F 'Replay step a1 success' "$report_path_replay" >/dev/null
 
 shutdown_response="$("$agent" shutdown --socket "$socket_path")"
 require_contains "$shutdown_response" '"ok":true'
 wait "$daemon_pid" >/dev/null 2>&1 || true
 daemon_pid=""
 
-echo "smoke ok: daemon/action flow and catchpoint_set passed"
+echo "smoke ok: daemon/action flow, catchpoint_set, and restart replay passed"

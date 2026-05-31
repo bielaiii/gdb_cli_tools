@@ -147,6 +147,24 @@
 - 新增 `mi_summary_tests`，覆盖 MI parser、type sanitizer、backtrace/thread summarizer 和
   raw MI audit，不依赖 GDB。
 
+## 2026-05-31 本轮更新（replay store）
+
+- 强化结构化 replay plan：继续使用 `gdb-agent-replay-plan-v1`，新增
+  `schema_version`、plan tags、source session id、created_at、task metadata、task
+  fingerprint 和 plan-level `failure_policy`。
+- `save_action` / `save-action` 支持 `failure_policy`；`replay` / CLI `replay` 支持
+  `failure_policy` override 和 `force`。
+- replay 执行现在会返回结构化 step result，包含 step index、action name、status、
+  failure policy、ReplayStep evidence、action evidence、error evidence 和 skip reason。
+- 每次 replay 会额外记录 `ReplayRun` evidence，保存整体 replay result 快照，方便报告引用。
+- 支持 `continue_on_error` 和 `stop_on_error`；step-level policy 可覆盖 plan-level policy。
+  `stop_on_error` 触发后，后续 step 会记录为 skipped。
+- replay 前校验 schema 和 task fingerprint；task mismatch 默认拒绝并记录 `ToolError`，
+  force replay 会执行并记录 `ReplayWarning`。
+- `session_summary.json` 新增 `replay_step_count` 和 `replay_warning_count`。
+- 新增 `replay_plan_tests` 覆盖 schema、fingerprint、force mismatch、legacy plan 和
+  failure policy；扩展 `scripts/smoke_daemon_action_flow.sh` 覆盖重启后 replay flow。
+
 ## Phase 1: Live Session 和证据闭环
 
 状态：Mostly Done
@@ -162,15 +180,16 @@ light evidence、evidence store、session log、report、snapshot 和 summary。
 
 ## Phase 2: Replay Store
 
-状态：Implemented, Needs Hardening
+状态：Implemented
 
-已经支持 `save_action`、JSONL、结构化 replay plan、`replay` 和 replay step evidence。
+已经支持 `save_action`、JSONL、结构化 replay plan、`replay`、failure policy、task
+fingerprint 校验、force replay warning、replay run evidence 和 replay step evidence。
 
 仍需关注：
 
-- 明确 replay 失败策略是否始终继续，还是允许 per-step policy。
-- 给 replay plan 增加版本、tags、适用 task metadata 的校验。
-- 增加重启后 replay 的端到端示例和测试。
+- 给 replay plan 增加更完整的 tags 使用约定和适用 task metadata 展示。
+- 扩展 replay 失败策略到更多 action 组合和真实项目 fixture。
+- 增加跨进程/跨 assets 目录 replay 的更多报告聚合展示。
 
 ## Phase 3: Probe 和自动命中动作
 
@@ -214,9 +233,7 @@ metadata。`raw_mi` 已作为受限高级 escape hatch。
 
 ## 建议的下一步
 
-1. 在 Linux + GDB 环境跑 `scripts/smoke_daemon_action_flow.sh`，确认 live daemon flow 和
-   finish-time `probes.json` 真实通过。
-2. 用真实 Linux GDB raw 输出继续校准 MI parser、类型 sanitizer 和 backtrace/thread summary。
-3. 补 catchpoint 其他事件和 on-hit policy 限制。
-4. 强化 replay plan schema 与失败策略。
-5. 扩展 hypothesis assertion 与报告聚合。
+1. 用真实 Linux GDB raw 输出继续校准 MI parser、类型 sanitizer 和 backtrace/thread summary。
+2. 补 catchpoint 其他事件和 on-hit policy 限制。
+3. 扩展 hypothesis assertion 与报告聚合。
+4. 增加更多真实项目 replay fixture，覆盖失败策略和跨 assets 目录报告展示。

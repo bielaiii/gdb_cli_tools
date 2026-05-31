@@ -22,8 +22,9 @@ gdb-agent list --socket /tmp/gdb-agent.sock
 gdb-agent status S1 --socket /tmp/gdb-agent.sock
 gdb-agent action S1 '{"action":"evaluate","expression":"session"}' --socket /tmp/gdb-agent.sock
 gdb-agent action S1 action.json --socket /tmp/gdb-agent.sock
-gdb-agent save-action S1 action.json --name repro-checks --socket /tmp/gdb-agent.sock
+gdb-agent save-action S1 action.json --name repro-checks --failure-policy stop_on_error --socket /tmp/gdb-agent.sock
 gdb-agent replay S1 repro-checks --socket /tmp/gdb-agent.sock
+gdb-agent replay S1 --file report.assets/replay/repro-checks.json --force --socket /tmp/gdb-agent.sock
 gdb-agent finish S1 --socket /tmp/gdb-agent.sock --out report.md \
   --agent-inference inference.md \
   --final-conclusion conclusion.md
@@ -55,7 +56,9 @@ MVP action 行保持有意的小而稳定：
 {"action":"probe_delete","number":1}
 {"action":"continue"}
 {"action":"save_action","name":"fd-checks","saved_action":"{\"action\":\"backtrace\"}"}
-{"action":"replay","name":"fd-checks"}
+{"action":"save_action","name":"fd-checks","failure_policy":"stop_on_error","saved_action":{"action":"backtrace"}}
+{"action":"replay","name":"fd-checks","failure_policy":"stop_on_error"}
+{"action":"replay","file":"report.assets/replay/fd-checks.json","force":true}
 {"action":"hypothesis_create","id":"H-stale-session","title":"session is null before dereference"}
 {"action":"hypothesis_check","hypothesis":"H-stale-session","description":"session argument is null","expression":"session","assertion":"is_null"}
 {"action":"hypothesis_conclude","hypothesis":"H-stale-session","conclusion":"Supported","inference":"The check shows session is null at the breakpoint."}
@@ -67,6 +70,22 @@ MVP action 行保持有意的小而稳定：
 
 保存的 replay plan 会同时写成兼容 JSONL 文件和结构化 `replay/<name>.json` plan。
 可以使用 `--replay-before-run plan.json` 在第一次运行前应用断点等 action。
+结构化 plan 默认 `failure_policy` 是 `continue_on_error`；也可以使用
+`stop_on_error`。step 可以用自己的 `failure_policy` 覆盖 plan-level policy。
+旧 JSONL 和缺少 policy 的旧结构化 plan 按 `continue_on_error` 处理。
+
+CLI 支持：
+
+```bash
+gdb-agent save-action S1 action.json --name repro-checks --failure-policy stop_on_error
+gdb-agent replay S1 repro-checks --failure-policy stop_on_error
+gdb-agent replay S1 --file report.assets/replay/repro-checks.json --force
+```
+
+`replay` 会在执行前检查 plan 的 `schema`、`schema_version` 和 task fingerprint。
+如果 plan 的 task metadata 与当前 task 不匹配，默认拒绝执行并记录 `ToolError`
+evidence。显式 `force:true` 或 CLI `--force` 会允许执行，但 result 与
+`ReplayWarning` evidence 会记录 mismatch warning。
 
 ```json
 {"action":"breakpoint_set","location":"examples/segfault.cpp:14","condition":"session == 0"}
@@ -77,22 +96,41 @@ MVP action 行保持有意的小而稳定：
 ```json
 {
   "schema": "gdb-agent-replay-plan-v1",
+  "schema_version": 1,
   "id": "replay-bt-check",
   "name": "bt-check",
+  "tags": [],
+  "source_session_id": "S1",
+  "created_at": "2026-05-31T00:00:00Z",
+  "failure_policy": "stop_on_error",
+  "task": {
+    "problem_summary": "segfault in callback",
+    "executable": "/abs/path/build/segfault",
+    "working_directory": "/abs/path",
+    "args": "",
+    "argv": [],
+    "core_dump": null,
+    "fingerprint": "fnv1a64:..."
+  },
   "actions": [
     {
       "id": "a1",
       "name": "backtrace",
       "enabled": true,
       "tags": [],
+      "failure_policy": null,
       "action": {"action":"backtrace"}
     }
   ]
 }
 ```
 
-每个 replay step 都会记录 `ReplayStep` evidence。Replay 失败时记录 `ToolError`
-evidence，并继续执行后续 enabled step。
+`replay` 的 result 会包含每个 step 的 `index`、`step_id`、`action_name`、
+`status`（`success`、`failed` 或 `skipped`）、`failure_policy`、`evidence`、
+`action_evidence`、`error_evidence`、`skip_reason` 和本次 replay 的 `run_evidence`。
+每次 replay 会记录 `ReplayRun` evidence；每个 step 都会记录
+`ReplayStep` evidence；action 返回失败或执行异常时还会记录 `ToolError` evidence。
+`stop_on_error` 触发后，后续 step 会以 `skipped` 记录，并带上 skip reason。
 
 ## Probe 和 On-hit Action
 

@@ -50,7 +50,7 @@
 - 影响项目目标、范围或核心决策时，同步更新 `docs/ai/current_goal.md` 和
   `docs/ai/decision.md`。
 - 进度变化明显时，同步更新 `docs/ai/progress.md`。
-- 每轮任务结束时更新 `docs/ai/handoff.md`，记录实际完成的工作、验证结果和限制。
+- 如果修改了源码，每轮任务结束时更新 `docs/ai/handoff.md`，记录实际完成的工作、验证结果和限制。
 
 ## 提交与推送约定
 

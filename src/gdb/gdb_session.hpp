@@ -31,6 +31,8 @@ public:
     EvidenceStore &evidence_store();
     const EvidenceStore &evidence_store() const;
     const std::filesystem::path &assets_dir() const;
+    void set_session_id(std::string session_id);
+    const std::string &session_id() const;
     void shutdown();
 
 private:
@@ -44,6 +46,7 @@ private:
     std::filesystem::path working_directory_;
     EvidenceStore evidence_;
     GdbProcess process_;
+    std::string session_id_;
     uint64_t token_ = 0;
     unsigned long long record_sequence_ = 0;
     std::ofstream session_log_;
