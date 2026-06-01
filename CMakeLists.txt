@@ -80,6 +80,19 @@ target_compile_options(hypothesis_assertion_tests PRIVATE
     -Wpedantic
 )
 
+add_executable(task_parser_tests
+    tests/task_parser_tests.cpp
+    src/common/json.cpp
+    src/common/string_utils.cpp
+    src/task/debug_task.cpp
+)
+
+target_compile_options(task_parser_tests PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+)
+
 enable_testing()
 
 add_test(
@@ -101,6 +114,12 @@ add_test(
 )
 
 add_test(
+    NAME edge_case_flow
+    COMMAND /bin/bash ${CMAKE_SOURCE_DIR}/scripts/smoke_edge_cases.sh
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
+add_test(
     NAME mi_summary_tests
     COMMAND mi_summary_tests
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
@@ -115,5 +134,11 @@ add_test(
 add_test(
     NAME hypothesis_assertion_tests
     COMMAND hypothesis_assertion_tests
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
+add_test(
+    NAME task_parser_tests
+    COMMAND task_parser_tests
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )

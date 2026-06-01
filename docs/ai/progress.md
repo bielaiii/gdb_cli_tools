@@ -217,6 +217,24 @@
   snapshot 和 evidence index。
 - 同步更新 task format、agent actions 和 evidence model 中英文文档。
 
+## 2026-06-01 本轮更新（edge-case test hardening）
+
+- 新增 `scripts/smoke_edge_cases.sh` 和 CTest `edge_case_flow`，Linux + GDB 下覆盖更复杂的
+  daemon/session/error/replay/core/artifact 边界。
+- `edge_case_flow` 覆盖：
+  - 不存在 session 的 `status`、`action`、`finish`、`close`。
+  - 非法 action JSON、缺少 action、缺少 expression/location/risk 等错误输入。
+  - negative `frame_select`、非法 `evaluate` 表达式、on-hit raw MI 拒绝、watchpoint 设置失败。
+  - `probe_delete` 后 `probe_list` 的 deleted metadata 暴露情况。
+  - 包含失败 step 的 replay plan、不同 task fingerprint 下默认拒绝和 `--force` warning。
+  - finish 后 action / 重复 finish / 重复 close 的稳定失败行为。
+  - finish 后 report、task.normalized、snapshot、summary、evidence index 和 evidence 文件引用一致性。
+  - Core Dump Mode 下静态 action 可用，动态 action/probe 操作被 state guard 拒绝并写
+    `ToolError` evidence。
+- 新增不依赖 GDB 的 `task_parser_tests`，覆盖 required section、shell-like args quoting/
+  escaping、空字符串 arg、env 行、stdin/core dump path、run timeout 和 JSON 基础错误。
+- 本轮未改产品行为，只将发现的边界弱点记录到 handoff，作为后续修复输入。
+
 ## Phase 1: Live Session 和证据闭环
 
 状态：Mostly Done
@@ -229,6 +247,10 @@ light evidence、evidence store、session log、report、snapshot 和 summary。
 - 对更多 stop reason 的状态转换做回归测试。
 - 继续用更多真实 core dump 和不同 GDB 输出版本验证 Core Dump Mode 兼容性。
 - 让错误消息和 report 对 Agent 更稳定。
+- 多个 action 输入校验错误仍只返回 `ok:false`，没有写 `ToolError` evidence。
+- `frame_select` 负数和非法 `evaluate` 表达式当前仍返回 `ok:true`，需要后续把 GDB
+  `result_class=error` 映射为结构化 action failure。
+- `probe_delete` 后 `probe_list` 仍返回 deleted probe metadata，需明确是历史展示还是过滤行为。
 
 ## Phase 2: Replay Store
 
