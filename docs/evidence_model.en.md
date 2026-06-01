@@ -87,6 +87,14 @@ can quickly tell whether replay ran, whether force replay or legacy-plan
 compatibility warnings were recorded, and whether probe/on-hit evidence or
 errors were produced.
 
+For core dump tasks, `session_summary.json` also records the `core_dump` path
+and `core_loaded`. Core mode is a static debugging target. Loading the core
+writes a `Core load` `SessionEvent` evidence entry, and static evidence actions
+such as `backtrace`, `threads`, `frame_select`, `locals`, `args_info`, and
+`evaluate` produce normal evidence. `run`, `continue`, and probe mutation
+actions are rejected in core mode by the state guard and recorded as
+`ToolError` evidence.
+
 ## Replay Evidence
 
 Replay Store saves and replays only high-level actions. Structured plans use

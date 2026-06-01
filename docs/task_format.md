@@ -56,6 +56,11 @@ LOG_LEVEL=debug
 - `run timeout`：可选，运行 deadline，单位毫秒。默认是 `30000`。
 - `core dump`：可选。存在时，MVP 加载 core，而不是运行程序。
 
+Core Dump Mode 是静态取证模式：工具加载 executable + core dump 后保持 stopped/core
+状态，可以执行 `backtrace`、`threads`、`frame_select`、`locals`、`args_info`、`evaluate`
+和 hypothesis check 等静态 action；`run`、`continue` 和 probe mutation 会被拒绝并记录
+`ToolError` evidence。
+
 ## 路径解析
 
 Task file 中的相对路径按以下方式解析：

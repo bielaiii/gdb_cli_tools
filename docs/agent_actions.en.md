@@ -198,6 +198,10 @@ stopped inferior or core mode; `continue` requires stopped state; `finish`
 requires stopped, exited, or error state. Rejected actions are recorded as
 `ToolError` evidence.
 
+Core mode is a static debugging target. `run`, `continue`, `breakpoint_set`,
+`watchpoint_set`, `catchpoint_set`, and probe enable/disable/delete actions are
+rejected in core mode and recorded as `ToolError` evidence.
+
 Hypothesis records are written both as per-hypothesis Markdown files and as a
 structured `assets/hypotheses/index.json`. Tool checks are recorded separately
 from agent inference and conclusions; `hypothesis_check` represents a tool

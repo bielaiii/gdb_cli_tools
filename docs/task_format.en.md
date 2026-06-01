@@ -49,6 +49,12 @@ MVP fields:
 - `core dump`: optional. When present, the MVP loads the core instead of
   running the program.
 
+Core Dump Mode is a static evidence mode: the tool loads the executable and
+core dump, remains in stopped/core state, and allows static actions such as
+`backtrace`, `threads`, `frame_select`, `locals`, `args_info`, `evaluate`, and
+hypothesis checks. `run`, `continue`, and probe mutation actions are rejected
+and recorded as `ToolError` evidence.
+
 `args` is parsed as shell-like argv, so quoted values and backslash escapes are
 preserved:
 

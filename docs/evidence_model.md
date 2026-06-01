@@ -93,6 +93,12 @@ session，也不能用于恢复旧 GDB 进程。重启后的恢复方式应该�
 是否执行过 replay，是否存在 force replay 或旧 plan 兼容警告，以及 probe/on-hit 是否产生了
 命中证据或错误。
 
+core dump task 的 `session_summary.json` 还会记录 `core_dump` 路径和 `core_loaded`。
+core mode 是静态调试对象；加载 core 会写 `Core load` 的 `SessionEvent` evidence，后续
+`backtrace`、`threads`、`frame_select`、`locals`、`args_info` 和 `evaluate` 等静态取证
+action 会产生普通 evidence。`run`、`continue` 和 probe mutation 在 core mode 下会被状态保护
+拒绝，并写 `ToolError` evidence。
+
 ## Replay Evidence
 
 Replay Store 只保存和重放高层 action。结构化 plan 使用

@@ -2,153 +2,109 @@
 
 ## 目标
 
-强化 Hypothesis Workflow 的结构化检查结果和报告聚合，让 Agent 能清楚追踪：
+完成 Core Dump Mode 的 MVP hardening，让 core dump task 在 daemon/live flow 中有稳定回归覆盖、
+清晰的 session/report 表达，以及明确的静态调试边界。
 
-1. 当前有哪些 hypothesis。
-2. 每个 hypothesis 执行了哪些 check。
-3. 每个 check 的 expression、assertion、expected、observed、status 和 evidence id 是什么。
-4. 工具观察、assertion result、Agent inference 和 final conclusion 如何分离。
-5. finish report、hypotheses index 和单个 hypothesis Markdown 能稳定呈现这条证据链。
+本轮聚焦：
 
-本轮目标不是让工具自动判断根因，而是把“提出假设 -> 执行检查 -> 记录证据 -> Agent
-更新判断”这条链路变得更可审计、更结构化。
+1. 增加 Linux + GDB core dump mode smoke。
+2. 明确 core mode 是静态取证模式。
+3. 在 core mode 下拒绝不适用的动态 action。
+4. 让 session summary、snapshot、report 和 evidence index 稳定呈现 core load 结果。
+5. 同步更新用户文档和 AI handoff/progress。
 
 ## 背景语义
 
-- 工具只记录观察、检查结果和 evidence id；最终根因判断仍必须来自 Agent。
-- Hypothesis workflow 已有 `hypothesis_create`、`hypothesis_check`、`hypothesis_conclude`、
-  Markdown 记录和 `assets/hypotheses/index.json`。
-- 当前 hypothesis check 的 assertion 类型较少，result 结构较薄，report 中 hypothesis 区域
-  也只是列文件，缺少聚合视图。
-- raw evidence 仍是权威数据；hypothesis check 的 observed/summary 是低噪声视图，不能替代 raw。
+- Core Dump Mode 加载 executable + core dump，不启动新的 inferior run。
+- Core dump 是历史现场，不能可靠继续运行，也不能设置未来命中用的 breakpoint/watchpoint。
+- 工具应支持静态取证 action，例如 backtrace、threads、frame select、locals、args、evaluate
+  和 hypothesis check。
+- 不适用于 core mode 的 action 应稳定拒绝并记录 `ToolError` evidence，而不是把底层 GDB
+  错误伪装成成功 action。
+- raw evidence 仍是权威来源，summary/report 只是低噪声视图。
 
 ## 范围
 
-### 1. 结构化 hypothesis check result
+### 1. Core dump smoke
 
-强化 `hypothesis_check` 的输出和持久化记录。建议 result 至少包含：
-
-- `hypothesis`
-- `check_id`
-- `description`
-- `expression`
-- `assertion`
-- `expected`
-- `observed`
-- `status`
-  - `passed`
-  - `failed`
-  - `unknown`
-- `evidence`
-- `error_evidence`（如有）
+新增或扩展 smoke，覆盖 Linux + GDB 下的真实 core load flow。
 
 要求：
 
-- `observed` 应来自本次新产生的 evidence summary 或稳定提取结果，不能复用历史值。
-- assertion 不可识别或无法判断时，应稳定返回 `unknown` 或 `ok:false`，并记录 `ToolError`
-  evidence；选择哪种语义要在文档中说清楚。
-- 不要把 check result 包装成根因判断。
+- 不依赖系统 `core_pattern` 或 shell core dump 限制。
+- 可以使用 GDB batch `generate-core-file` 生成测试 core。
+- 缺少 GDB 或非 Linux 时按现有项目口径 skip。
+- 通过 CTest 运行。
 
-### 2. Assertion 能力小步扩展
+Smoke 至少覆盖：
 
-在不扩大范围的前提下，扩展 assertion。建议保留已有：
+- 生成 core dump fixture。
+- 构造临时 task file，包含 `core dump` 字段。
+- `gdb-agent check` 能显示 core dump。
+- daemon `create` 加载 core session。
+- `status` 显示 `mode:"core"` 和 `stop_reason:"core_loaded"`。
+- 静态 action 可执行：
+  - `backtrace`
+  - `threads`
+  - `frame_select`
+  - `args_info`
+  - `locals`
+  - `evaluate`
+- 不适用 action 被拒绝：
+  - `run`
+  - `continue`
+- finish 后检查：
+  - report
+  - `task.normalized.json`
+  - `session_summary.json`
+  - `session_snapshot.json`
+  - `evidence/index.json`
 
-- `none`
-- `contains`
-- `not_contains`
-- `is_null`
-- `non_null`
+### 2. Core mode state guard
 
-并新增一小组稳定、容易测试的 assertion，例如：
+在 core mode 下稳定拒绝动态 action：
 
-- `equals`
-- `not_equals`
-
-或者新增 numeric 比较：
-
-- `gt`
-- `gte`
-- `lt`
-- `lte`
-
-二选一即可，不要一次性做太多。
-
-要求：
-
-- assertion 逻辑应能独立测试，不依赖 GDB。
-- 文档要说明 assertion 是对 observed/summary 的工具级检查，不等于根因结论。
-- 对空 expected、不可解析 observed、未知 assertion 要有稳定行为。
-
-### 3. Hypothesis evidence 和 index 强化
-
-视现有模型选择最小改动：
-
-- 可以新增 `HypothesisCheck` evidence kind；或
-- 强化现有 hypothesis Markdown/index，让每个 check 记录完整结构。
-
-无论选择哪种方式，都要确保 Agent 能从 artifacts 中回答：
-
-- hypothesis 的标题和描述是什么。
-- 每个 check 执行了什么表达式。
-- check 的 assertion 和 expected 是什么。
-- 工具观察到的 observed 是什么。
-- check 是 passed、failed 还是 unknown。
-- 对应 evidence id 是哪个。
-- Agent 的 inference/conclusion 是否存在，且与工具观察分开。
-
-`assets/hypotheses/index.json` 应成为机器可读入口，不只是一份松散列表。
-
-### 4. Report 聚合 Hypotheses
-
-扩展最终 Markdown report 的 Hypotheses 区域，稳定展示：
-
-- hypothesis id、title、tool_status。
-- 每个 check 的 description、expression、assertion、expected、observed、status 和 evidence id。
-- Agent inference。
-- final agent conclusion。
-- hypothesis index 和单个 Markdown 文件路径。
+- `run`
+- `continue`
+- `breakpoint_set`
+- `watchpoint_set`
+- `catchpoint_set`
+- `probe_enable`
+- `probe_disable`
+- `probe_delete`
 
 要求：
 
-- 报告要避免暗示工具自动宣称根因。
-- 如果没有 hypothesis，报告保持当前简洁行为。
-- 如果 hypothesis 文件或 index 缺失，报告应稳定降级，而不是崩溃。
+- 返回 `ok:false`。
+- response 包含 `action`、`error` 和 `evidence`。
+- 写入 `ToolError` evidence。
+- 不影响静态取证 action 和 hypothesis check。
 
-### 5. 测试和 smoke
+### 3. Session/report artifacts
 
-至少增加不依赖 GDB 的 assertion/unit 测试，覆盖：
+强化 core mode artifacts：
 
-- 已有 assertion。
-- 本轮新增 assertion。
-- unknown/invalid assertion 或不可判断输入。
+- daemon `create` response 应能表达 `mode:"core"`。
+- `session_summary.json` 应记录：
+  - `mode: "core"`
+  - `core_dump`
+  - `core_loaded`
+- `session_snapshot.json` 保留 core dump task 信息。
+- report 明确展示 Core Dump mode，以及 core dump 已加载并执行静态取证。
+- evidence index 能找到 `Core load` 的 `SessionEvent` evidence。
 
-如改动 action/result/report 行为，应扩展 Linux + GDB daemon smoke，覆盖：
-
-- `hypothesis_create`
-- `hypothesis_check`
-- 至少一个 passed check。
-- 至少一个 failed 或 unknown check。
-- `hypothesis_conclude`
-- `finish`
-- report 中 Hypotheses 聚合内容。
-- `assets/hypotheses/index.json` 的结构化字段。
-
-测试要求：
-
-- Linux + GDB 环境实际执行 live smoke。
-- 缺少 GDB 或非 Linux 时按现有项目口径 skip live 部分。
-- 不依赖 GDB 的 assertion 测试应在普通 CTest 中稳定运行。
-
-### 6. 文档同步
+### 4. 文档同步
 
 同步更新：
 
+- `docs/task_format.md`
+- `docs/task_format.en.md`
 - `docs/agent_actions.md`
 - `docs/agent_actions.en.md`
 - `docs/evidence_model.md`
 - `docs/evidence_model.en.md`
 
-如引入新的项目级决策或调整 hypothesis 语义，更新：
+如新增或明确项目级语义，更新：
 
 - `docs/ai/decision.md`
 
@@ -159,22 +115,19 @@
 
 ## 不做
 
-- 不让工具自动宣称根因。
-- 不新增 replay plan schema。
-- 不扩展新的 catchpoint event。
-- 不继续大改 MI parser，除非 hypothesis observed 提取确实需要一个很小的 helper。
+- 不扩展新的 core-specific 高层 action。
+- 不支持在 core mode 下继续运行 inferior。
+- 不扩展 replay/probe/hypothesis schema。
 - 不引入 PTY 或交互式 stdin。
-- 不为了 macOS live debugging 做兼容；目标运行平台仍是 Linux。
-- 不做大型 report 重构；只补 Hypotheses 区域需要的最小聚合。
+- 不为了 macOS live/core debugging 做兼容；目标运行平台仍是 Linux。
+- 不做大型 report 重构。
 
 ## 完成标准
 
-- `hypothesis_check` 输出和 `assets/hypotheses/index.json` 有结构化 check result。
-- assertion 行为有明确文档和不依赖 GDB 的测试覆盖。
-- report 的 Hypotheses 区域能聚合 hypothesis、checks、evidence、Agent inference 和 final
-  conclusion。
-- 工具观察、assertion result 和 Agent 结论保持清晰分离。
-- Linux + GDB daemon smoke 覆盖 create/check/conclude/finish/report 的 hypothesis flow，
-  或明确说明未覆盖原因。
-- `docs/agent_actions.md`、`docs/evidence_model.md` 及英文版与实现一致。
+- 新增 CTest 能覆盖 core dump mode smoke。
+- Linux + GDB 环境实际生成并加载 core dump。
+- Core Dump Mode 下静态 action 可用，动态 action 稳定拒绝并记录 `ToolError`。
+- `session_summary.json`、`session_snapshot.json`、report 和 evidence index 能稳定体现 core
+  load 结果。
+- 文档说明 core mode 的静态边界和可用 action。
 - `docs/ai/progress.md` 和 `docs/ai/handoff.md` 记录实际完成、验证结果和限制。

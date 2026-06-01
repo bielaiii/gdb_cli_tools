@@ -156,3 +156,18 @@ session 失败不作为当前阶段阻塞项。
 - macOS GDB 支持、target 架构和调试权限差异会制造与产品目标无关的噪声。
 - 回归测试可以分层：不依赖 GDB 的测试可在 macOS 跑，daemon/live session 测试以 Linux
   环境结果为准。
+
+## D011: Core Dump Mode 是静态取证模式
+
+状态：Accepted
+
+Core Dump Mode 加载 executable 和 core dump 后只支持静态取证 action，例如 `backtrace`、
+`threads`、`frame_select`、`locals`、`args_info`、`evaluate` 和 hypothesis check。
+`run`、`continue`、`breakpoint_set`、`watchpoint_set`、`catchpoint_set` 以及 probe
+enable/disable/delete 在 core mode 下会被 state guard 拒绝，并记录 `ToolError` evidence。
+
+原因：
+
+- core dump 不是 live inferior，不能可靠继续运行或设置未来命中用的 probe。
+- 明确拒绝动态 action 比把 GDB 错误伪装成普通 action result 更利于 Agent 判断下一步。
+- Core Dump Mode 的 MVP 价值在于稳定离线取证，而不是模拟 live session。

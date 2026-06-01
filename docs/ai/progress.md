@@ -203,17 +203,31 @@
 - 扩展 Linux + GDB daemon smoke，覆盖 `hypothesis_create`、passed/failed/unknown
   `hypothesis_check`、`hypothesis_conclude`、finish report 和 hypotheses index 字段。
 
+## 2026-06-01 本轮更新（core dump mode）
+
+- 新增 `scripts/smoke_core_dump_mode.sh` 和 CTest `core_dump_mode`。
+- smoke 使用 GDB batch 在 `read_session_value` 断点处 `generate-core-file`，避免依赖系统
+  `core_pattern` 或 shell core dump 限制。
+- daemon `create` core task 现在返回 `mode:"core"`，便于 Agent 直接判断 session 类型。
+- `session_summary.json` 新增 `core_dump` 和 `core_loaded` 字段。
+- Core Dump Mode 下 `run`、`continue`、`breakpoint_set`、`watchpoint_set`、`catchpoint_set`
+  和 probe enable/disable/delete 会被 state guard 拒绝，并写 `ToolError` evidence。
+- core smoke 覆盖 `check`、daemon create/status、`backtrace`、`threads`、`frame_select`、
+  `args_info`、`locals`、`evaluate`、core-mode guard、finish report、session summary、
+  snapshot 和 evidence index。
+- 同步更新 task format、agent actions 和 evidence model 中英文文档。
+
 ## Phase 1: Live Session 和证据闭环
 
 状态：Mostly Done
 
-已经覆盖 live session、task format、Run Mode、最小 Core Dump Mode、run deadline、
+已经覆盖 live session、task format、Run Mode、Core Dump Mode smoke、run deadline、
 light evidence、evidence store、session log、report、snapshot 和 summary。
 
 仍需关注：
 
 - 对更多 stop reason 的状态转换做回归测试。
-- 验证 Core Dump Mode 在不同 GDB 输出版本下的兼容性。
+- 继续用更多真实 core dump 和不同 GDB 输出版本验证 Core Dump Mode 兼容性。
 - 让错误消息和 report 对 Agent 更稳定。
 
 ## Phase 2: Replay Store
@@ -275,5 +289,5 @@ metadata。`raw_mi` 已作为受限高级 escape hatch。
 1. 用真实 Linux GDB raw 输出继续校准 MI parser、类型 sanitizer 和 backtrace/thread summary。
 2. 补 catchpoint 其他事件。
 3. 按真实调试需求继续扩展 hypothesis assertion，例如 numeric 比较。
-4. 增加更多真实项目 replay/probe fixture，覆盖失败策略、watchpoint/catchpoint on-hit 和跨
-   assets 目录报告展示。
+4. 增加更多真实项目 core/replay/probe fixture，覆盖 core dump 兼容性、失败策略、
+   watchpoint/catchpoint on-hit 和跨 assets 目录报告展示。

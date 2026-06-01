@@ -4,49 +4,43 @@
 
 ## 本轮完成
 
-- 完成 `docs/ai/next_cli_task.md` 指定的 Hypothesis Workflow 结构化检查结果和报告聚合任务。
-- `hypothesis_check` action result 现在包含：
-  - `hypothesis`
-  - `check_id`
-  - `description`
-  - `expression`
-  - `assertion`
-  - `expected`
-  - `observed`
-  - `status`
-  - `evidence`
-  - `error_evidence`
-- 单个 hypothesis Markdown 和 `assets/hypotheses/index.json` 同步记录上述结构化 check
-  result；`index.json` 继续使用 `gdb-agent-hypotheses-v1` schema，并成为机器可读入口。
-- Assertion 逻辑抽到 `src/workflow/hypothesis.cpp`，便于独立测试。
-- 保留已有 assertion：
-  - `none`
-  - `contains`
-  - `not_contains`
-  - `is_null`
-  - `non_null`
-- 新增 assertion：
-  - `equals`
-  - `not_equals`
-- 对未知 assertion，或需要非空 `expected` 但缺失的 assertion，`hypothesis_check` 稳定返回
-  `status:"unknown"`，并记录 `ToolError` evidence 作为 `error_evidence`。
-- 最终 report 的 Hypotheses 区域现在读取 `assets/hypotheses/index.json`，聚合展示：
-  - hypothesis id/title/tool status
-  - check description/expression/assertion/expected/status/evidence/error evidence
-  - observed summary
-  - Agent inference
-  - final agent conclusion
-- 如果 hypotheses index 缺失、为空或无法解析，report 会降级为列出单个 hypothesis Markdown
-  文件，不中断 finish。
-- 扩展 `scripts/smoke_daemon_action_flow.sh`，Linux + GDB 下覆盖：
-  - `hypothesis_create`
-  - passed `hypothesis_check`
-  - failed `hypothesis_check`
-  - unknown `hypothesis_check`
-  - `hypothesis_conclude`
-  - finish report Hypotheses 聚合
-  - `assets/hypotheses/index.json` 结构化字段
+- 完成 Core Dump Mode MVP hardening。
+- 新增 `scripts/smoke_core_dump_mode.sh`：
+  - 使用 GDB batch 在 `read_session_value` 断点处 `generate-core-file` 生成 core。
+  - 不依赖系统 `core_pattern` 或 shell core dump 限制。
+  - Linux + GDB 缺失时按现有口径 skip。
+- CMake/CTest 新增 `core_dump_mode`。
+- daemon `create` core task response 现在包含 `mode:"core"`。
+- `session_summary.json` 新增：
+  - `core_dump`
+  - `core_loaded`
+- Core Dump Mode 下 state guard 会拒绝动态 action，并写 `ToolError` evidence：
+  - `run`
+  - `continue`
+  - `breakpoint_set`
+  - `watchpoint_set`
+  - `catchpoint_set`
+  - `probe_enable`
+  - `probe_disable`
+  - `probe_delete`
+- core smoke 覆盖：
+  - `gdb-agent check` core task 输出。
+  - daemon create/status core session。
+  - `backtrace`
+  - `threads`
+  - `frame_select`
+  - `args_info`
+  - `locals`
+  - `evaluate`
+  - core-mode `run` / `continue` 拒绝路径。
+  - finish report。
+  - `task.normalized.json`
+  - `session_summary.json`
+  - `session_snapshot.json`
+  - `evidence/index.json`
 - 同步更新：
+  - `docs/task_format.md`
+  - `docs/task_format.en.md`
   - `docs/agent_actions.md`
   - `docs/agent_actions.en.md`
   - `docs/evidence_model.md`
@@ -57,17 +51,17 @@
 ## 验证
 
 - `cmake --build build`
+- `./scripts/smoke_core_dump_mode.sh`
 - `ctest --test-dir build --output-on-failure`
 
-当前 Linux 环境安装了 GDB，因此 `daemon_action_flow` 已实际执行 live daemon smoke，包括本轮
-新增的 hypothesis create/check/conclude/report/index 路径，而不是 skip。
+当前 Linux 环境安装了 GDB，因此 `core_dump_mode` 和 `daemon_action_flow` 都实际执行了
+Linux + GDB smoke，而不是 skip。
 
 ## 限制和注意事项
 
-- 本轮没有新增 numeric assertion；只新增了稳定、容易测试的 `equals` 和 `not_equals`。
-- `observed` 来自 evidence summary，是低噪声有损视图；raw evidence 仍是权威来源。
-- `unknown` 只表示工具无法判定该 assertion，不表示 hypothesis 被支持或反驳。
-- report 中 observed 最多展示 1000 字节；完整内容仍在 `assets/hypotheses/index.json` 和对应
-  evidence summary 中。
-- 当前工作区在本轮开始前已有 `docs/ai/next_cli_task.md` 未提交改动；该文件内容就是本轮
-  execution task 记录，因此纳入本轮提交。
+- 本轮没有扩展 Core Dump Mode 的新调试动作，只收敛 MVP 行为和回归覆盖。
+- Core smoke 使用 GDB `generate-core-file` 生成断点现场 core，不依赖目标程序真实崩溃后由系统
+  写出的 core 文件；后续仍建议用更多真实 core dump 和不同 GDB 输出版本验证兼容性。
+- Core Dump Mode 被定义为静态取证模式；需要继续执行程序、命中 breakpoint/watchpoint 或
+  on-hit 自动动作时，应使用 Run Mode。
+- 本轮没有修改 replay/probe/hypothesis schema。

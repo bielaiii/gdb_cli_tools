@@ -352,6 +352,13 @@ static bool action_allowed_in_state(const SessionOutcome &outcome,
         return false;
     };
 
+    if (outcome.core_mode &&
+        (action == "run" || action == "continue" || action == "breakpoint_set" ||
+         action == "watchpoint_set" || action == "catchpoint_set" ||
+         action == "probe_delete" || action == "probe_enable" || action == "probe_disable")) {
+        return deny(action + " is not available in core mode");
+    }
+
     if (action == "finish_session" || action == "finish") {
         if (state == SessionState::Stopped || state == SessionState::Exited || state == SessionState::Error) {
             return true;
@@ -2466,6 +2473,9 @@ static void write_session_files(const CliOptions &opts,
     summary << "  \"segfault\": " << (outcome.segfault ? "true" : "false") << ",\n";
     summary << "  \"run_timed_out\": " << (outcome.run_timed_out ? "true" : "false") << ",\n";
     summary << "  \"run_timeout_ms\": " << outcome.run_timeout_ms << ",\n";
+    summary << "  \"core_dump\": "
+            << (task.core_dump ? json_escape(task.core_dump->string()) : std::string("null")) << ",\n";
+    summary << "  \"core_loaded\": " << (outcome.core_mode && outcome.stop_reason == "core_loaded" ? "true" : "false") << ",\n";
     summary << "  \"stdin\": " << json_escape(task.stdin_path.string()) << ",\n";
     summary << "  \"stdout\": " << json_escape(outcome.inferior_stdout) << ",\n";
     summary << "  \"stderr\": " << json_escape(outcome.inferior_stderr) << ",\n";
@@ -2831,6 +2841,7 @@ static std::string handle_daemon_request(const Json &request,
         start_live_session(live);
         std::ostringstream out;
         out << "{\"ok\":true,\"session_id\":" << json_escape(session_id)
+            << ",\"mode\":" << json_escape(live.outcome.core_mode ? "core" : "run")
             << ",\"state\":" << json_escape(std::string(session_state_name(live.outcome.state)))
             << ",\"stop_reason\":" << json_escape(live.outcome.stop_reason)
             << ",\"signal\":" << json_escape(live.outcome.signal_name) << "}\n";

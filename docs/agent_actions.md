@@ -199,6 +199,8 @@ Action 会先根据 live session 状态做校验。例如：
 - `backtrace`、`locals`、`evaluate` 和 hypothesis check 需要 inferior 已停止或处于
   core mode。
 - `continue` 需要 stopped state。
+- core mode 是静态调试对象，`run`、`continue`、`breakpoint_set`、`watchpoint_set`、
+  `catchpoint_set` 和 probe enable/disable/delete 会被拒绝，并记录 `ToolError` evidence。
 - `finish` 需要 stopped、exited 或 error state。
 
 被拒绝的 action 会记录为 `ToolError` evidence。
