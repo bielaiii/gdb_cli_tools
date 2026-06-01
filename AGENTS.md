@@ -54,14 +54,17 @@
 
 ## 提交与推送约定
 
-- 每次 Codex 完成一轮用户要求的代码或文档改动后，都要创建一次 git commit。
+- 只有执行一轮完整任务流时才创建 git commit；单纯规划、问答、状态汇总或只更新
+  `docs/ai/next_cli_task.md` 的 planning mode 不需要 commit/push。
+- 每轮完整任务流结束时，由 Codex CLI 负责创建一次 git commit，提交本轮任务产生的完整记录
+  （代码、测试、文档、`docs/ai/progress.md`、`docs/ai/handoff.md` 等相关文件）。
 - 如果本轮产生了新文件，必须先 `git add` 这些新文件，再提交。
 - 提交范围只包含本轮任务相关的已修改文件和新增文件；不要把工作区里无关的既有改动混进提交。
 - 提交前先查看 `git status --short`，确认 staged 文件范围符合本轮任务。
 - 提交信息要简洁说明本轮实际完成的内容。
 - 提交成功后推送到当前分支对应的远程 upstream；如果没有 upstream，就推送到当前分支的同名远程分支。
-- 如果因为网络、认证、权限或远程配置导致无法 push，要在最终回复和 `docs/ai/handoff.md`
-  中明确记录原因。
+- 如果因为网络、认证、权限或远程配置导致无法 commit/push，要在最终回复和
+  `docs/ai/handoff.md` 中明确记录原因。
 
 ## 常用命令
 
@@ -120,6 +123,8 @@ session，并检查生成的 report 和 assets 目录。若当前机器没有 `g
 
 这句话意味着：
 
+0. 进入 Execution mode。
+
 1. 先阅读：
    - `final_feature.md`
    - `design.md`
@@ -142,6 +147,59 @@ session，并检查生成的 report 和 assets 目录。若当前机器没有 `g
    - 更新 `docs/ai/progress.md`。
    - 如果产生新的项目级决策，追加或更新 `docs/ai/decision.md`。
    - 覆写 `docs/ai/handoff.md`，补充实际完成的工作、验证结果和遗留限制。
-   - 更新progress.md
    - 按“提交与推送约定”提交本轮相关改动并推送到远程。
    - 停止运行，等待用户下一步指令。
+
+
+## Modes
+
+### Planning mode
+Purpose: decide what Codex CLI should do next. Planning mode is not an execution round.
+
+Allowed write files:
+- `docs/ai/next_cli_task.md`
+
+Allowed read files:
+- `final_feature.md`
+- `design.md`
+- `docs/ai/current_goal.md`
+- `docs/ai/decision.md`
+- `docs/ai/progress.md`
+- `docs/ai/handoff.md`
+- source files when needed to scope the next task
+
+Expected output:
+- Rewrite or update `docs/ai/next_cli_task.md` with the next concrete execution task.
+- In the final response, summarize the planned task and explicitly say that no commit/push was made.
+
+Forbidden:
+- source code changes
+- test changes
+- build/config changes
+- progress.md updates
+- handoff.md updates
+- build/test runs unless needed only for lightweight discovery
+- git commit
+- git push
+
+Notes:
+- Planning mode may leave `docs/ai/next_cli_task.md` modified in the working tree.
+- The next execution round will include this planning document in its own commit only if it is part of
+  the task record.
+
+### Execution mode
+Purpose: implement the task described in `docs/ai/next_cli_task.md`.
+
+Allowed write files:
+- files required by `docs/ai/next_cli_task.md`
+
+At the end of execution mode:
+- run build/test according to the validation guidance and the risk of the change
+- update `docs/ai/progress.md`
+- update `docs/ai/handoff.md`
+- update `docs/ai/decision.md` only if the task creates or changes a project-level decision
+- do not update `docs/ai/next_cli_task.md` unless explicitly asked
+- Codex CLI must stage only this execution round's related files, commit them once, and push the
+  current branch
+- if commit or push fails because of permissions, network, authentication, or remote configuration,
+  record the reason in `docs/ai/handoff.md` and the final response
