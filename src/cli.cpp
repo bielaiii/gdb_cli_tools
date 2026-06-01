@@ -8,6 +8,7 @@
 #include "report/report.hpp"
 #include "task/debug_task.hpp"
 #include "workflow/crash_workflow.hpp"
+#include "workflow/hypothesis.hpp"
 
 #include <filesystem>
 #include <fstream>
@@ -100,8 +101,10 @@ struct ProbeState {
         std::string expression;
         std::string assertion;
         std::string expected;
-        std::string result;
+        std::string observed;
+        std::string status;
         std::string evidence_id;
+        std::string error_evidence_id;
     };
 
     struct HypothesisRecord {
@@ -1075,12 +1078,16 @@ static void write_hypothesis_index(GdbSession &session, const ProbeState &probe_
             const auto &check = hypothesis.checks[i];
             out << "        {\n";
             out << "          \"id\": " << json_escape(check.id) << ",\n";
+            out << "          \"check_id\": " << json_escape(check.id) << ",\n";
             out << "          \"description\": " << json_escape(check.description) << ",\n";
             out << "          \"expression\": " << json_escape(check.expression) << ",\n";
             out << "          \"assertion\": " << json_escape(check.assertion) << ",\n";
             out << "          \"expected\": " << json_escape(check.expected) << ",\n";
-            out << "          \"result\": " << json_escape(check.result) << ",\n";
-            out << "          \"evidence\": " << json_escape(check.evidence_id) << "\n";
+            out << "          \"observed\": " << json_escape(check.observed) << ",\n";
+            out << "          \"status\": " << json_escape(check.status) << ",\n";
+            out << "          \"evidence\": " << json_escape(check.evidence_id) << ",\n";
+            out << "          \"error_evidence\": "
+                << (check.error_evidence_id.empty() ? std::string("null") : json_escape(check.error_evidence_id)) << "\n";
             out << "        }";
             if (i + 1 != hypothesis.checks.size()) {
                 out << ",";
@@ -1133,27 +1140,6 @@ static void append_text(const fs::path &path, const std::string &text) {
         throw std::runtime_error("failed to append file: " + path.string());
     }
     out << text;
-}
-
-static bool assertion_passed(const std::string &assertion,
-                             const std::string &summary,
-                             const std::string &expected) {
-    if (assertion.empty() || assertion == "none") {
-        return true;
-    }
-    if (assertion == "contains") {
-        return summary.find(expected) != std::string::npos;
-    }
-    if (assertion == "not_contains") {
-        return summary.find(expected) == std::string::npos;
-    }
-    if (assertion == "is_null") {
-        return summary.find("0x0") != std::string::npos || summary.find("= 0") != std::string::npos;
-    }
-    if (assertion == "non_null") {
-        return summary.find("0x0") == std::string::npos && summary.find("= 0") == std::string::npos;
-    }
-    return false;
 }
 
 static void handle_action_line(GdbSession &session,
@@ -1622,19 +1608,35 @@ static void handle_action_line(GdbSession &session,
         std::string expected = json_string_field(action, "expected");
 
         auto ev = collect_console(session, "Hypothesis check", "p " + expression);
-        bool passed = assertion_passed(assertion, ev.summary, expected);
+        std::string observed = ev.summary;
+        auto assertion_result = evaluate_hypothesis_assertion(assertion, observed, expected);
+        std::string error_evidence_id;
+        if (assertion_result.status == "unknown") {
+            std::ostringstream message;
+            message << "hypothesis_check assertion could not be evaluated";
+            if (!assertion_result.reason.empty()) {
+                message << ": " << assertion_result.reason;
+            }
+            auto error_ev = add_tool_error(session, "Hypothesis check assertion unknown", "hypothesis_check", message.str());
+            error_evidence_id = error_ev.id;
+        }
         fs::path file = hypothesis_file_for(session, id);
 
         std::ostringstream md;
         md << "## Check: " << description << "\n\n";
+        md << "- Check ID: `C" << (probe_state.hypotheses_by_id[id].checks.size() + 1) << "`\n";
         md << "- Expression: `" << expression << "`\n";
         md << "- Evidence: `" << ev.id << "`\n";
         md << "- Assertion: `" << assertion << "`\n";
         if (!expected.empty()) {
             md << "- Expected: `" << expected << "`\n";
         }
-        md << "- Result: `" << (passed ? "passed" : "failed") << "`\n\n";
-        md << "```text\n" << ev.summary << "\n```\n\n";
+        md << "- Status: `" << assertion_result.status << "`\n";
+        if (!error_evidence_id.empty()) {
+            md << "- Error evidence: `" << error_evidence_id << "`\n";
+        }
+        md << "\n### Observed\n\n";
+        md << "```text\n" << observed << "\n```\n\n";
         append_text(file, md.str());
         auto &record = probe_state.hypotheses_by_id[id];
         if (record.id.empty()) {
@@ -1649,15 +1651,32 @@ static void handle_action_line(GdbSession &session,
         check.expression = expression;
         check.assertion = assertion;
         check.expected = expected;
-        check.result = passed ? "passed" : "failed";
+        check.observed = observed;
+        check.status = assertion_result.status;
         check.evidence_id = ev.id;
+        check.error_evidence_id = error_evidence_id;
         record.checks.push_back(std::move(check));
-        record.tool_status = passed ? "EvidenceSupportsCheck" : "EvidenceContradictsCheck";
+        if (assertion_result.status == "passed") {
+            record.tool_status = "EvidenceSupportsCheck";
+        } else if (assertion_result.status == "failed") {
+            record.tool_status = "EvidenceContradictsCheck";
+        } else {
+            record.tool_status = "EvidenceCheckUnknown";
+        }
         write_hypothesis_index(session, probe_state);
 
         out << "{\"ok\":true,\"action\":\"hypothesis_check\",\"hypothesis\":" << json_escape(id)
-                  << ",\"assertion\":" << json_escape(passed ? "passed" : "failed")
-                  << ",\"evidence\":" << json_escape(ev.id) << "}\n";
+                  << ",\"check_id\":" << json_escape(record.checks.back().id)
+                  << ",\"description\":" << json_escape(description)
+                  << ",\"expression\":" << json_escape(expression)
+                  << ",\"assertion\":" << json_escape(assertion)
+                  << ",\"expected\":" << json_escape(expected)
+                  << ",\"observed\":" << json_escape(observed)
+                  << ",\"status\":" << json_escape(assertion_result.status)
+                  << ",\"evidence\":" << json_escape(ev.id)
+                  << ",\"error_evidence\":"
+                  << (error_evidence_id.empty() ? std::string("null") : json_escape(error_evidence_id))
+                  << "}\n";
         return;
     }
     if (action_name == "hypothesis_conclude") {

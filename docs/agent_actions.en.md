@@ -200,8 +200,50 @@ requires stopped, exited, or error state. Rejected actions are recorded as
 
 Hypothesis records are written both as per-hypothesis Markdown files and as a
 structured `assets/hypotheses/index.json`. Tool checks are recorded separately
-from agent conclusions. Final report sections `Agent Inference` and
-`Final Agent Conclusion` are populated from `finish_session`,
+from agent inference and conclusions; `hypothesis_check` represents a tool
+observation plus an assertion result, not a root-cause judgment.
+
+`hypothesis_check` runs `p <expression>` and uses the newly created evidence
+summary as `observed`. The action result, the per-hypothesis Markdown file,
+and `assets/hypotheses/index.json` include a structured check result:
+
+- `hypothesis`
+- `check_id`
+- `description`
+- `expression`
+- `assertion`
+- `expected`
+- `observed`
+- `status`: `passed`, `failed`, or `unknown`
+- `evidence`
+- `error_evidence`
+
+Supported assertions are:
+
+- `none`: no check, always `passed`.
+- `contains`: `passed` when `observed` contains non-empty `expected`.
+- `not_contains`: `passed` when `observed` does not contain non-empty
+  `expected`.
+- `is_null`: `passed` when `observed` contains common null markers such as
+  `0x0`, `nullptr`, or `(nil)`.
+- `non_null`: `passed` when `observed` does not contain common null markers.
+- `equals`: `passed` when trimmed `observed` exactly equals non-empty
+  `expected`.
+- `not_equals`: `passed` when trimmed `observed` does not equal non-empty
+  `expected`.
+
+Unknown assertions, and assertions that require `expected` when `expected` is
+empty, return `status:"unknown"` and record `ToolError` evidence. This means
+the tool could not evaluate that check; it does not prove or disprove the
+hypothesis.
+
+The final report's Hypotheses section aggregates hypothesis title, tool status,
+checks, evidence ids, agent inference, and final agent conclusion from
+`assets/hypotheses/index.json`. If the index is missing or cannot be parsed,
+the report falls back to listing the per-hypothesis Markdown files.
+
+The global final report sections `Agent Inference` and `Final Agent
+Conclusion` are populated from `finish_session`,
 `gdb-agent finish --agent-inference`, and `--final-conclusion`.
 
 The default interface is action based. `raw_mi` is an advanced escape hatch and

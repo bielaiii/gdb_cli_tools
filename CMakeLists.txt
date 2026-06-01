@@ -19,6 +19,7 @@ add_executable(gdb-agent
     src/report/report.cpp
     src/task/debug_task.cpp
     src/workflow/crash_workflow.cpp
+    src/workflow/hypothesis.cpp
 )
 
 target_compile_options(gdb-agent PRIVATE
@@ -67,6 +68,18 @@ target_compile_options(replay_plan_tests PRIVATE
     -Wpedantic
 )
 
+add_executable(hypothesis_assertion_tests
+    tests/hypothesis_assertion_tests.cpp
+    src/common/string_utils.cpp
+    src/workflow/hypothesis.cpp
+)
+
+target_compile_options(hypothesis_assertion_tests PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+)
+
 enable_testing()
 
 add_test(
@@ -90,5 +103,11 @@ add_test(
 add_test(
     NAME replay_plan_tests
     COMMAND replay_plan_tests
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
+add_test(
+    NAME hypothesis_assertion_tests
+    COMMAND hypothesis_assertion_tests
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )

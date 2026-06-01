@@ -1,37 +1,51 @@
 # Handoff
 
-日期：2026-05-31
+日期：2026-06-01
 
 ## 本轮完成
 
-- 完成 `docs/ai/next_cli_task.md` 指定的 Probe on-hit policy 和命中证据闭环任务。
-- `on_hit` metadata 现在支持 policy object：
-  - `actions`
-  - `timeout_ms`
-  - `max_output_bytes`
-  - `max_summary_lines`
-  - `failure_policy`
-  - `continue_after_hit`
-- 旧格式 `on_hit: [{"action":"backtrace"}]` 仍兼容读取，按默认 policy 执行。
-- `breakpoint_set`、`watchpoint_set` 和 `catchpoint_set` 会把 on-hit policy 保存到
-  `ProbeState` 与 finish-time `assets/probes.json`。
-- probe hit evidence（`BreakpointHit`、`WatchpointHit`、`CatchpointHit`）现在包含：
-  - `on_hit_policy`
-  - `on_hit_results`
-  - `on_hit_evidence_ids`
-  - `on_hit_error_ids`
-- 每个自动 on-hit action 会写入独立 `OnHitAction` evidence，记录 status、action evidence ids、
-  error evidence、skip reason 和按 policy 预算截断的 response 摘要。
-- 支持 `continue_on_error` / `stop_on_error`；`stop_on_error` 会把后续 action 记录为
-  `skipped`。
-- 支持 `continue_after_hit:true`，执行结果作为 `continue_after_hit` on-hit result 记录。
-- `session_summary.json` 新增：
-  - `probe_hit_count`
-  - `on_hit_action_count`
-  - `on_hit_error_count`
-- 报告 Probes 区域会列出 probe hit 与 on-hit evidence。
-- 扩展 `scripts/smoke_daemon_action_flow.sh`，Linux + GDB 下覆盖真实 breakpoint hit、
-  on-hit 成功/失败/skipped、`continue_after_hit`、summary/report/probes/evidence index。
+- 完成 `docs/ai/next_cli_task.md` 指定的 Hypothesis Workflow 结构化检查结果和报告聚合任务。
+- `hypothesis_check` action result 现在包含：
+  - `hypothesis`
+  - `check_id`
+  - `description`
+  - `expression`
+  - `assertion`
+  - `expected`
+  - `observed`
+  - `status`
+  - `evidence`
+  - `error_evidence`
+- 单个 hypothesis Markdown 和 `assets/hypotheses/index.json` 同步记录上述结构化 check
+  result；`index.json` 继续使用 `gdb-agent-hypotheses-v1` schema，并成为机器可读入口。
+- Assertion 逻辑抽到 `src/workflow/hypothesis.cpp`，便于独立测试。
+- 保留已有 assertion：
+  - `none`
+  - `contains`
+  - `not_contains`
+  - `is_null`
+  - `non_null`
+- 新增 assertion：
+  - `equals`
+  - `not_equals`
+- 对未知 assertion，或需要非空 `expected` 但缺失的 assertion，`hypothesis_check` 稳定返回
+  `status:"unknown"`，并记录 `ToolError` evidence 作为 `error_evidence`。
+- 最终 report 的 Hypotheses 区域现在读取 `assets/hypotheses/index.json`，聚合展示：
+  - hypothesis id/title/tool status
+  - check description/expression/assertion/expected/status/evidence/error evidence
+  - observed summary
+  - Agent inference
+  - final agent conclusion
+- 如果 hypotheses index 缺失、为空或无法解析，report 会降级为列出单个 hypothesis Markdown
+  文件，不中断 finish。
+- 扩展 `scripts/smoke_daemon_action_flow.sh`，Linux + GDB 下覆盖：
+  - `hypothesis_create`
+  - passed `hypothesis_check`
+  - failed `hypothesis_check`
+  - unknown `hypothesis_check`
+  - `hypothesis_conclude`
+  - finish report Hypotheses 聚合
+  - `assets/hypotheses/index.json` 结构化字段
 - 同步更新：
   - `docs/agent_actions.md`
   - `docs/agent_actions.en.md`
@@ -44,18 +58,16 @@
 
 - `cmake --build build`
 - `ctest --test-dir build --output-on-failure`
-- `./build/gdb-agent check examples/segfault_task.md`
-- `git diff --check`
 
-当前 Linux 环境安装了 GDB，因此 `daemon_action_flow` 已实际执行 live daemon smoke，
-包括本轮新增的 on-hit policy 命中路径，而不是 skip。
+当前 Linux 环境安装了 GDB，因此 `daemon_action_flow` 已实际执行 live daemon smoke，包括本轮
+新增的 hypothesis create/check/conclude/report/index 路径，而不是 skip。
 
 ## 限制和注意事项
 
-- 本轮没有扩展新的 catchpoint event；仍只支持已有 `catch throw`。
-- 本轮没有新增 hypothesis assertion，也没有继续扩展 replay plan schema。
-- `max_output_bytes` 和 `max_summary_lines` 目前限制 `OnHitAction` wrapper evidence 中的
-  response 摘要；底层 action 自己产生的 raw/summary evidence 仍按 evidence store 的全局规则保留。
-- `continue_after_hit:true` 会让 inferior 自动继续运行到下一个 stop event；默认值仍为
-  `false`。
-- 当前工作区仍存在用户侧 `AGENTS.md` 修改，本轮未触碰，也不应纳入本轮提交。
+- 本轮没有新增 numeric assertion；只新增了稳定、容易测试的 `equals` 和 `not_equals`。
+- `observed` 来自 evidence summary，是低噪声有损视图；raw evidence 仍是权威来源。
+- `unknown` 只表示工具无法判定该 assertion，不表示 hypothesis 被支持或反驳。
+- report 中 observed 最多展示 1000 字节；完整内容仍在 `assets/hypotheses/index.json` 和对应
+  evidence summary 中。
+- 当前工作区在本轮开始前已有 `docs/ai/next_cli_task.md` 未提交改动；该文件内容就是本轮
+  execution task 记录，因此纳入本轮提交。

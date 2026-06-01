@@ -1,15 +1,157 @@
 #include "report.hpp"
 
+#include "../common/json.hpp"
 #include "../common/string_utils.hpp"
 
 #include <sstream>
 #include <algorithm>
+#include <exception>
+#include <fstream>
 #include <string_view>
+#include <utility>
 
 namespace fs = std::filesystem;
 
 static std::string display_path(const fs::path &path) {
     return path.lexically_normal().string();
+}
+
+static std::string read_text_or_empty(const fs::path &path) {
+    std::ifstream in(path);
+    if (!in) {
+        return {};
+    }
+    std::ostringstream out;
+    out << in.rdbuf();
+    return out.str();
+}
+
+static std::string json_string_value(const Json &json, const std::string &key) {
+    const Json *value = json.find(key);
+    if (value == nullptr || !value->is_string()) {
+        return {};
+    }
+    return value->string_value;
+}
+
+static std::string short_report_text(std::string value) {
+    value = trim(std::move(value));
+    constexpr size_t kLimit = 1000;
+    if (value.size() > kLimit) {
+        value.resize(kLimit);
+        value += "\n... truncated in report; see hypothesis index and evidence summary ...";
+    }
+    return value;
+}
+
+static bool write_hypotheses_from_index(std::ostringstream &md, const fs::path &assets, const fs::path &index) {
+    std::string text = read_text_or_empty(index);
+    if (text.empty()) {
+        return false;
+    }
+
+    Json root;
+    try {
+        root = parse_json(text);
+    } catch (const std::exception &ex) {
+        md << "- Structured index: `" << display_path(index) << "` could not be parsed: `" << ex.what() << "`\n\n";
+        return false;
+    }
+
+    const Json *hypotheses = root.find("hypotheses");
+    if (hypotheses == nullptr || !hypotheses->is_array()) {
+        md << "- Structured index: `" << display_path(index) << "` does not contain a hypotheses array.\n\n";
+        return false;
+    }
+
+    md << "- Structured index: `" << display_path(index) << "`\n";
+    md << "- Tool observation, assertion status, agent inference, and final agent conclusion are separate fields.\n\n";
+
+    if (hypotheses->array_value.empty()) {
+        md << "No hypothesis records were written.\n\n";
+        return true;
+    }
+
+    for (const auto &hypothesis : hypotheses->array_value) {
+        if (!hypothesis.is_object()) {
+            continue;
+        }
+        std::string id = json_string_value(hypothesis, "id");
+        std::string title = json_string_value(hypothesis, "title");
+        std::string description = json_string_value(hypothesis, "description");
+        std::string tool_status = json_string_value(hypothesis, "tool_status");
+        std::string agent_inference = json_string_value(hypothesis, "agent_inference");
+        std::string agent_conclusion = json_string_value(hypothesis, "agent_conclusion");
+        fs::path hypothesis_file = assets / "hypotheses" / (id + ".md");
+
+        md << "### " << (id.empty() ? "unknown" : id);
+        if (!title.empty()) {
+            md << " " << title;
+        }
+        md << "\n\n";
+        md << "- Tool status: `" << tool_status << "`\n";
+        md << "- Hypothesis file: `" << display_path(hypothesis_file) << "`\n";
+        if (!description.empty()) {
+            md << "- Description: " << description << "\n";
+        }
+
+        const Json *checks = hypothesis.find("checks");
+        if (checks != nullptr && checks->is_array() && !checks->array_value.empty()) {
+            md << "\n| Check | Description | Expression | Assertion | Expected | Status | Evidence | Error Evidence |\n";
+            md << "| --- | --- | --- | --- | --- | --- | --- | --- |\n";
+            for (const auto &check : checks->array_value) {
+                if (!check.is_object()) {
+                    continue;
+                }
+                std::string error_evidence = json_string_value(check, "error_evidence");
+                md << "| `" << json_string_value(check, "id")
+                   << "` | " << json_string_value(check, "description")
+                   << " | `" << json_string_value(check, "expression")
+                   << "` | `" << json_string_value(check, "assertion")
+                   << "` | `" << json_string_value(check, "expected")
+                   << "` | `" << json_string_value(check, "status")
+                   << "` | `" << json_string_value(check, "evidence")
+                   << "` | " << (error_evidence.empty() ? "`-`" : ("`" + error_evidence + "`")) << " |\n";
+            }
+            md << "\n";
+            for (const auto &check : checks->array_value) {
+                if (!check.is_object()) {
+                    continue;
+                }
+                md << "Observed `" << json_string_value(check, "id") << "`:\n\n";
+                md << "```text\n" << short_report_text(json_string_value(check, "observed")) << "\n```\n\n";
+            }
+        } else {
+            md << "- Checks: none\n\n";
+        }
+
+        if (!agent_inference.empty()) {
+            md << "Agent inference:\n\n" << agent_inference << "\n\n";
+        }
+        if (!agent_conclusion.empty()) {
+            md << "Final agent conclusion: `" << agent_conclusion << "`\n\n";
+        }
+    }
+
+    return true;
+}
+
+static void write_hypothesis_file_list(std::ostringstream &md, const fs::path &hypotheses_dir) {
+    std::vector<fs::path> files;
+    for (const auto &entry : fs::directory_iterator(hypotheses_dir)) {
+        if (entry.is_regular_file() && entry.path().filename() != "index.json") {
+            files.push_back(entry.path());
+        }
+    }
+    std::sort(files.begin(), files.end());
+    if (files.empty()) {
+        md << "No hypothesis records were written.\n\n";
+    } else {
+        for (const auto &file : files) {
+            md << "- `" << display_path(file) << "`\n";
+        }
+        md << "\n";
+    }
 }
 
 void write_report(const fs::path &report,
@@ -102,23 +244,12 @@ void write_report(const fs::path &report,
     if (fs::exists(hypotheses_dir)) {
         md << "## Hypotheses\n\n";
         fs::path index = hypotheses_dir / "index.json";
+        bool rendered_index = false;
         if (fs::exists(index)) {
-            md << "- Structured index: `" << display_path(index) << "`\n";
+            rendered_index = write_hypotheses_from_index(md, assets, index);
         }
-        std::vector<fs::path> files;
-        for (const auto &entry : fs::directory_iterator(hypotheses_dir)) {
-            if (entry.is_regular_file() && entry.path().filename() != "index.json") {
-                files.push_back(entry.path());
-            }
-        }
-        std::sort(files.begin(), files.end());
-        if (files.empty()) {
-            md << "No hypothesis records were written.\n\n";
-        } else {
-            for (const auto &file : files) {
-                md << "- `" << display_path(file) << "`\n";
-            }
-            md << "\n";
+        if (!rendered_index) {
+            write_hypothesis_file_list(md, hypotheses_dir);
         }
     }
 

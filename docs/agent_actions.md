@@ -206,8 +206,44 @@ Action 会先根据 live session 状态做校验。例如：
 ## Hypothesis Workflow
 
 Hypothesis 记录会同时写成单个 hypothesis 的 Markdown 文件，以及结构化
-`assets/hypotheses/index.json`。工具 check 与 Agent conclusion 分开记录。最终报告中的
-`Agent Inference` 和 `Final Agent Conclusion` 来自：
+`assets/hypotheses/index.json`。工具 check 与 Agent inference / conclusion 分开记录；
+`hypothesis_check` 只表达工具级观察和 assertion 结果，不代表根因判断。
+
+`hypothesis_check` 会执行 `p <expression>` 并使用本次新产生的 evidence summary 作为
+`observed`。action result、单个 hypothesis Markdown 和 `assets/hypotheses/index.json`
+都会包含结构化 check result：
+
+- `hypothesis`
+- `check_id`
+- `description`
+- `expression`
+- `assertion`
+- `expected`
+- `observed`
+- `status`：`passed`、`failed` 或 `unknown`
+- `evidence`
+- `error_evidence`
+
+当前支持的 assertion：
+
+- `none`：不检查，稳定返回 `passed`。
+- `contains`：`observed` 包含非空 `expected` 时 `passed`。
+- `not_contains`：`observed` 不包含非空 `expected` 时 `passed`。
+- `is_null`：`observed` 包含常见 null marker，例如 `0x0`、`nullptr` 或 `(nil)` 时
+  `passed`。
+- `non_null`：`observed` 不包含常见 null marker 时 `passed`。
+- `equals`：去掉 `observed` 首尾空白后与非空 `expected` 完全相等时 `passed`。
+- `not_equals`：去掉 `observed` 首尾空白后与非空 `expected` 不相等时 `passed`。
+
+未知 assertion，或者需要 `expected` 但 `expected` 为空的 assertion，会返回
+`status:"unknown"`，并记录 `ToolError` evidence；这表示工具无法判定该 check，不表示
+hypothesis 被证实或证伪。
+
+最终报告的 Hypotheses 区域会从 `assets/hypotheses/index.json` 聚合 hypothesis title、
+tool status、checks、evidence id、Agent inference 和 final agent conclusion。如果 index
+缺失或无法解析，报告会降级为列出单个 hypothesis Markdown 文件。
+
+最终报告中的全局 `Agent Inference` 和 `Final Agent Conclusion` 来自：
 
 - `finish_session`
 - `gdb-agent finish --agent-inference`

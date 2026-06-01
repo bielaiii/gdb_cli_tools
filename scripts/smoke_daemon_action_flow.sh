@@ -122,6 +122,36 @@ require_contains "$on_hit_run_response" '"error":"unsupported action"'
 require_contains "$on_hit_run_response" '"action":"run"'
 require_contains "$on_hit_run_response" '"stop_reason":"breakpoint-hit"'
 
+hypothesis_create_response="$("$agent" action S1 '{"action":"hypothesis_create","id":"H-smoke-null-session","title":"session pointer is null","description":"Verify the breakpoint stop exposes a null session pointer before read_session_value."}' --socket "$socket_path")"
+require_contains "$hypothesis_create_response" '"ok":true'
+require_contains "$hypothesis_create_response" '"action":"hypothesis_create"'
+require_contains "$hypothesis_create_response" '"id":"H-smoke-null-session"'
+
+hypothesis_pass_response="$("$agent" action S1 '{"action":"hypothesis_check","hypothesis":"H-smoke-null-session","description":"session is null at handle_request","expression":"session","assertion":"is_null"}' --socket "$socket_path")"
+require_contains "$hypothesis_pass_response" '"ok":true'
+require_contains "$hypothesis_pass_response" '"action":"hypothesis_check"'
+require_contains "$hypothesis_pass_response" '"check_id":"C1"'
+require_contains "$hypothesis_pass_response" '"status":"passed"'
+require_contains "$hypothesis_pass_response" '"evidence":"'
+
+hypothesis_fail_response="$("$agent" action S1 '{"action":"hypothesis_check","hypothesis":"H-smoke-null-session","description":"session is not non-null","expression":"session","assertion":"non_null"}' --socket "$socket_path")"
+require_contains "$hypothesis_fail_response" '"ok":true'
+require_contains "$hypothesis_fail_response" '"action":"hypothesis_check"'
+require_contains "$hypothesis_fail_response" '"check_id":"C2"'
+require_contains "$hypothesis_fail_response" '"status":"failed"'
+
+hypothesis_unknown_response="$("$agent" action S1 '{"action":"hypothesis_check","hypothesis":"H-smoke-null-session","description":"unsupported assertion stays unknown","expression":"session","assertion":"unsupported_assertion"}' --socket "$socket_path")"
+require_contains "$hypothesis_unknown_response" '"ok":true'
+require_contains "$hypothesis_unknown_response" '"action":"hypothesis_check"'
+require_contains "$hypothesis_unknown_response" '"check_id":"C3"'
+require_contains "$hypothesis_unknown_response" '"status":"unknown"'
+require_contains "$hypothesis_unknown_response" '"error_evidence":"'
+
+hypothesis_conclude_response="$("$agent" action S1 '{"action":"hypothesis_conclude","hypothesis":"H-smoke-null-session","conclusion":"Supported by current checks","inference":"The tool observations show session is null at the breakpoint; the unsupported assertion is recorded separately as unknown."}' --socket "$socket_path")"
+require_contains "$hypothesis_conclude_response" '"ok":true'
+require_contains "$hypothesis_conclude_response" '"action":"hypothesis_conclude"'
+require_contains "$hypothesis_conclude_response" '"conclusion":"Supported by current checks"'
+
 save_response="$("$agent" save-action S1 '{"action":"backtrace"}' --name smoke-replay --failure-policy stop_on_error --socket "$socket_path")"
 require_contains "$save_response" '"ok":true'
 require_contains "$save_response" '"action":"save_action"'
@@ -139,6 +169,8 @@ require_file "$assets_dir/session_summary.json"
 require_file "$assets_dir/evidence/index.json"
 require_file "$assets_dir/probes.json"
 require_file "$assets_dir/replay/smoke-replay.json"
+require_file "$assets_dir/hypotheses/index.json"
+require_file "$assets_dir/hypotheses/H-smoke-null-session.md"
 
 grep -F '"kind":"ToolError"' "$assets_dir/evidence/index.json" >/dev/null
 grep -F '"kind":"BreakpointHit"' "$assets_dir/evidence/index.json" >/dev/null
@@ -158,6 +190,18 @@ grep -F 'Probe Hit And On-Hit Evidence' "$report_path" >/dev/null
 grep -F '"schema": "gdb-agent-replay-plan-v1"' "$assets_dir/replay/smoke-replay.json" >/dev/null
 grep -F '"failure_policy": "stop_on_error"' "$assets_dir/replay/smoke-replay.json" >/dev/null
 grep -F '"fingerprint":' "$assets_dir/replay/smoke-replay.json" >/dev/null
+grep -F '"schema": "gdb-agent-hypotheses-v1"' "$assets_dir/hypotheses/index.json" >/dev/null
+grep -F '"id": "H-smoke-null-session"' "$assets_dir/hypotheses/index.json" >/dev/null
+grep -F '"check_id": "C1"' "$assets_dir/hypotheses/index.json" >/dev/null
+grep -F '"status": "passed"' "$assets_dir/hypotheses/index.json" >/dev/null
+grep -F '"status": "failed"' "$assets_dir/hypotheses/index.json" >/dev/null
+grep -F '"status": "unknown"' "$assets_dir/hypotheses/index.json" >/dev/null
+grep -F '"observed":' "$assets_dir/hypotheses/index.json" >/dev/null
+grep -F '"error_evidence": "E' "$assets_dir/hypotheses/index.json" >/dev/null
+grep -F '## Hypotheses' "$report_path" >/dev/null
+grep -F 'H-smoke-null-session session pointer is null' "$report_path" >/dev/null
+grep -F '| `C1` | session is null at handle_request' "$report_path" >/dev/null
+grep -F 'Final agent conclusion: `Supported by current checks`' "$report_path" >/dev/null
 
 create_replay_response="$("$agent" create "$task_file" --socket "$socket_path" --session S2 --out "$report_path_replay" --assets "$assets_dir_replay")"
 require_contains "$create_replay_response" '"ok":true'

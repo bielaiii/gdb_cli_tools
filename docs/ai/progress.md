@@ -184,6 +184,25 @@
   on-hit 成功/失败/skipped、`continue_after_hit`、session summary、report、probes.json 和
   evidence index。
 
+## 2026-06-01 本轮更新（hypothesis workflow）
+
+- `hypothesis_check` 现在返回并持久化结构化 check result：hypothesis、check id、
+  description、expression、assertion、expected、observed、status、evidence 和
+  error evidence。
+- `assets/hypotheses/index.json` 现在是机器可读的 hypothesis 入口，每个 check 包含
+  `observed`、`status` 和 `error_evidence`；单个 hypothesis Markdown 同步展示相同链路。
+- assertion 逻辑抽到 `src/workflow/hypothesis.cpp`，新增不依赖 GDB 的
+  `hypothesis_assertion_tests`。
+- 保留并覆盖已有 `none`、`contains`、`not_contains`、`is_null`、`non_null`，新增
+  `equals` 和 `not_equals`。
+- 未知 assertion 或缺少必需 `expected` 的 assertion 稳定返回 `status:"unknown"`，并记录
+  `ToolError` evidence，不把 unknown 解释为支持或反驳 hypothesis。
+- 最终 report 的 Hypotheses 区域现在从 `assets/hypotheses/index.json` 聚合 hypothesis、
+  checks、observed、evidence id、Agent inference 和 final agent conclusion；index 缺失或
+  解析失败时降级为列出单个 Markdown 文件。
+- 扩展 Linux + GDB daemon smoke，覆盖 `hypothesis_create`、passed/failed/unknown
+  `hypothesis_check`、`hypothesis_conclude`、finish report 和 hypotheses index 字段。
+
 ## Phase 1: Live Session 和证据闭环
 
 状态：Mostly Done
@@ -227,15 +246,15 @@ policy、自动 continue 行为记录、`OnHitAction` evidence 和 Linux + GDB l
 
 ## Phase 4: Hypothesis Workflow
 
-状态：Partially Done
+状态：Mostly Done
 
-已经有 create/check/conclude、assertion、evidence 关联、Markdown 记录和 index。
+已经有 create/check/conclude、结构化 check result、assertion、evidence 关联、Markdown
+记录、机器可读 index 和 report 聚合。
 
 仍需关注：
 
-- assertion 类型还比较少。
-- hypothesis check 结果需要更强的结构化表达。
-- 报告中 hypothesis 区域可以进一步聚合工具观察和 AI 结论。
+- assertion 类型仍然保持小集合，后续可按真实需求增加 numeric 比较。
+- report 中 hypothesis 聚合已有基础视图，后续可继续优化长 observed 的展示和跳转体验。
 
 ## Phase 5: 深度摘要和高级 MI
 
@@ -255,6 +274,6 @@ metadata。`raw_mi` 已作为受限高级 escape hatch。
 
 1. 用真实 Linux GDB raw 输出继续校准 MI parser、类型 sanitizer 和 backtrace/thread summary。
 2. 补 catchpoint 其他事件。
-3. 扩展 hypothesis assertion 与报告聚合。
+3. 按真实调试需求继续扩展 hypothesis assertion，例如 numeric 比较。
 4. 增加更多真实项目 replay/probe fixture，覆盖失败策略、watchpoint/catchpoint on-hit 和跨
    assets 目录报告展示。

@@ -160,6 +160,57 @@ are still recorded as `skipped` `OnHitAction` evidence. `continue_after_hit:true
 appends an automatic continue and records it as a `continue_after_hit` result;
 the report records this behavior without turning it into a root-cause judgment.
 
+## Hypothesis Artifacts
+
+The machine-readable entry point for the hypothesis workflow is:
+
+```text
+<assets>/hypotheses/index.json
+```
+
+Each hypothesis also has a human-readable record:
+
+```text
+<assets>/hypotheses/<hypothesis-id>.md
+```
+
+`index.json` uses the `gdb-agent-hypotheses-v1` schema. Each hypothesis entry
+contains:
+
+- `id`
+- `title`
+- `description`
+- `tool_status`
+- `agent_conclusion`
+- `agent_inference`
+- `checks`
+
+Each check entry contains:
+
+- `id` and `check_id`
+- `description`
+- `expression`
+- `assertion`
+- `expected`
+- `observed`
+- `status`: `passed`, `failed`, or `unknown`
+- `evidence`
+- `error_evidence`
+
+`observed` comes from the newly created evidence summary for that
+`hypothesis_check`. It is a compact, lossy view; `evidence` points to the raw
+GDB evidence entry, which remains authoritative. `status` is the tool's
+assertion result over `observed`, not a root-cause conclusion.
+
+Unknown assertions, and assertions missing required `expected` input, produce
+`status:"unknown"` and reference `ToolError` evidence through `error_evidence`.
+`unknown` means the tool could not evaluate that check; it does not support or
+refute the hypothesis.
+
+The final report aggregates hypotheses, checks, evidence ids, agent inference,
+and final agent conclusion from `index.json`. If the index is missing or cannot
+be parsed, the report falls back to listing the per-hypothesis Markdown files.
+
 Reports should cite evidence ids rather than relying on summaries alone.
 Reports now include each evidence item's raw hash so an Agent can verify that
 the cited raw file still matches the report.

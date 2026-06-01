@@ -158,6 +158,53 @@ evidence 仍独立保留。
 `continue_after_hit:true` 会追加一个自动 continue，并作为 `continue_after_hit` result 记录；
 报告只记录该行为，不把它解释为根因判断。
 
+## Hypothesis Artifacts
+
+Hypothesis workflow 的机器可读入口是：
+
+```text
+<assets>/hypotheses/index.json
+```
+
+单个 hypothesis 的 human-readable 记录写在：
+
+```text
+<assets>/hypotheses/<hypothesis-id>.md
+```
+
+`index.json` 使用 `gdb-agent-hypotheses-v1` schema。每个 hypothesis entry 包含：
+
+- `id`
+- `title`
+- `description`
+- `tool_status`
+- `agent_conclusion`
+- `agent_inference`
+- `checks`
+
+每个 check entry 包含：
+
+- `id` 和 `check_id`
+- `description`
+- `expression`
+- `assertion`
+- `expected`
+- `observed`
+- `status`：`passed`、`failed` 或 `unknown`
+- `evidence`
+- `error_evidence`
+
+`observed` 来自该次 `hypothesis_check` 新产生的 evidence summary，是低噪声、有损视图；
+`evidence` 指向原始 GDB 取证 entry，raw evidence 仍是权威来源。`status` 是工具对
+`observed` 执行 assertion 后的结果，不是根因结论。
+
+未知 assertion，或者缺少必需 `expected` 的 assertion，会产生 `status:"unknown"`，并通过
+`error_evidence` 引用一条 `ToolError` evidence。`unknown` 只表示工具无法判断该 check，
+不表示支持或反驳 hypothesis。
+
+最终报告会从 `index.json` 聚合 hypothesis、checks、evidence id、Agent inference 和 final
+agent conclusion。如果 index 缺失或无法解析，报告会降级为列出单个 Markdown 文件。
+
 ## 报告引用规则
 
 报告应该引用 evidence id，而不是只依赖 summary。报告现在也会包含每条 evidence 的

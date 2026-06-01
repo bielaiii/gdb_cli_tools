@@ -118,8 +118,11 @@ evidence id 和 error id。每个自动 on-hit action 额外写入 `OnHitAction`
 
 状态：Accepted
 
-工具只记录 hypothesis、check、assertion result 和 evidence id。AI Agent 的推理和最终
-结论必须单独写入 `agent_inference` 和 `final_agent_conclusion`。
+工具只记录 hypothesis、check、assertion result 和 evidence id。`hypothesis_check`
+的 `status` 只允许表达工具级检查结果：`passed`、`failed` 或 `unknown`。未知 assertion
+或缺少必需 `expected` 的 assertion 必须稳定记录为 `unknown`，并引用 `ToolError`
+evidence；它不代表 hypothesis 被支持或反驳。AI Agent 的推理和最终结论必须单独写入
+`agent_inference` 和 `final_agent_conclusion`。
 
 原因：
 
