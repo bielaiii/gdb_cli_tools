@@ -82,6 +82,7 @@ std::string sanitize_output(std::string s, const std::filesystem::path &working_
                            "std::string");
     s = std::regex_replace(s, std::regex(R"(\s*>\s*>)"), ">>");
     s = std::regex_replace(s, std::regex(R"(,\s*std::allocator<([^<>]+)>)"), "");
+    s = std::regex_replace(s, std::regex(R"(,\s*std::default_delete<([^<>]+)>)"), "");
     s = std::regex_replace(s, std::regex(R"(<\s+)"), "<");
     s = std::regex_replace(s, std::regex(R"(\s+>)"), ">");
     s = std::regex_replace(s, std::regex(R"(,\s+)"), ", ");

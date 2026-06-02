@@ -2,11 +2,13 @@
 
 ## 目标
 
-新增一轮更丰富的回归/探索测试，用确定性的脚本和单元测试主动暴露当前项目的薄弱点、
-边界不完善处和文档/实现不一致处。
+新增一轮更丰富的工具能力回归/探索测试，用确定性的 fixture、脚本和少量单元测试主动验证
+`gdb-agent` 作为 AI Agent 调试执行层的真实可用性，并暴露当前能力薄弱点、行为不稳定处和
+文档/实现不一致处。
 
-本轮不是扩展新产品功能，而是提升测试的“找问题能力”。测试应覆盖现有核心能力在错误输入、
-状态切换、跨 session、artifact 一致性和 GDB/MI 输出边界下的行为，并把发现的问题记录到
+本轮不是扩展新产品功能，而是提升测试对“工具能力”的验证深度。测试应尽量模拟 Agent 会做的
+真实调试动作：启动 session、设置 probe、命中断点/观察点/捕获点、执行 on-hit、保存 replay、
+验证 hypothesis、加载 core、检查 evidence/report 是否能支撑推理，并把发现的问题记录到
 `docs/ai/handoff.md` 和 `docs/ai/progress.md`。
 
 ## 背景
@@ -22,28 +24,30 @@
 - core dump mode 静态取证和动态 action guard。
 - MI parser、replay plan、hypothesis assertion 的部分非 GDB 单元测试。
 
-这些覆盖证明主路径可用，但仍偏“预期路径”。下一轮应重点制造更复杂但可重复的场景，让测试能回答：
+这些覆盖证明主路径可用，但仍偏“单一示例 + 预期路径”。下一轮应重点制造更接近真实调试的
+可重复场景，让测试能回答：
 
-1. 状态机在非法动作、重复动作、关闭 session、finish 后 action 等场景是否稳定？
-2. 错误输入是否都能产生结构化 `ToolError`，而不是崩溃、挂住或输出不可解析文本？
-3. report/assets/evidence/session summary 之间是否一致？
-4. replay/probe/hypothesis/core/run mode 的边界是否清楚？
-5. GDB/MI summary 在更真实、更嘈杂的输出下是否仍然低噪声且可审计？
+1. Agent 面对不同 bug 形态时，现有 action 是否足够拿到关键证据？
+2. breakpoint/watchpoint/catchpoint/on-hit 是否能可靠关联 probe metadata、命中现场和 evidence？
+3. replay/hypothesis/report 是否能形成可审计的“动作 -> 观察 -> 推理材料”链路？
+4. Run Mode 和 Core Dump Mode 的能力边界是否清楚，错误动作是否能稳定失败？
+5. report/assets/evidence/session summary 是否足够一致，能让 Agent 低噪声地继续分析？
+6. GDB/MI summary 在更真实、更嘈杂的输出下是否仍然低噪声且保留 raw audit？
 
 ## 范围
 
-### 1. 新增一个 edge-case integration smoke
+### 1. 新增工具能力 integration smoke
 
 新增脚本，例如：
 
 ```text
-scripts/smoke_edge_cases.sh
+scripts/smoke_capability_matrix.sh
 ```
 
 并通过 CTest 运行，例如测试名：
 
 ```text
-edge_case_flow
+capability_matrix_flow
 ```
 
 要求：
@@ -54,33 +58,41 @@ edge_case_flow
 - 不依赖系统 core dump 配置。
 - 不把测试产物提交进仓库。
 
-该 smoke 至少覆盖以下类别中的大部分，优先选择最容易暴露问题的场景：
+该 smoke 应围绕“工具能力矩阵”组织，而不是围绕 parser/input 边界组织。优先覆盖以下场景。
 
-#### Session lifecycle / state guard
+#### Fixture 程序
 
-- 对不存在的 session 调用 `status`、`action`、`finish`，确认返回稳定错误。
-- 对已 `finish` 或 `close` 的 session 再调用 action，确认不会访问悬空状态。
-- 重复 `finish` 或重复 `close` 的行为应稳定：要么幂等成功，要么结构化失败，但不能崩溃或挂住。
-- 在 running/stopped/exited/core 等不同状态下调用不合适 action，确认 `ToolError` evidence 和 response 一致。
+如果现有 `examples/segfault.cpp` 不足以覆盖能力矩阵，允许新增小型 C++ fixture，并接入 CMake。
+fixture 应保持短小、确定、可解释，例如：
 
-#### Invalid action payloads
+- segfault fixture：稳定崩溃，便于 backtrace/locals/args/evaluate/hypothesis。
+- watchpoint fixture：修改全局或堆对象字段，便于 watchpoint 命中和 `WatchpointHit` evidence。
+- exception fixture：抛出 C++ exception，便于 `catchpoint_set event:"throw"` 和 `CatchpointHit`。
+- stdin/env/output fixture：读取 stdin/env 并写 stdout/stderr，便于验证非 PTY I/O 和
+  `InferiorOutput` evidence。
+- multithread fixture：创建少量线程并在某线程崩溃，便于验证 `threads`、thread summary 和
+  crash 现场表达。
 
-- action JSON 非法或缺少 `action` 字段。
-- `breakpoint_set` 缺少 location。
-- `watchpoint_set` 缺少 expression。
-- `frame_select` 使用负数或明显越界 frame。
-- `evaluate` 缺少 expression 或表达式非法。
-- `raw_mi` 缺少 `risk:"advanced"`。
-- `raw_mi` 使用不允许或危险的 payload 时应稳定拒绝或记录风险。
-- `replay` 指向不存在的 plan 文件。
-- `hypothesis_check` 指向不存在的 hypothesis。
-- `hypothesis_check` 缺少 expression 或 assertion 参数。
+不要为了 fixture 做复杂业务逻辑；fixture 的目的只是稳定触发工具能力。
 
-要求：
+#### Agent-facing action 能力
 
-- 每个错误路径返回 `ok:false` 或明确的 `status:"unknown"`，具体按现有语义。
-- 错误路径应尽量写入 `ToolError` evidence。
-- response 中至少包含 action/error/evidence 或等价字段，便于 Agent 判断下一步。
+至少覆盖：
+
+- `backtrace`、`threads`、`frame_select`、`args_info`、`locals`、`registers`、`evaluate`。
+- `breakpoint_set` 命中真实代码位置，并检查 `BreakpointHit` evidence。
+- `watchpoint_set` 在 fixture 中真实命中；如果当前实现或 GDB 条件限制导致不稳定，应记录为薄弱点。
+- `catchpoint_set event:"throw"` 在 exception fixture 中真实命中，并检查 `CatchpointHit` evidence。
+- `probe_list` 能展示 breakpoint/watchpoint/catchpoint 的 comment、purpose、condition、hit count。
+- `probe_enable` / `probe_disable` / `probe_delete` 对后续命中和 `probe_list` 的影响符合预期。
+- on-hit policy 覆盖：
+  - 成功 action。
+  - unsupported action。
+  - `continue_on_error`。
+  - `stop_on_error`。
+  - `continue_after_hit:true`。
+  - 禁止 `raw_mi` 作为 on-hit action。
+- `raw_mi` 只在显式 `risk:"advanced"` 时可用，并产生可审计 raw evidence。
 
 #### Artifact consistency
 
@@ -95,6 +107,11 @@ edge_case_flow
 - `session_summary.json` 中的计数与 evidence index 中相应 kind 的数量大体一致。
 - report 中出现的关键 evidence id 能在 evidence index 中找到。
 - `probes.json` 只在 finish/report 阶段作为最终 artifact 出现；不要假设它是 live 恢复状态。
+- 对每个 fixture/session，确认 evidence chain 足以支持 Agent 继续推理：
+  - action response 有 evidence id。
+  - evidence index 有对应 kind/title。
+  - view/summary/raw 文件可读。
+  - report 中能看到关键 session summary 和 probe/hypothesis/replay 信息。
 
 如果发现当前实现不满足某项一致性，不要在测试里硬编码错误期望来掩盖问题；应让测试失败或记录为明确 weakness。
 
@@ -108,13 +125,19 @@ edge_case_flow
 - 检查 replay run/step evidence 和 `session_summary.json` 计数。
 - 检查新 session 产生新的 evidence id，不复用旧 session 的 evidence id。
 
-#### Probe / on-hit boundaries
+#### Hypothesis workflow 能力
 
-- watchpoint 命中或至少 watchpoint 设置失败路径。
-- disabled probe 不应触发 on-hit。
-- 删除 probe 后 `probe_list` 不应继续返回该 probe。
-- on-hit 中包含 unsupported action 时，`continue_on_error` 和 `stop_on_error` 的 skipped/error 记录应稳定。
-- `raw_mi` 不允许作为 on-hit action。
+- 在真实停点上创建 hypothesis。
+- 用 `hypothesis_check` 对真实表达式执行：
+  - passed check。
+  - failed check。
+  - unknown check。
+- 检查每个 check 的 observed/status/evidence/error_evidence 是否进入：
+  - action response。
+  - `assets/hypotheses/index.json`。
+  - 单个 hypothesis Markdown。
+  - 最终 report。
+- 用 `hypothesis_conclude` 写入 Agent inference/final conclusion，并确认 report 不把工具观察误写成工具自动根因结论。
 
 #### Core mode boundaries
 
@@ -128,36 +151,45 @@ edge_case_flow
 - 确认这些动作全部被 state guard 拒绝并产生 `ToolError` evidence。
 - 确认静态 action 仍可用。
 
-### 2. 增加非 GDB 单元测试
+#### Session lifecycle / state guard
 
-新增或扩展 `tests/` 下的单元测试，优先覆盖不需要 live GDB 的薄弱逻辑：
+作为辅助覆盖，不作为本轮主线：
 
-- task parser 边界：
-  - 缺少 required section。
-  - 空 executable。
-  - shell-like args quoting/escaping。
-  - env 行格式。
-  - stdin/core dump path 字段。
-- JSON/action parsing 边界：
-  - 非法 JSON。
-  - 缺少 action。
-  - 参数类型错误。
-- MI parser/sanitizer 边界：
+- 对不存在的 session 调用 `status`、`action`、`finish`，确认返回稳定错误。
+- 对已 `finish` 或 `close` 的 session 再调用 action，确认不会访问悬空状态。
+- 重复 `finish` 或重复 `close` 的行为应稳定：要么幂等成功，要么结构化失败，但不能崩溃或挂住。
+- 在 stopped/exited/core 等不同状态下调用不合适 action，确认 `ToolError` evidence 和 response 一致。
+
+### 2. 增加工具能力相关的非 GDB 单元测试
+
+新增或扩展 `tests/` 下的单元测试，优先覆盖不需要 live GDB、但直接影响工具能力解释的逻辑。
+不要把本轮重点放在 Markdown task parser 的穷举边界；parser 测试只在发现会影响工具能力时补。
+
+优先覆盖：
+
+- MI parser/sanitizer/summarizer：
   - nested tuple/list。
   - escaped quotes。
   - stream records。
-  - STL 类型 sanitizer，例如 vector/map/unique_ptr/shared_ptr 的噪声压缩，如果当前支持不足，先用测试暴露。
-- hypothesis assertion 边界：
+  - backtrace/thread raw MI 中的真实噪声。
+  - STL 类型 sanitizer，例如 vector/map/unique_ptr/shared_ptr 的噪声压缩；如果当前支持不足，先用测试暴露。
+- replay result / evidence accounting：
+  - stop_on_error 后 skipped step 的结构。
+  - continue_on_error 的后续 step 继续执行。
+  - task fingerprint mismatch / force warning 的结构化表达。
+- hypothesis assertion：
   - 空 observed。
   - expected 缺失。
   - equals/not_equals 的 string 边界。
   - 为未来 numeric assertion 记录缺口，但不要在本轮实现 numeric 比较，除非测试暴露出简单一致性 bug。
+- report/evidence helper：
+  - 如果有可抽取的纯函数，验证 evidence id 引用、summary 计数、kind 聚合等不依赖 GDB 的逻辑。
 
 要求：
 
 - 新测试接入 CTest。
 - 单元测试不依赖 GDB。
-- 测试名称清晰，失败消息能定位具体 case。
+- 测试名称清晰，失败消息能定位具体能力缺口。
 
 ### 3. 生成“薄弱点清单”
 

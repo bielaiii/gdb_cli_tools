@@ -235,6 +235,35 @@
   escaping、空字符串 arg、env 行、stdin/core dump path、run timeout 和 JSON 基础错误。
 - 本轮未改产品行为，只将发现的边界弱点记录到 handoff，作为后续修复输入。
 
+## 2026-06-02 本轮更新（capability matrix）
+
+- 新增 `examples/capability_fixture.cpp` 和 CMake target `capability_fixture`，用一个确定性 fixture
+  覆盖 probe、stdin/env/output、thread crash 和 core dump 生成场景。
+- 新增 `scripts/smoke_capability_matrix.sh` 和 CTest `capability_matrix_flow`，Linux + GDB 下覆盖：
+  - 真实 `watchpoint_set` 停止、两个真实 `breakpoint_set` 命中、`catchpoint_set event:"throw"`
+    命中和 `probe_list` metadata。
+  - on-hit 成功 action、unsupported action、`continue_on_error`、`stop_on_error` skipped evidence
+    和 `continue_after_hit:true` wrapper evidence。
+  - `raw_mi` 显式 `risk:"advanced"` 成功路径，以及缺少 risk 的稳定拒绝路径。
+  - 真实停点上的 hypothesis create/check/conclude，覆盖 passed、failed、unknown、observed、
+    error evidence、hypotheses index 和 report 聚合。
+  - replay continue/stop failure policy、task fingerprint mismatch 默认拒绝、force warning、
+    replay step/run evidence 和 session summary 计数。
+  - inferior stdin/env/stdout/stderr 的 evidence 链路。
+  - multithread crash 下的 backtrace、threads、frame_select、args_info、locals、registers、evaluate。
+  - fixture core dump mode 下静态 action 可用，动态 action/probe 操作被 state guard 拒绝并写
+    `ToolError` evidence。
+  - 多个 session finish 后 report、task.normalized、snapshot、summary、evidence index 和
+    view/raw/summary 文件引用一致性。
+- 修复 `GdbSession::initialize` 中 task `env` 未实际传给 inferior 的问题：GDB `set environment`
+  不能把整个 `KEY=value` 作为 quoted argument。
+- 扩展 `mi_summary_tests`，覆盖 escaped MI string、nested list/tuple、target/log stream audit、
+  MI result summary、vector allocator 和 unique_ptr default_delete sanitizer。
+- 扩展 `hypothesis_assertion_tests`，覆盖空 observed 返回 `unknown`、equals/not_equals 的 expected
+  trim 边界。
+- `hypothesis` assertion 逻辑现在对非 `none` assertion 的空 observed 稳定返回 `unknown`，并且
+  equals/not_equals 比较前会同时 trim observed 和 expected。
+
 ## Phase 1: Live Session 和证据闭环
 
 状态：Mostly Done
@@ -248,6 +277,9 @@ light evidence、evidence store、session log、report、snapshot 和 summary。
 - 继续用更多真实 core dump 和不同 GDB 输出版本验证 Core Dump Mode 兼容性。
 - 让错误消息和 report 对 Agent 更稳定。
 - 多个 action 输入校验错误仍只返回 `ok:false`，没有写 `ToolError` evidence。
+- `raw_mi` 缺少 `risk:"advanced"` 时仍只返回 `ok:false`，没有写 `ToolError` evidence。
+- CLI client 对超长 inline JSON action 参数会先尝试 `fs::exists`，可能触发 `File name too long`，
+  需要改成更稳的 JSON_OR_FILE 判定或统一建议使用 action JSON 文件。
 - `frame_select` 负数和非法 `evaluate` 表达式当前仍返回 `ok:true`，需要后续把 GDB
   `result_class=error` 映射为结构化 action failure。
 - `probe_delete` 后 `probe_list` 仍返回 deleted probe metadata，需明确是历史展示还是过滤行为。
@@ -278,6 +310,10 @@ policy、自动 continue 行为记录、`OnHitAction` evidence 和 Linux + GDB l
 - catchpoint 仍只支持 `catch throw`，其他 catchpoint 类型尚未实现。
 - on-hit policy 目前只限制 `OnHitAction` wrapper evidence 的 response 摘要预算；底层 action
   evidence 仍按 evidence store 的全局规则保留。
+- `watchpoint_set` 在 capability fixture 中能让 inferior 停止并返回
+  `stop_reason:"watchpoint-trigger"`，但当前 GDB/MI stop metadata 未提供 probe number，工具没有写
+  `WatchpointHit` evidence，也没有执行 watchpoint on-hit action；需要后续增强 watchpoint stop
+  归属逻辑或记录更明确的降级 evidence。
 - 还可以增加更多 watchpoint/catchpoint 命中 fixture，覆盖非 breakpoint 的 on-hit 归属。
 
 ## Phase 4: Hypothesis Workflow
@@ -302,7 +338,8 @@ metadata。`raw_mi` 已作为受限高级 escape hatch。
 仍需关注：
 
 - MI parser 还可以继续覆盖更多 GDB/MI 边界格式。
-- C++ 类型 sanitizer 仍需更多 STL 容器和用户类型 fixture。
+- C++ 类型 sanitizer 已覆盖 vector allocator 和 unique_ptr default_delete 的基础压缩；仍需更多
+  STL 容器、智能指针组合和用户类型 fixture。
 - thread/backtrace summarizer 需要在 Linux + GDB raw 输出上继续校准。
 - raw MI 的风险说明和跨 evidence 相关记录归因还可以更细。
 

@@ -42,6 +42,18 @@ target_compile_options(segfault PRIVATE
     -O0
 )
 
+add_executable(capability_fixture
+    examples/capability_fixture.cpp
+)
+
+target_compile_options(capability_fixture PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+    -g
+    -O0
+)
+
 add_executable(mi_summary_tests
     tests/mi_summary_tests.cpp
     src/common/string_utils.cpp
@@ -116,6 +128,12 @@ add_test(
 add_test(
     NAME edge_case_flow
     COMMAND /bin/bash ${CMAKE_SOURCE_DIR}/scripts/smoke_edge_cases.sh
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
+add_test(
+    NAME capability_matrix_flow
+    COMMAND /bin/bash ${CMAKE_SOURCE_DIR}/scripts/smoke_capability_matrix.sh
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 

@@ -1,95 +1,99 @@
 # Handoff
 
-日期：2026-06-01
+日期：2026-06-02
 
 ## 本轮完成
 
-- 完成 `docs/ai/next_cli_task.md` 指定的 edge-case regression / exploration testing 任务。
-- 新增 `scripts/smoke_edge_cases.sh`，并接入 CTest 为 `edge_case_flow`。
-- `edge_case_flow` 在 Linux + GDB 下实际覆盖：
-  - 不存在 session 的 `status`、`action`、`finish`、`close`。
-  - 非法 action JSON、缺少 action、缺少 expression/location/risk 等错误输入。
-  - negative `frame_select` 和非法 `evaluate` 表达式。
-  - on-hit raw MI 拒绝。
-  - watchpoint 设置失败路径。
-  - `probe_delete` 后 `probe_list` 的表现。
-  - 包含失败 step 的 replay plan。
-  - 不同 task fingerprint 下 replay 默认拒绝，以及 `--force` 下 `ReplayWarning`。
-  - finish 后 action、重复 finish、重复 close 的稳定失败行为。
-  - finish 后 report、task.normalized、session snapshot、session summary、evidence index 和
-    evidence view/raw/summary 文件引用一致性。
-  - Core Dump Mode 下静态 action 可用，动态 action/probe 操作被 state guard 拒绝并产生
-    `ToolError` evidence。
-- 新增 `tests/task_parser_tests.cpp`，并接入 CTest 为 `task_parser_tests`。
-- `task_parser_tests` 不依赖 GDB，覆盖：
-  - required section 缺失。
-  - shell-like args quoting/escaping。
-  - 空字符串 argv token。
-  - env 行格式和含 `=` 的 env value。
-  - stdin/core dump 相对路径解析。
-  - run timeout 校验。
-  - 基础 JSON parse/type 边界。
-- 本轮没有修改面向 Agent 的产品 action、schema 或文档化行为；主要变更是新增测试和记录薄弱点。
-- `docs/ai/next_cli_task.md` 是本轮 execution task 记录，纳入本轮提交。
+- 完成 `docs/ai/next_cli_task.md` 指定的 capability matrix regression / exploration testing 任务。
+- 新增 `examples/capability_fixture.cpp`，并接入 CMake 为 `capability_fixture`：
+  - `probe` mode：SIGTRAP 后触发 watchpoint、两个 breakpoint、C++ throw/catch。
+  - `io` mode：读取 stdin/env，写 stdout/stderr。
+  - `thread-crash` mode：工作线程稳定 SIGSEGV。
+  - `core` mode：用于 GDB batch 生成确定性 core file。
+- 新增 `scripts/smoke_capability_matrix.sh`，并接入 CTest 为 `capability_matrix_flow`。
+- `capability_matrix_flow` 在 Linux + GDB 下实际覆盖：
+  - `backtrace`、`threads`、`frame_select`、`args_info`、`locals`、`registers`、`evaluate`。
+  - 真实 breakpoint 命中和 `BreakpointHit` evidence。
+  - 真实 watchpoint 停止路径，并记录当前 watchpoint hit evidence/on-hit 归属薄弱点。
+  - `catchpoint_set event:"throw"` 真实命中和 `CatchpointHit` evidence。
+  - `probe_list` 的 kind、comment、purpose、condition、hit_count metadata。
+  - on-hit 成功 action、unsupported action、`continue_on_error`、`stop_on_error` skipped evidence、
+    `continue_after_hit:true` wrapper evidence。
+  - `raw_mi` 显式 `risk:"advanced"` 成功路径，以及缺少 risk 的拒绝路径。
+  - hypothesis create/check/conclude，覆盖 passed、failed、unknown、observed、error evidence、
+    hypotheses index、单个 hypothesis Markdown 和最终 report 聚合。
+  - replay continue/stop failure policy、fingerprint mismatch 默认拒绝、force warning、
+    replay run/step evidence 和 session summary 计数。
+  - inferior stdin/env/stdout/stderr evidence。
+  - thread crash 现场取证。
+  - fixture core dump mode 静态 action 和动态 action/probe guard。
+  - 多个 session finish 后 artifact consistency：report、task.normalized、session snapshot、
+    session summary、evidence index、view/raw/summary 文件引用和 report evidence id 引用。
+- 修复 task `env` 未实际传给 inferior 的问题：`GdbSession::initialize` 现在用未整体 quote 的
+  `-gdb-set environment KEY=value`，避免 GDB 把带引号字符串当作错误变量名。
+- 扩展 `tests/mi_summary_tests.cpp`：
+  - escaped quotes。
+  - nested list/tuple。
+  - target/log stream record audit。
+  - MI result summary。
+  - vector allocator 和 unique_ptr default_delete sanitizer。
+- 扩展 `tests/hypothesis_assertion_tests.cpp`：
+  - 空 observed 对非 `none` assertion 返回 `unknown`。
+  - equals/not_equals 比较前同时 trim observed 和 expected。
+- 本轮未新增面向 Agent 的 action，未扩展 catchpoint event，未实现 numeric hypothesis assertion。
+- `docs/ai/next_cli_task.md` 是本轮 execution task 输入记录，保留在本轮提交范围内。
 
 ## 验证
 
 - `cmake --build build`
-- `./scripts/smoke_edge_cases.sh`
+- `./build/mi_summary_tests`
+- `./build/hypothesis_assertion_tests`
+- `./build/replay_plan_tests`
+- `./scripts/smoke_capability_matrix.sh`
 - `ctest --test-dir build --output-on-failure`
+- `./build/gdb-agent check examples/segfault_task.md`
+- `git diff --check`
 
-当前 Linux 环境安装了 GDB，因此 `daemon_action_flow`、`core_dump_mode` 和 `edge_case_flow`
-都实际执行了 Linux + GDB smoke，而不是 skip。
+当前 Linux 环境安装了 GDB，因此 `daemon_action_flow`、`core_dump_mode`、`edge_case_flow` 和
+`capability_matrix_flow` 都实际执行了 Linux + GDB smoke，而不是 skip。
 
 ## 发现的薄弱点
 
-1. 现象：非法 action JSON 在 CLI client 解析阶段被拒绝，没有进入 daemon action handling，
-   因此不会产生 `ToolError` evidence。
-   复现测试或命令：`scripts/smoke_edge_cases.sh` 中 `gdb-agent action S1 '{not-json'`。
-   影响范围：Agent 通过 CLI 传入非法 JSON 时只能看到进程级错误，不能在 session artifacts 中审计。
-   建议后续处理方式：考虑让 daemon/client 对 action parse error 统一返回 JSON，并在 session 存在时写
+1. 现象：`raw_mi` 缺少 `risk:"advanced"` 时返回 `ok:false`，但没有 `ToolError` evidence。
+   复现测试或命令：`scripts/smoke_capability_matrix.sh` 中
+   `{"action":"raw_mi","command":"-gdb-version"}`。
+   影响范围：Agent 能从 response 看到拒绝原因，但 session artifacts/report 中没有该拒绝事件。
+   建议后续处理方式：为 `raw_mi` validation failure 统一写 `ToolError` evidence，并在 response
+   返回 `evidence`。
+   是否已在本轮修复：否；本轮只记录为 warning，避免扩大到 action validation 统一重构。
+
+2. 现象：超长 inline action JSON 作为 CLI 参数传入时，client 先调用 `fs::exists(arg)`，
+   可能触发 `filesystem error: File name too long`，还没进入 daemon action handling。
+   复现测试或命令：直接执行较长的
+   `gdb-agent action P1 '{"action":"watchpoint_set", ... 长 on_hit policy ...}' --socket ...`。
+   影响范围：长 action payload 不能稳定作为 inline 参数使用，也无法写入 session-level
    `ToolError` evidence。
-   是否已在本轮修复：否；本轮记录为测试发现的 weakness。
+   建议后续处理方式：调整 `read_text_file_arg`，例如先判断字符串是否像 JSON object/array，再决定是否
+   做 filesystem lookup；或者为 CLI 明确区分 `--json` 和 `--file`。
+   是否已在本轮修复：否；测试脚本改为通过临时 JSON 文件发送长 action，记录该 CLI 弱点。
 
-2. 现象：缺少 `action` 字段时返回 `ok:false`，但没有 `ToolError` evidence。
-   复现测试或命令：`scripts/smoke_edge_cases.sh` 中 `gdb-agent action S1 '{}'`。
-   影响范围：错误路径不会进入 evidence index，报告无法审计该输入错误。
-   建议后续处理方式：在 `handle_action_line` 解析到 missing action 时写 `ToolError` evidence。
-   是否已在本轮修复：否。
-
-3. 现象：`evaluate` 缺少 expression、`breakpoint_set` 缺少 location、`watchpoint_set`
-   缺少 expression、`raw_mi` 缺少 `risk:"advanced"` 时返回 `ok:false`，但没有
-   `ToolError` evidence。
-   复现测试或命令：`scripts/smoke_edge_cases.sh` 对应 missing payload cases。
-   影响范围：常见错误输入不能从 artifacts 中完整追踪。
-   建议后续处理方式：为 action-level validation failure 统一封装 `ToolError` evidence 和
-   response `evidence` 字段。
-   是否已在本轮修复：否。
-
-4. 现象：`frame_select` 使用负数时当前返回 `ok:true`，GDB 错误只保留在 command evidence 中。
-   复现测试或命令：`scripts/smoke_edge_cases.sh` 中 `{"action":"frame_select","frame":-1}`。
-   影响范围：Agent 可能误以为 frame 切换成功。
-   建议后续处理方式：检查 `CommandResult::result_class`，对 GDB `error` 映射为 `ok:false`
-   并记录 `ToolError` 或明确 action evidence。
-   是否已在本轮修复：否。
-
-5. 现象：`evaluate` 使用非法表达式时当前返回 `ok:true`，GDB 错误只保留在 command evidence 中。
-   复现测试或命令：`scripts/smoke_edge_cases.sh` 中
-   `{"action":"evaluate","expression":"definitely_missing_symbol"}`。
-   影响范围：Agent 可能误判 evaluate 成功，需要额外打开 evidence 才能看到 GDB error。
-   建议后续处理方式：同 `frame_select`，将 GDB `result_class=error` 映射为结构化 failure。
-   是否已在本轮修复：否。
-
-6. 现象：`probe_delete` 后 `probe_list` 仍返回该 probe metadata，只是内部标记为 deleted。
-   复现测试或命令：`scripts/smoke_edge_cases.sh` 中 breakpoint set/delete/probe_list flow。
-   影响范围：Agent 可能把 deleted probe 当作仍可命中的 live probe。
-   建议后续处理方式：明确 `probe_list` 是否展示 deleted 历史项；如果不展示，应默认过滤；
-   如果展示，应在 docs/report 中显式说明 deleted 语义。
-   是否已在本轮修复：否。
+3. 现象：capability fixture 中 `watchpoint_set` 能让 inferior 停止，response 返回
+   `stop_reason:"watchpoint-trigger"`，但没有 `WatchpointHit` evidence，也没有执行 watchpoint
+   on-hit action。
+   复现测试或命令：`scripts/smoke_capability_matrix.sh` 中 P1 session 的
+   `watchpoint_set g_watch_value` 后第一次 `continue`。
+   影响范围：Agent 知道 GDB 因 watchpoint 停止，但无法从 evidence index/report 中获得与
+   probe metadata 绑定的 `WatchpointHit` 和 on-hit 链路。
+   建议后续处理方式：增强 watchpoint stop 归属逻辑；当 GDB/MI stop record 缺少 breakpoint number
+   时，尝试从 raw MI、`-break-list` 或当前 probe state 关联 watchpoint，至少记录降级
+   `WatchpointHit`/`ToolError` evidence。
+   是否已在本轮修复：否；本轮将其作为 capability matrix 暴露的非阻塞 weakness。
 
 ## 限制和注意事项
 
-- 本轮没有把上述 weakness 转成 hard fail；按任务要求，测试对结构稳定性 hard fail，对已发现但
-  尚未修复的行为记录 warning/weakness，避免把错误期望固化为通过条件。
-- 本轮没有新增产品 action、catchpoint event、numeric hypothesis assertion、PTY 或 daemon 架构重构。
-- `edge_case_flow` 依赖 Linux、GDB 和 `python3`；缺少任一条件时按 smoke 口径 skip。
+- 本轮修复了 env 传递、hypothesis assertion 空 observed/trim 边界和一个 sanitizer 噪声点；这些都是
+  新测试暴露的最小一致性修复。
+- capability matrix 仍没有覆盖 `probe_enable` / `probe_disable` / `probe_delete` 对后续命中的完整影响；
+  相关边界已有 `edge_case_flow` 覆盖删除后 metadata 暴露问题，但后续仍应补更强的能力测试。
+- watchpoint 的 stop/on-hit 归属没有作为 hard fail，是因为当前 GDB/MI stop response 在该 fixture 下
+  缺少 probe number；脚本 hard fail watchpoint 停止能力，warning 记录 evidence 归属缺口。

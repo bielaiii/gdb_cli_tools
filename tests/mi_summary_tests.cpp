@@ -32,23 +32,39 @@ int main() {
     require(list->kind == MiValue::Kind::List, "top-level MI value should be list");
     require(list->items.size() == 3, "list should expose items");
 
+    auto escaped = parse_mi_value(R"({msg="quoted \"value\"",nested=[child={name="node",value="{x=1}"}]})");
+    require(escaped.has_value(), "escaped MI strings and nested list tuples should parse");
+    require(escaped->fields.size() == 2, "escaped tuple should expose two fields");
+    require(escaped->fields[0].second.value == R"(quoted "value")", "escaped quotes should be decoded");
+
     std::string noisy = "std::vector<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::allocator<std::__cxx11::basic_string<char> > >";
     std::string clean = sanitize_output(noisy, "/tmp/project");
     require(contains(clean, "std::string"), "sanitizer should simplify std::string spelling");
     require(!contains(clean, "char_traits"), "sanitizer should remove string trait noise");
     require(!contains(clean, "> >"), "sanitizer should normalize adjacent template closers");
+    require(contains(sanitize_output("std::vector<int, std::allocator<int> >", "/tmp/project"), "std::vector<int>"),
+            "sanitizer should remove vector allocator noise");
+    require(contains(sanitize_output("std::unique_ptr<Foo, std::default_delete<Foo> >", "/tmp/project"), "std::unique_ptr<Foo>"),
+            "sanitizer should remove unique_ptr default_delete noise");
 
     std::vector<std::string> raw_records{
         R"(9^done,bkpt={number="1",type="breakpoint"})",
         R"(~"#0  read_session_value(session=0x0) at /tmp/project/examples/segfault.cpp:9\n")",
+        R"(@"target stream line\n")",
+        R"(&"log stream line\n")",
         R"(*stopped,reason="breakpoint-hit",bkptno="1",frame={func="read_session_value"})"};
-    std::vector<unsigned long long> seq{10, 11, 12};
+    std::vector<unsigned long long> seq{10, 11, 12, 13, 14};
     auto audit = audit_mi_records(raw_records, seq);
-    require(audit.size() == 3, "audit should include all raw records");
+    require(audit.size() == 5, "audit should include all raw records");
     require(audit[0].record_kind == "result", "result record should be classified");
     require(audit[0].token == "9", "result token should be captured");
     require(audit[1].record_kind == "stream" && audit[1].stream_type == "console", "console stream should be classified");
-    require(audit[2].record_kind == "async" && audit[2].record_class == "stopped", "async class should be captured");
+    require(audit[2].record_kind == "stream" && audit[2].stream_type == "target", "target stream should be classified");
+    require(audit[3].record_kind == "stream" && audit[3].stream_type == "log", "log stream should be classified");
+    require(audit[4].record_kind == "async" && audit[4].record_class == "stopped", "async class should be captured");
+    std::string mi_summary = summarize_mi_records({R"(12^done,value="{name=\"x\",items=[1,2]}")"});
+    require(contains(mi_summary, "result:done"), "MI summary should include result class");
+    require(contains(mi_summary, "value="), "MI summary should include parsed payload fields");
 
     fs::path assets = fs::temp_directory_path() / "gdb-agent-mi-summary-tests";
     fs::remove_all(assets);

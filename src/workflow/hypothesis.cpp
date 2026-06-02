@@ -32,10 +32,15 @@ HypothesisAssertionResult evaluate_hypothesis_assertion(const std::string &asser
                                                         const std::string &observed,
                                                         const std::string &expected) {
     std::string normalized = assertion.empty() ? "none" : lower(assertion);
+    std::string trimmed_observed = trim(observed);
     std::string trimmed_expected = trim(expected);
 
     if (normalized == "none") {
         return passed();
+    }
+
+    if (trimmed_observed.empty()) {
+        return unknown(normalized + " requires non-empty observed");
     }
 
     if (normalized == "contains") {
@@ -64,14 +69,14 @@ HypothesisAssertionResult evaluate_hypothesis_assertion(const std::string &asser
         if (trimmed_expected.empty()) {
             return unknown("equals requires non-empty expected");
         }
-        return trim(observed) == expected ? passed() : failed();
+        return trimmed_observed == trimmed_expected ? passed() : failed();
     }
 
     if (normalized == "not_equals") {
         if (trimmed_expected.empty()) {
             return unknown("not_equals requires non-empty expected");
         }
-        return trim(observed) != expected ? passed() : failed();
+        return trimmed_observed != trimmed_expected ? passed() : failed();
     }
 
     return unknown("unknown assertion: " + assertion);

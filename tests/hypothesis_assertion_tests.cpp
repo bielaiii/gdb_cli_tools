@@ -34,10 +34,15 @@ int main() {
     require_status("non_null", "$1 = 0", "", "failed");
 
     require_status("equals", "  $1 = 7  ", "$1 = 7", "passed");
+    require_status("equals", "  $1 = 7  ", "  $1 = 7  ", "passed");
     require_status("equals", "$1 = 7", "$1 = 8", "failed");
     require_status("not_equals", "$1 = 7", "$1 = 8", "passed");
+    require_status("not_equals", "$1 = 7", "  $1 = 8  ", "passed");
     require_status("not_equals", "$1 = 7", "$1 = 7", "failed");
 
+    require_status("contains", "", "$1", "unknown");
+    require_status("is_null", "", "", "unknown");
+    require_status("non_null", "", "", "unknown");
     require_status("contains", "$1 = 7", "", "unknown");
     require_status("equals", "$1 = 7", "", "unknown");
     require_status("definitely_not_supported", "$1 = 7", "", "unknown");
