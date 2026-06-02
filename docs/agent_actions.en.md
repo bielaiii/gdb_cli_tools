@@ -58,6 +58,21 @@ Supported action lines are intentionally small in MVP form:
 {"action":"finish_session","agent_inference":"The evidence supports a null session argument before dereference.","final_conclusion":"Root cause is outside the tool's judgment; the agent concludes the crash path dereferences a null session."}
 ```
 
+## Failure Semantics
+
+When an action reaches a live session context, tool-side validation failures
+return `ok:false` and write `ToolError` evidence. Examples include a missing
+`action` field, `evaluate` without `expression`, probe actions without
+`location`/`expression`/`number`, `raw_mi` without `risk:"advanced"`, forbidden
+`raw_mi` usage inside on-hit actions, and replay file or replay plan validation
+failures.
+
+Actions such as `frame_select` and `evaluate` keep the raw command output as
+`GdbCommand` evidence. If GDB returns `result_class=error` or the command times
+out, the action returns `ok:false`; the response includes the error `evidence`
+and the raw command's `command_evidence`. Agents can see that the action failed
+without opening raw MI, while the raw MI remains available for audit.
+
 Saved replay plans are written as both a compatibility JSONL file and a
 structured `replay/<name>.json` plan. Use `--replay-before-run plan.json` to
 apply actions such as breakpoints before the first run.
@@ -93,9 +108,12 @@ snapshot for that hit, the on-hit policy, each on-hit action result, and the
 new evidence ids produced by this hit. If GDB rejects a probe or its condition,
 the action returns `ok:false` and records `ToolError` evidence.
 Use `probe_list` to capture GDB's breakpoint/watchpoint/catchpoint table and
-return the tool's stored metadata, including comments, purpose, hit count, and
-on-hit policy; it does not treat `probes.json` as a runtime synchronization
-database.
+return active tool metadata, including comments, purpose, hit count, and on-hit
+policy; it does not treat `probes.json` as a runtime synchronization database.
+After `probe_delete`, default `probe_list` output no longer includes the deleted
+probe, so agents do not mistake historical probes for live ones. Final
+`assets/probes.json` may still retain deleted history, but deleted entries are
+marked with `deleted:true`.
 
 The current catchpoint action only supports C++ exception throws:
 
@@ -149,6 +167,10 @@ Each on-hit action writes `OnHitAction` evidence with status (`success`,
 `failed`, or `skipped`), action evidence ids, error evidence, and skip reason.
 The hit evidence aggregates `on_hit_policy`, `on_hit_results`,
 `on_hit_evidence_ids`, and `on_hit_error_ids`.
+If a GDB watchpoint stop record does not include a probe number, the tool only
+attributes the stop and runs on-hit actions when there is exactly one active
+watchpoint. If the stop cannot be uniquely attributed, the tool records
+degraded watchpoint-related evidence instead of inventing a probe number.
 
 Structured replay plan:
 

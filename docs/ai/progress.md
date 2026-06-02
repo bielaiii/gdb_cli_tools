@@ -264,6 +264,26 @@
 - `hypothesis` assertion 逻辑现在对非 `none` assertion 的空 observed 稳定返回 `unknown`，并且
   equals/not_equals 比较前会同时 trim observed 和 expected。
 
+## 2026-06-02 本轮更新（failure semantics / watchpoint attribution）
+
+- action validation failure 在 live session 上会稳定写 `ToolError` evidence，并在 response 中返回
+  `evidence`；覆盖缺少 `action`、缺少 `expression`/`location`/`number`、`raw_mi` 缺少
+  `risk:"advanced"`、replay 文件或 plan 校验失败等路径。
+- `frame_select` 和 `evaluate` 遇到 GDB `result_class=error` 或 timeout 时返回 `ok:false`，
+  同时保留原始 `GdbCommand` evidence，并用 `command_evidence` 关联到错误 response。
+- 修复 CLI `JSON_OR_FILE` 判定：trim 后以 `{` 或 `[` 开头的参数优先作为 inline JSON，
+  不再先调用 `fs::exists`，避免超长 action JSON 触发 `File name too long`。
+- `probe_list` 默认只返回 active/live probe；`probe_delete` 后的历史 probe 仍可写入最终
+  `assets/probes.json`，但标记 `deleted:true`。
+- 增强 watchpoint stop 归属：优先读取 MI stop record 中的 watchpoint number；缺编号时，
+  只有当前存在唯一 active watchpoint 才保守归属并执行 on-hit。真实 capability matrix 中
+  `WatchpointHit`、watchpoint on-hit 和 session summary 计数已提升为 hard expectation。
+- 更新 `scripts/smoke_edge_cases.sh`、`scripts/smoke_capability_matrix.sh` 和
+  `scripts/smoke_core_dump_mode.sh`，把旧 weakness 改为修复后行为断言；core smoke 对真实
+  GDB command error 改为要求结构化失败而不是误报成功。
+- 同步更新 `docs/agent_actions.md` / `.en.md`、`docs/evidence_model.md` / `.en.md` 和
+  `docs/ai/decision.md`。
+
 ## Phase 1: Live Session 和证据闭环
 
 状态：Mostly Done
@@ -276,13 +296,8 @@ light evidence、evidence store、session log、report、snapshot 和 summary。
 - 对更多 stop reason 的状态转换做回归测试。
 - 继续用更多真实 core dump 和不同 GDB 输出版本验证 Core Dump Mode 兼容性。
 - 让错误消息和 report 对 Agent 更稳定。
-- 多个 action 输入校验错误仍只返回 `ok:false`，没有写 `ToolError` evidence。
-- `raw_mi` 缺少 `risk:"advanced"` 时仍只返回 `ok:false`，没有写 `ToolError` evidence。
-- CLI client 对超长 inline JSON action 参数会先尝试 `fs::exists`，可能触发 `File name too long`，
-  需要改成更稳的 JSON_OR_FILE 判定或统一建议使用 action JSON 文件。
-- `frame_select` 负数和非法 `evaluate` 表达式当前仍返回 `ok:true`，需要后续把 GDB
-  `result_class=error` 映射为结构化 action failure。
-- `probe_delete` 后 `probe_list` 仍返回 deleted probe metadata，需明确是历史展示还是过滤行为。
+- 非法 JSON 在 CLI client 本地解析阶段失败时仍没有 session context，因此不会写入 session
+  evidence；当前只要求 CLI 输出稳定错误而不是崩溃。
 
 ## Phase 2: Replay Store
 
@@ -301,20 +316,19 @@ fingerprint 校验、force replay warning、replay run evidence 和 replay step 
 
 状态：Mostly Done
 
-已经支持 breakpoint/watchpoint、condition、comment、purpose、on-hit action、probe list 和
-probe hit evidence；已有最小 `catch throw` catchpoint。on-hit 已有 policy schema、failure
-policy、自动 continue 行为记录、`OnHitAction` evidence 和 Linux + GDB live smoke 覆盖。
+已经支持 breakpoint/watchpoint、condition、comment、purpose、on-hit action、active-only
+probe list 和 probe hit evidence；已有最小 `catch throw` catchpoint。on-hit 已有 policy
+schema、failure policy、自动 continue 行为记录、`OnHitAction` evidence 和 Linux + GDB live
+smoke 覆盖。watchpoint stop 现在能在 MI 提供编号或当前唯一 active watchpoint 时归属到
+`WatchpointHit`，并执行 watchpoint on-hit policy。
 
 仍需关注：
 
 - catchpoint 仍只支持 `catch throw`，其他 catchpoint 类型尚未实现。
 - on-hit policy 目前只限制 `OnHitAction` wrapper evidence 的 response 摘要预算；底层 action
   evidence 仍按 evidence store 的全局规则保留。
-- `watchpoint_set` 在 capability fixture 中能让 inferior 停止并返回
-  `stop_reason:"watchpoint-trigger"`，但当前 GDB/MI stop metadata 未提供 probe number，工具没有写
-  `WatchpointHit` evidence，也没有执行 watchpoint on-hit action；需要后续增强 watchpoint stop
-  归属逻辑或记录更明确的降级 evidence。
-- 还可以增加更多 watchpoint/catchpoint 命中 fixture，覆盖非 breakpoint 的 on-hit 归属。
+- 还可以增加更多 watchpoint/catchpoint 命中 fixture，覆盖多 watchpoint 且 GDB stop record
+  缺编号时的降级归属 evidence。
 
 ## Phase 4: Hypothesis Workflow
 

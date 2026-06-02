@@ -66,6 +66,18 @@ MVP action 行保持有意的小而稳定：
 {"action":"finish_session","agent_inference":"The evidence supports a null session argument before dereference.","final_conclusion":"Root cause is outside the tool's judgment; the agent concludes the crash path dereferences a null session."}
 ```
 
+## 失败语义
+
+只要 action 已经进入某个 live session 的处理上下文，工具校验失败会返回 `ok:false`，
+并写入 `ToolError` evidence。典型例子包括缺少 `action` 字段、`evaluate` 缺少
+`expression`、probe action 缺少 `location`/`expression`/`number`、`raw_mi` 缺少
+`risk:"advanced"`、on-hit 中使用禁止的 `raw_mi`，以及 replay plan 或 replay 文件校验失败。
+
+`frame_select`、`evaluate` 等需要执行 GDB command 的 action 会保留原始 `GdbCommand`
+evidence。如果 GDB 返回 `result_class=error` 或命令超时，action 返回 `ok:false`，
+response 会包含错误 `evidence` 和原始命令的 `command_evidence`。Agent 不需要打开 raw MI
+就能知道该 action 失败；raw MI 仍可用于审计。
+
 ## Replay
 
 保存的 replay plan 会同时写成兼容 JSONL 文件和结构化 `replay/<name>.json` plan。
@@ -142,8 +154,10 @@ evidence。显式 `force:true` 或 CLI `--force` 会允许执行，但 result �
 on-hit policy、每个 on-hit action 的执行结果和本次新产生的 evidence id。
 如果 GDB 拒绝 probe 或 condition，action 返回 `ok:false` 并记录 `ToolError` evidence。
 
-使用 `probe_list` 可以捕获 GDB 的 breakpoint/watchpoint/catchpoint 表，并返回工具保存的 metadata，
-包括 comment、purpose、hit count 和 on-hit policy；它不把 `probes.json` 当作运行时同步数据库。
+使用 `probe_list` 可以捕获 GDB 的 breakpoint/watchpoint/catchpoint 表，并返回工具保存的 active
+metadata，包括 comment、purpose、hit count 和 on-hit policy；它不把 `probes.json` 当作运行时同步数据库。
+`probe_delete` 后，默认 `probe_list` 不再返回已删除的 probe，避免 Agent 把历史 probe 误认为仍可命中。
+最终 `assets/probes.json` 仍可保留 deleted 历史项，但必须标记 `deleted:true`。
 
 本轮 catchpoint 只支持 C++ exception throw：
 
@@ -191,6 +205,9 @@ policy。新格式的字段含义：
 每个 on-hit action 会产生 `OnHitAction` evidence，记录 status（`success`、`failed` 或
 `skipped`）、action evidence ids、error evidence 和 skip reason。命中 evidence 会汇总
 `on_hit_policy`、`on_hit_results`、`on_hit_evidence_ids` 和 `on_hit_error_ids`。
+如果 GDB 的 watchpoint stop record 缺少 probe number，工具只会在当前存在唯一 active
+watchpoint 时保守归属并执行 on-hit；无法唯一归属时会记录降级的 watchpoint 相关 evidence，
+不会伪造确定性 probe number。
 
 ## 状态保护
 

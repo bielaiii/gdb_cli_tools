@@ -235,9 +235,8 @@ require_contains "$probe_list" '"condition":"value == 7"'
 raw_missing_risk="$(run_action P1 '{"action":"raw_mi","command":"-gdb-version"}')"
 require_contains "$raw_missing_risk" '"ok":false'
 require_contains "$raw_missing_risk" '"raw_mi requires risk=advanced"'
-if [[ "$raw_missing_risk" != *'"evidence":"'* ]]; then
-    record_weakness "raw_mi without risk marker returns ok:false without ToolError evidence."
-fi
+require_contains "$raw_missing_risk" '"action":"raw_mi"'
+require_contains "$raw_missing_risk" '"evidence":"'
 
 raw_ok="$(run_action P1 '{"action":"raw_mi","command":"-gdb-version","risk":"advanced"}')"
 require_contains "$raw_ok" '"ok":true'
@@ -247,9 +246,8 @@ require_contains "$raw_ok" '"evidence":"'
 watch_hit="$(run_action P1 '{"action":"continue","deadline_ms":30000}')"
 require_contains "$watch_hit" '"ok":true'
 require_contains "$watch_hit" '"stop_reason":"watchpoint-trigger"'
-if [[ "$watch_hit" != *'"action":"not_a_real_action"'* ]]; then
-    record_weakness "Watchpoint stops the inferior, but current stop metadata does not run watchpoint on-hit actions in this fixture."
-fi
+require_contains "$watch_hit" '"action":"not_a_real_action"'
+require_contains "$watch_hit" '"error":"unsupported action"'
 
 break_hit="$(run_action P1 '{"action":"continue","deadline_ms":30000}')"
 require_contains "$break_hit" '"ok":true'
@@ -301,22 +299,21 @@ require_contains "$finish_probe" '"ok":true'
 require_file "$probe_report"
 require_file "$probe_assets/probes.json"
 require_file "$probe_assets/hypotheses/index.json"
-if ! grep -F '"kind":"WatchpointHit"' "$probe_assets/evidence/index.json" >/dev/null; then
-    record_weakness "Watchpoint trigger response reports stop_reason=watchpoint-trigger, but no WatchpointHit evidence is recorded because GDB/MI did not provide a probe number for this stop."
-fi
+grep -F '"kind":"WatchpointHit"' "$probe_assets/evidence/index.json" >/dev/null
 grep -F '"kind":"BreakpointHit"' "$probe_assets/evidence/index.json" >/dev/null
 grep -F '"kind":"CatchpointHit"' "$probe_assets/evidence/index.json" >/dev/null
 grep -F '"kind":"OnHitAction"' "$probe_assets/evidence/index.json" >/dev/null
 grep -R -F '"status": "skipped"' "$probe_assets/evidence" >/dev/null
 grep -F '"kind": "watchpoint"' "$probe_assets/probes.json" >/dev/null
 grep -F '"kind": "catchpoint"' "$probe_assets/probes.json" >/dev/null
-grep -F '"probe_hit_count": 3' "$probe_assets/session_summary.json" >/dev/null
-grep -F '"on_hit_error_count": 2' "$probe_assets/session_summary.json" >/dev/null
+grep -F '"probe_hit_count": 4' "$probe_assets/session_summary.json" >/dev/null
+grep -F '"on_hit_action_count": 9' "$probe_assets/session_summary.json" >/dev/null
+grep -F '"on_hit_error_count": 3' "$probe_assets/session_summary.json" >/dev/null
 grep -F '"status": "passed"' "$probe_assets/hypotheses/index.json" >/dev/null
 grep -F '"status": "failed"' "$probe_assets/hypotheses/index.json" >/dev/null
 grep -F '"status": "unknown"' "$probe_assets/hypotheses/index.json" >/dev/null
 grep -F 'Final agent conclusion: `Fixture value path explained`' "$probe_report" >/dev/null
-artifact_check "$probe_assets" "$probe_report" "BreakpointHit,CatchpointHit,OnHitAction,GdbCommand,ToolError"
+artifact_check "$probe_assets" "$probe_report" "BreakpointHit,WatchpointHit,CatchpointHit,OnHitAction,GdbCommand,ToolError"
 
 replay_task="$work_dir/replay_task.md"
 replay_report="$work_dir/replay-report.md"
@@ -438,14 +435,28 @@ require_contains "$create_core" '"mode":"core"'
 for payload in \
     '{"action":"backtrace"}' \
     '{"action":"threads"}' \
-    '{"action":"frame_select","frame":0}' \
     '{"action":"args_info"}' \
-    '{"action":"locals"}' \
-    '{"action":"evaluate","expression":"node"}'; do
+    '{"action":"locals"}'; do
     response="$(run_action C1 "$payload")"
     require_contains "$response" '"ok":true'
     require_contains "$response" '"evidence":"'
 done
+core_frame_response="$(run_action C1 '{"action":"frame_select","frame":0}')"
+require_contains "$core_frame_response" '"action":"frame_select"'
+require_contains "$core_frame_response" '"evidence":"'
+if [[ "$core_frame_response" == *'"ok":false'* ]]; then
+    require_contains "$core_frame_response" '"command_evidence":"'
+else
+    require_contains "$core_frame_response" '"ok":true'
+fi
+core_eval_response="$(run_action C1 '{"action":"evaluate","expression":"node"}')"
+require_contains "$core_eval_response" '"action":"evaluate"'
+require_contains "$core_eval_response" '"evidence":"'
+if [[ "$core_eval_response" == *'"ok":false'* ]]; then
+    require_contains "$core_eval_response" '"command_evidence":"'
+else
+    require_contains "$core_eval_response" '"ok":true'
+fi
 for payload in \
     '{"action":"run"}' \
     '{"action":"continue"}' \

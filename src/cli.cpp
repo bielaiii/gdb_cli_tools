@@ -222,6 +222,55 @@ static Evidence add_tool_error(GdbSession &session,
     return session.evidence_store().add_text("ToolError", title, action_name, text.str());
 }
 
+static Evidence add_action_tool_error(GdbSession &session,
+                                      const std::string &title,
+                                      const std::string &action_name,
+                                      const std::string &message,
+                                      const std::map<std::string, std::string> &details = {}) {
+    std::ostringstream text;
+    text << "{\n";
+    text << "  \"action\": " << json_escape(action_name) << ",\n";
+    text << "  \"error\": " << json_escape(message);
+    for (const auto &[key, value] : details) {
+        text << ",\n";
+        text << "  " << json_escape(key) << ": " << json_escape(value);
+    }
+    text << "\n}\n";
+    return session.evidence_store().add_text("ToolError", title, action_name, text.str());
+}
+
+static void write_action_error(GdbSession &session,
+                               std::ostream &out,
+                               const std::string &action_name,
+                               const std::string &message,
+                               const std::string &title = "Action validation failed",
+                               const std::map<std::string, std::string> &details = {}) {
+    auto ev = add_action_tool_error(session, title, action_name, message, details);
+    out << "{\"ok\":false";
+    if (!action_name.empty()) {
+        out << ",\"action\":" << json_escape(action_name);
+    }
+    out << ",\"error\":" << json_escape(message)
+        << ",\"evidence\":" << json_escape(ev.id);
+    for (const auto &[key, value] : details) {
+        out << "," << json_escape(key) << ":" << json_escape(value);
+    }
+    out << "}\n";
+}
+
+static std::string command_error_message(const CommandResult &result, const std::string &fallback) {
+    for (const auto &raw : result.raw_lines) {
+        std::string msg = field_value(raw, "msg");
+        if (!msg.empty()) {
+            return msg;
+        }
+    }
+    if (result.timed_out) {
+        return "GDB command timed out";
+    }
+    return fallback;
+}
+
 static std::string breakpoint_number_from(const CommandResult &result) {
     for (const auto &raw : result.raw_lines) {
         std::string number = field_value(raw, "number");
@@ -241,6 +290,46 @@ static std::string breakpoint_number_from(const CommandResult &result) {
             if (!catchpoint_number.empty()) {
                 return catchpoint_number;
             }
+        }
+    }
+    return {};
+}
+
+static std::string watchpoint_number_from_stop_record(const CommandResult &result) {
+    if (!result.breakpoint_number.empty()) {
+        return result.breakpoint_number;
+    }
+    for (const auto &raw : result.raw_lines) {
+        const std::string wpt_prefix = "wpt={";
+        auto pos = raw.find(wpt_prefix);
+        if (pos == std::string::npos) {
+            continue;
+        }
+        auto number_pos = raw.find("number=\"", pos + wpt_prefix.size());
+        if (number_pos == std::string::npos) {
+            continue;
+        }
+        number_pos += std::string("number=\"").size();
+        std::string number;
+        bool escaped = false;
+        for (; number_pos < raw.size(); ++number_pos) {
+            char c = raw[number_pos];
+            if (escaped) {
+                number.push_back(c);
+                escaped = false;
+                continue;
+            }
+            if (c == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (c == '"') {
+                break;
+            }
+            number.push_back(c);
+        }
+        if (!number.empty()) {
+            return number;
         }
     }
     return {};
@@ -560,11 +649,14 @@ static std::string probe_info_json(const ProbeState::ProbeInfo &probe) {
     return out.str();
 }
 
-static std::string probe_array_json(const ProbeState &probe_state) {
+static std::string probe_array_json(const ProbeState &probe_state, bool include_deleted = false) {
     std::ostringstream out;
     out << "[";
     bool first = true;
     for (const auto &[_, probe] : probe_state.probes_by_number) {
+        if (probe.deleted && !include_deleted) {
+            continue;
+        }
         if (!first) {
             out << ",";
         }
@@ -700,15 +792,33 @@ static std::string truncate_on_hit_response(std::string text,
 static ProbeState::ProbeHitSnapshot prepare_probe_hit(ProbeState &probe_state,
                                                       const CommandResult &result) {
     ProbeState::ProbeHitSnapshot hit;
-    hit.number = result.breakpoint_number;
+    hit.number = result.stop_reason == "watchpoint-trigger"
+                     ? watchpoint_number_from_stop_record(result)
+                     : result.breakpoint_number;
     hit.stop_reason = result.stop_reason;
     hit.signal_name = result.signal_name;
+    hit.kind = result.stop_reason == "watchpoint-trigger" ? "watchpoint" : "breakpoint";
+    if (hit.number.empty() && result.stop_reason == "watchpoint-trigger") {
+        std::string only_active_watchpoint;
+        for (const auto &[number, probe] : probe_state.probes_by_number) {
+            if (probe.kind != "watchpoint" || probe.deleted || !probe.enabled) {
+                continue;
+            }
+            if (!only_active_watchpoint.empty()) {
+                only_active_watchpoint.clear();
+                break;
+            }
+            only_active_watchpoint = number;
+        }
+        hit.number = only_active_watchpoint;
+    }
     if (result.breakpoint_number.empty()) {
-        return hit;
+        if (hit.number.empty()) {
+            return hit;
+        }
     }
 
-    auto it = probe_state.probes_by_number.find(result.breakpoint_number);
-    hit.kind = result.stop_reason == "watchpoint-trigger" ? "watchpoint" : "breakpoint";
+    auto it = probe_state.probes_by_number.find(hit.number);
     if (it != probe_state.probes_by_number.end() && !it->second.kind.empty()) {
         hit.kind = it->second.kind;
     }
@@ -990,7 +1100,7 @@ static std::vector<ProbeState::OnHitActionResult> run_on_hit_actions(
 static void record_probe_hit(GdbSession &session,
                              const ProbeState::ProbeHitSnapshot &hit,
                              const std::vector<ProbeState::OnHitActionResult> &on_hit_results) {
-    if (hit.number.empty()) {
+    if (hit.number.empty() && hit.kind != "watchpoint") {
         return;
     }
     std::ostringstream text;
@@ -998,7 +1108,8 @@ static void record_probe_hit(GdbSession &session,
     text << "  \"number\": " << json_escape(hit.number) << ",\n";
     text << "  \"kind\": " << json_escape(hit.kind) << ",\n";
     text << "  \"stop_reason\": " << json_escape(hit.stop_reason) << ",\n";
-    text << "  \"signal\": " << json_escape(hit.signal_name);
+    text << "  \"signal\": " << json_escape(hit.signal_name) << ",\n";
+    text << "  \"known_probe\": " << (hit.known_probe ? "true" : "false");
     if (hit.known_probe) {
         text << ",\n";
         text << "  \"location\": " << json_escape(hit.location) << ",\n";
@@ -1012,6 +1123,9 @@ static void record_probe_hit(GdbSession &session,
         text << "  \"on_hit_results\": " << on_hit_action_results_json(on_hit_results) << ",\n";
         text << "  \"on_hit_evidence_ids\": " << json_string_vector(on_hit_result_evidence_ids(on_hit_results)) << ",\n";
         text << "  \"on_hit_error_ids\": " << json_string_vector(on_hit_result_error_ids(on_hit_results));
+    } else if (hit.kind == "watchpoint") {
+        text << ",\n";
+        text << "  \"attribution\": \"watchpoint stop observed but no unique active probe could be associated\"";
     }
     text << "\n}\n";
 
@@ -1022,7 +1136,7 @@ static void record_probe_hit(GdbSession &session,
         evidence_kind = "CatchpointHit";
     }
     session.evidence_store().add_text(evidence_kind,
-                                      evidence_kind + " " + hit.number,
+                                      hit.number.empty() ? evidence_kind + " unattributed" : evidence_kind + " " + hit.number,
                                       hit.stop_reason,
                                       text.str());
 }
@@ -1163,12 +1277,12 @@ static void handle_action_line(GdbSession &session,
     try {
         action = parse_json(line);
     } catch (const std::exception &ex) {
-        out << "{\"ok\":false,\"error\":" << json_escape(std::string("invalid json: ") + ex.what()) << "}\n";
+        write_action_error(session, out, "", std::string("invalid json: ") + ex.what());
         return;
     }
     std::string action_name = action.string_or("action");
     if (action_name.empty()) {
-        out << "{\"ok\":false,\"error\":\"missing action\"}\n";
+        write_action_error(session, out, "", "missing action");
         return;
     }
     if (!guard_action_state(session, outcome, action_name, out)) {
@@ -1219,25 +1333,49 @@ static void handle_action_line(GdbSession &session,
     }
     if (action_name == "frame_select") {
         int frame = json_int_field(action, "frame", 0);
-        auto ev = collect_console(session, "Frame select", "frame " + std::to_string(frame), false, std::chrono::milliseconds(json_int_field(action, "timeout_ms", 5000)));
+        std::string console_command = "frame " + std::to_string(frame);
+        auto result = session.command("-interpreter-exec console " + mi_quote(console_command),
+                                      std::chrono::milliseconds(json_int_field(action, "timeout_ms", 5000)));
+        auto ev = session.evidence_store().add("GdbCommand", "Frame select", console_command, result.raw_lines, false, result.record_sequences);
+        if (result.result_class == "error" || result.timed_out) {
+            write_action_error(session,
+                               out,
+                               "frame_select",
+                               command_error_message(result, "GDB rejected frame_select"),
+                               "Frame select failed",
+                               {{"command_evidence", ev.id}, {"frame", std::to_string(frame)}});
+            return;
+        }
         out << "{\"ok\":true,\"action\":\"frame_select\",\"frame\":" << frame
-                  << ",\"evidence\":" << json_escape(ev.id) << "}\n";
+            << ",\"evidence\":" << json_escape(ev.id) << "}\n";
         return;
     }
     if (action_name == "evaluate") {
         std::string expr = json_string_field(action, "expression");
         if (expr.empty()) {
-            out << "{\"ok\":false,\"error\":\"missing expression\"}\n";
+            write_action_error(session, out, "evaluate", "missing expression");
             return;
         }
-        auto ev = collect_console(session, "Evaluate", "p " + expr, false, std::chrono::milliseconds(json_int_field(action, "timeout_ms", 5000)));
+        std::string console_command = "p " + expr;
+        auto result = session.command("-interpreter-exec console " + mi_quote(console_command),
+                                      std::chrono::milliseconds(json_int_field(action, "timeout_ms", 5000)));
+        auto ev = session.evidence_store().add("GdbCommand", "Evaluate", console_command, result.raw_lines, false, result.record_sequences);
+        if (result.result_class == "error" || result.timed_out) {
+            write_action_error(session,
+                               out,
+                               "evaluate",
+                               command_error_message(result, "GDB rejected evaluate"),
+                               "Evaluate failed",
+                               {{"command_evidence", ev.id}, {"expression", expr}});
+            return;
+        }
         out << "{\"ok\":true,\"action\":\"evaluate\",\"evidence\":" << json_escape(ev.id) << "}\n";
         return;
     }
     if (action_name == "breakpoint_set") {
         std::string location = json_string_field(action, "location");
         if (location.empty()) {
-            out << "{\"ok\":false,\"error\":\"missing location\"}\n";
+            write_action_error(session, out, "breakpoint_set", "missing location");
             return;
         }
         ProbeState::OnHitPolicy on_hit_policy;
@@ -1307,7 +1445,7 @@ static void handle_action_line(GdbSession &session,
     if (action_name == "watchpoint_set") {
         std::string expression = json_string_field(action, "expression");
         if (expression.empty()) {
-            out << "{\"ok\":false,\"error\":\"missing expression\"}\n";
+            write_action_error(session, out, "watchpoint_set", "missing expression");
             return;
         }
         ProbeState::OnHitPolicy on_hit_policy;
@@ -1456,7 +1594,7 @@ static void handle_action_line(GdbSession &session,
     if (action_name == "probe_delete" || action_name == "probe_enable" || action_name == "probe_disable") {
         int number = json_int_field(action, "number", -1);
         if (number < 0) {
-            out << "{\"ok\":false,\"error\":\"missing probe number\"}\n";
+            write_action_error(session, out, action_name, "missing probe number");
             return;
         }
 
@@ -1475,6 +1613,15 @@ static void handle_action_line(GdbSession &session,
 
         auto result = session.command(command + std::to_string(number));
         auto ev = session.evidence_store().add("GdbCommand", title, result.command, result.raw_lines, false, result.record_sequences);
+        if (result.result_class == "error" || result.timed_out) {
+            write_action_error(session,
+                               out,
+                               action,
+                               command_error_message(result, "GDB rejected probe operation"),
+                               title + " failed",
+                               {{"command_evidence", ev.id}, {"number", std::to_string(number)}});
+            return;
+        }
         auto probe_it = probe_state.probes_by_number.find(std::to_string(number));
         if (probe_it != probe_state.probes_by_number.end()) {
             if (action_name == "probe_delete") {
@@ -1553,11 +1700,11 @@ static void handle_action_line(GdbSession &session,
         std::string command = json_string_field(action, "command");
         std::string risk = json_string_field(action, "risk");
         if (command.empty()) {
-            out << "{\"ok\":false,\"error\":\"missing command\"}\n";
+            write_action_error(session, out, "raw_mi", "missing command");
             return;
         }
         if (risk != "advanced") {
-            out << "{\"ok\":false,\"error\":\"raw_mi requires risk=advanced\"}\n";
+            write_action_error(session, out, "raw_mi", "raw_mi requires risk=advanced");
             return;
         }
         int timeout_ms = json_int_field(action, "timeout_ms", 5000);
@@ -1600,7 +1747,7 @@ static void handle_action_line(GdbSession &session,
         std::string id = json_string_field(action, "hypothesis");
         std::string expression = json_string_field(action, "expression");
         if (id.empty() || expression.empty()) {
-            out << "{\"ok\":false,\"error\":\"hypothesis_check requires hypothesis and expression\"}\n";
+            write_action_error(session, out, "hypothesis_check", "hypothesis_check requires hypothesis and expression");
             return;
         }
 
@@ -1694,7 +1841,7 @@ static void handle_action_line(GdbSession &session,
         }
         std::string inference = json_string_field(action, "inference");
         if (id.empty()) {
-            out << "{\"ok\":false,\"error\":\"hypothesis_conclude requires hypothesis\"}\n";
+            write_action_error(session, out, "hypothesis_conclude", "hypothesis_conclude requires hypothesis");
             return;
         }
         fs::path file = hypothesis_file_for(session, id);
@@ -1729,7 +1876,7 @@ static void handle_action_line(GdbSession &session,
             saved_action = dump_json(*saved);
         }
         if (name.empty() || saved_action.empty()) {
-            out << "{\"ok\":false,\"error\":\"save_action requires name and saved_action\"}\n";
+            write_action_error(session, out, "save_action", "save_action requires name and saved_action");
             return;
         }
 
@@ -1740,7 +1887,7 @@ static void handle_action_line(GdbSession &session,
         fs::path replay_plan = replay_dir / (replay_base + ".json");
         std::ofstream replay_out(replay_file, std::ios::app);
         if (!replay_out) {
-            out << "{\"ok\":false,\"error\":\"failed to write replay file\"}\n";
+            write_action_error(session, out, "save_action", "failed to write replay file");
             return;
         }
         replay_out << saved_action << '\n';
@@ -1785,17 +1932,26 @@ static void handle_action_line(GdbSession &session,
             fs::path jsonl = replay_dir / (slugify(name) + ".jsonl");
             replay_file = fs::exists(plan) ? plan : jsonl;
         } else {
-            out << "{\"ok\":false,\"error\":\"replay requires file or name\"}\n";
+            write_action_error(session, out, "replay", "replay requires file or name");
             return;
         }
-        replay_action_file(session,
-                           task,
-                           outcome,
-                           probe_state,
-                           replay_file,
-                           out,
-                           force,
-                           failure_policy_override);
+        try {
+            replay_action_file(session,
+                               task,
+                               outcome,
+                               probe_state,
+                               replay_file,
+                               out,
+                               force,
+                               failure_policy_override);
+        } catch (const std::exception &ex) {
+            write_action_error(session,
+                               out,
+                               "replay",
+                               ex.what(),
+                               "Replay failed",
+                               {{"file", replay_file.lexically_normal().string()}});
+        }
         return;
     }
     auto ev = add_tool_error(session,
@@ -2553,9 +2709,23 @@ static std::string option_value(int argc, char **argv, const std::string &name, 
     return fallback;
 }
 
+static bool looks_like_inline_json(const std::string &arg) {
+    std::string trimmed = trim(arg);
+    return !trimmed.empty() && (trimmed.front() == '{' || trimmed.front() == '[');
+}
+
 static std::string read_text_file_arg(const std::string &arg) {
+    if (looks_like_inline_json(arg)) {
+        return arg;
+    }
     fs::path path(arg);
-    if (!fs::exists(path)) {
+    bool exists = false;
+    try {
+        exists = fs::exists(path);
+    } catch (const fs::filesystem_error &) {
+        return arg;
+    }
+    if (!exists) {
         return arg;
     }
     std::ifstream in(path);

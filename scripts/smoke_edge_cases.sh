@@ -145,51 +145,61 @@ if "$agent" action S1 '{not-json' --socket "$socket_path" >"$invalid_json_stdout
     exit 1
 fi
 grep -F 'error:' "$invalid_json_stderr" >/dev/null
-record_weakness "Invalid action JSON is rejected by the client before reaching daemon action handling, so it cannot create ToolError evidence."
 
 missing_action_response="$("$agent" action S1 '{}' --socket "$socket_path")"
 require_action_error "$missing_action_response" '"error":"missing action"'
-if [[ "$missing_action_response" != *'"evidence":"'* ]]; then
-    record_weakness "Missing action returns ok:false without ToolError evidence."
-fi
+require_contains "$missing_action_response" '"evidence":"'
 
 missing_eval="$("$agent" action S1 '{"action":"evaluate"}' --socket "$socket_path")"
 require_action_error "$missing_eval" '"error":"missing expression"'
-if [[ "$missing_eval" != *'"evidence":"'* ]]; then
-    record_weakness "evaluate without expression returns ok:false without ToolError evidence."
-fi
+require_contains "$missing_eval" '"action":"evaluate"'
+require_contains "$missing_eval" '"evidence":"'
 
 missing_breakpoint="$("$agent" action S1 '{"action":"breakpoint_set"}' --socket "$socket_path")"
 require_action_error "$missing_breakpoint" '"error":"missing location"'
-if [[ "$missing_breakpoint" != *'"evidence":"'* ]]; then
-    record_weakness "breakpoint_set without location returns ok:false without ToolError evidence."
-fi
+require_contains "$missing_breakpoint" '"action":"breakpoint_set"'
+require_contains "$missing_breakpoint" '"evidence":"'
 
 missing_watchpoint="$("$agent" action S1 '{"action":"watchpoint_set"}' --socket "$socket_path")"
 require_action_error "$missing_watchpoint" '"error":"missing expression"'
-if [[ "$missing_watchpoint" != *'"evidence":"'* ]]; then
-    record_weakness "watchpoint_set without expression returns ok:false without ToolError evidence."
-fi
+require_contains "$missing_watchpoint" '"action":"watchpoint_set"'
+require_contains "$missing_watchpoint" '"evidence":"'
 
 raw_without_risk="$("$agent" action S1 '{"action":"raw_mi","command":"-gdb-version"}' --socket "$socket_path")"
 require_action_error "$raw_without_risk" '"error":"raw_mi requires risk=advanced"'
-if [[ "$raw_without_risk" != *'"evidence":"'* ]]; then
-    record_weakness "raw_mi without risk marker returns ok:false without ToolError evidence."
-fi
+require_contains "$raw_without_risk" '"action":"raw_mi"'
+require_contains "$raw_without_risk" '"evidence":"'
 
 frame_negative="$("$agent" action S1 '{"action":"frame_select","frame":-1}' --socket "$socket_path")"
-if [[ "$frame_negative" == *'"ok":true'* ]]; then
-    record_weakness "frame_select with negative frame currently returns ok:true and only leaves the GDB error in command evidence."
-else
-    require_contains "$frame_negative" '"ok":false'
-fi
+require_action_error "$frame_negative" '"action":"frame_select"'
+require_contains "$frame_negative" '"evidence":"'
+require_contains "$frame_negative" '"command_evidence":"'
 
 invalid_eval="$("$agent" action S1 '{"action":"evaluate","expression":"definitely_missing_symbol"}' --socket "$socket_path")"
-if [[ "$invalid_eval" == *'"ok":true'* ]]; then
-    record_weakness "evaluate with an invalid expression currently returns ok:true and relies on GDB command evidence for the error."
-else
-    require_contains "$invalid_eval" '"ok":false'
-fi
+require_action_error "$invalid_eval" '"action":"evaluate"'
+require_contains "$invalid_eval" '"evidence":"'
+require_contains "$invalid_eval" '"command_evidence":"'
+
+long_inline_payload="$(python3 - <<'PY'
+import json
+payload = {
+    "action": "breakpoint_set",
+    "location": "examples/segfault.cpp:14",
+    "comment": "long inline json regression " + ("x" * 5000),
+    "on_hit": {
+        "actions": [{"action": "evaluate", "expression": "session"} for _ in range(12)],
+        "failure_policy": "continue_on_error",
+        "timeout_ms": 5000,
+        "max_output_bytes": 4096,
+        "max_summary_lines": 40,
+    },
+}
+print(json.dumps(payload, separators=(",", ":")))
+PY
+)"
+long_inline_response="$("$agent" action S1 "$long_inline_payload" --socket "$socket_path")"
+require_contains "$long_inline_response" '"ok":true'
+require_contains "$long_inline_response" '"action":"breakpoint_set"'
 
 on_hit_raw="$("$agent" action S1 '{"action":"breakpoint_set","location":"examples/segfault.cpp:14","on_hit":{"actions":[{"action":"raw_mi","command":"-gdb-version","risk":"advanced"}]}}' --socket "$socket_path")"
 require_action_error "$on_hit_raw" '"error":"invalid on_hit policy"'
@@ -212,9 +222,7 @@ require_contains "$delete_response" '"ok":true'
 
 probe_after_delete="$("$agent" action S1 '{"action":"probe_list"}' --socket "$socket_path")"
 require_contains "$probe_after_delete" '"ok":true'
-if [[ "$probe_after_delete" == *"\"number\":\"$bp_number\""* ]]; then
-    record_weakness "probe_delete marks deleted probes in ProbeState but probe_list still returns the deleted probe metadata."
-fi
+require_not_contains "$probe_after_delete" "\"number\":\"$bp_number\""
 
 "$agent" save-action S1 '{"action":"backtrace"}' --name edge-mixed --failure-policy stop_on_error --socket "$socket_path" >/dev/null
 "$agent" save-action S1 '{"action":"not_a_real_action"}' --name edge-mixed --failure-policy stop_on_error --socket "$socket_path" >/dev/null
@@ -257,6 +265,9 @@ report_ids = set(re.findall(r"\bE\d{4}\b", report.read_text()))
 missing = report_ids - ids
 if missing:
     raise SystemExit(f"report references evidence ids missing from index: {sorted(missing)}")
+probes = json.loads((assets / "probes.json").read_text()).get("probes", [])
+if not any(probe.get("deleted") is True for probe in probes):
+    raise SystemExit("deleted probe history was not marked in probes.json")
 print("artifact consistency ok")
 PY
 

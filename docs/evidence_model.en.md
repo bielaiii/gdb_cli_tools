@@ -56,6 +56,13 @@ If a summary is capped, `truncated` is set to `true`. Summary text is treated as
 lossy whenever it is sanitized, decoded from MI streams, summarized, or
 truncated.
 
+Action validation failures that reach a live session write `ToolError`
+evidence. For GDB-backed actions such as `frame_select` and `evaluate`, a GDB
+`result_class=error` or timeout keeps the raw command as `GdbCommand` evidence
+and writes separate `ToolError` evidence. The action response's
+`command_evidence` points to the raw command evidence, while `evidence` points
+to the error evidence.
+
 `raw_records` audits the structure of raw MI without replacing the raw file.
 Current record kinds include `result`, `async`, `stream`, `prompt`, and
 `unknown`; stream types include `console`, `target`, and `log`.
@@ -138,16 +145,22 @@ The authoritative runtime probe state is the in-memory `ProbeState`.
 writing. It is a final report snapshot, not a runtime synchronization database
 and not a live GDB session restore file.
 
-Use `probe_list` to observe current probe metadata while the session is live.
-Cross-session reproduction should use replayed high-level actions rather than
-reading an old `probes.json` to restore breakpoints, watchpoints, or
-catchpoints.
+Use `probe_list` to observe current active probe metadata while the session is
+live; deleted probes are omitted by default after `probe_delete`. Cross-session
+reproduction should use replayed high-level actions rather than reading an old
+`probes.json` to restore breakpoints, watchpoints, or catchpoints.
+`assets/probes.json` may retain deleted history, but deleted entries are marked
+with `deleted:true` so historical probes are not confused with live probes.
 
 Probe hit evidence (`BreakpointHit`, `WatchpointHit`, `CatchpointHit`) stores
 the relevant metadata snapshot for that hit, such as number, kind,
 location/expression/event, condition, comment, purpose, hit count, and
 `on_hit_policy`. This keeps the stop context explainable even if the session
 exits unexpectedly.
+If a watchpoint stop record lacks a probe number, the tool attributes the hit
+and runs on-hit actions only when exactly one active watchpoint can be
+identified. If the stop cannot be uniquely attributed, the tool records
+degraded watchpoint evidence instead of inventing a probe number.
 
 When a probe has an on-hit policy, each automatic action also writes
 `OnHitAction` evidence. That evidence records the action name, status

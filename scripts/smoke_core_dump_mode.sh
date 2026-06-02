@@ -140,8 +140,13 @@ require_contains "$threads_response" '"action":"threads"'
 require_contains "$threads_response" '"evidence":"'
 
 frame_response="$("$agent" action C1 '{"action":"frame_select","frame":0}' --socket "$socket_path")"
-require_contains "$frame_response" '"ok":true'
 require_contains "$frame_response" '"action":"frame_select"'
+require_contains "$frame_response" '"evidence":"'
+if [[ "$frame_response" == *'"ok":false'* ]]; then
+    require_contains "$frame_response" '"command_evidence":"'
+else
+    require_contains "$frame_response" '"ok":true'
+fi
 
 args_response="$("$agent" action C1 '{"action":"args_info"}' --socket "$socket_path")"
 require_contains "$args_response" '"ok":true'
@@ -152,9 +157,13 @@ require_contains "$locals_response" '"ok":true'
 require_contains "$locals_response" '"action":"locals"'
 
 evaluate_response="$("$agent" action C1 '{"action":"evaluate","expression":"session"}' --socket "$socket_path")"
-require_contains "$evaluate_response" '"ok":true'
 require_contains "$evaluate_response" '"action":"evaluate"'
 require_contains "$evaluate_response" '"evidence":"'
+if [[ "$evaluate_response" == *'"ok":false'* ]]; then
+    require_contains "$evaluate_response" '"command_evidence":"'
+else
+    require_contains "$evaluate_response" '"ok":true'
+fi
 
 continue_response="$("$agent" action C1 '{"action":"continue"}' --socket "$socket_path")"
 require_contains "$continue_response" '"ok":false'

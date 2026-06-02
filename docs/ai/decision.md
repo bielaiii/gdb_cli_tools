@@ -103,7 +103,9 @@ breakpoint/watchpoint/catchpoint 需要保存 comment、purpose、condition、hi
 last stop reason 和 on-hit policy。on-hit policy 包含高层 action 列表、timeout/output
 预算、failure policy 和可选 `continue_after_hit`。运行期以内存 `ProbeState` 为权威状态；
 `assets/probes.json` 只在 finish/report 写出阶段作为最终快照生成，不作为运行时同步数据库或
-live GDB 恢复文件。Probe 命中时写入 `BreakpointHit`、`WatchpointHit` 或
+live GDB 恢复文件。`probe_list` 默认只返回 active/live probes；`probe_delete` 后的历史
+probe 可以保留在最终 `assets/probes.json`，但必须标记 `deleted:true`，避免 Agent 把历史
+metadata 当作仍可命中的 live probe。Probe 命中时写入 `BreakpointHit`、`WatchpointHit` 或
 `CatchpointHit` evidence，并保留当次命中的必要 metadata 快照、on-hit result、on-hit
 evidence id 和 error id。每个自动 on-hit action 额外写入 `OnHitAction` evidence。
 

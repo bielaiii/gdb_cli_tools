@@ -59,6 +59,11 @@ Raw MI 会故意放在更深一层：
 <assets>/evidence/index.json
 ```
 
+进入 live session 后的 action 校验失败会写 `ToolError` evidence。`frame_select`、`evaluate`
+等 GDB command action 如果底层 GDB 返回 `result_class=error` 或 timeout，会同时保留原始
+`GdbCommand` evidence，并写 `ToolError` evidence；action response 中的 `command_evidence`
+指向原始命令 evidence，`evidence` 指向错误 evidence。
+
 它包含与每个 evidence Markdown view 相同的 metadata。Raw 文件完整保留；summary 文件受
 byte limit 限制，该限制记录在 index 中。如果 summary 被截断，`truncated` 会被设置为
 `true`。只要 summary 经历过 sanitizer、MI stream 解码、摘要化或截断，就应被视为有损，
@@ -138,13 +143,17 @@ Probe 的运行期权威状态是内存中的 `ProbeState`。`assets/probes.json
 `finish`/报告写出阶段从 `ProbeState` 派生生成，是最终报告快照，不是运行时同步数据库，
 也不是 live GDB session 恢复文件。
 
-运行中使用 `probe_list` 观察当前 probe metadata；跨 session 复现应依赖 replay 高层 action，
-不要读取旧 `probes.json` 恢复断点、观察点或 catchpoint。
+运行中使用 `probe_list` 观察当前 active probe metadata；默认不返回已经 `probe_delete` 的
+历史 probe。跨 session 复现应依赖 replay 高层 action，不要读取旧 `probes.json` 恢复断点、
+观察点或 catchpoint。`assets/probes.json` 可保留 deleted 历史项，但必须用 `deleted:true`
+明确标记，避免把历史 probe 误认为仍然 live。
 
 Probe 命中 evidence（`BreakpointHit`、`WatchpointHit`、`CatchpointHit`）会保存当次命中的
 必要 metadata 快照，例如 number、kind、location/expression/event、condition、comment、
 purpose、hit count 和 `on_hit_policy`。即使 session 异常结束，这些命中 evidence 仍能解释
 当时为什么停住。
+如果 watchpoint stop record 缺少 probe number，工具只会在唯一 active watchpoint 可判断时
+归属并执行 on-hit；无法唯一归属时会记录降级 watchpoint evidence，不伪造 probe number。
 
 如果 probe 配置了 on-hit policy，每个自动 action 会额外写入 `OnHitAction` evidence。
 该 evidence 记录 action name、status（`success`、`failed` 或 `skipped`）、
