@@ -284,6 +284,21 @@
 - 同步更新 `docs/agent_actions.md` / `.en.md`、`docs/evidence_model.md` / `.en.md` 和
   `docs/ai/decision.md`。
 
+## 2026-06-02 本轮更新（code review follow-up）
+
+- 代码审查发现 task `env` 传递仍有一个边界问题：`GdbSession::initialize` 使用
+  `-gdb-set environment KEY=value` 只覆盖了简单值，带空格 value 的真实 inferior 环境需要使用
+  `set environment KEY <rest-of-line>` 语义。
+- 修复 `GdbSession::initialize`，改为 `-gdb-set environment KEY value`，并扩展
+  `scripts/smoke_capability_matrix.sh` 的 I/O fixture，验证 `MATRIX_ENV=fixture env spaced`
+  能真实传给 inferior。
+- 代码审查还发现 `run` / `continue` 底层 GDB control command 若返回 `result_class=error`，原实现仍会
+  继续输出 `ok:true` stop response。现在这两类 GDB 拒绝路径会返回 `ok:false`，写
+  `ToolError` evidence，并通过 `command_evidence` 指向原始 `StopEvent` command evidence。
+- 同步更新 `docs/agent_actions.md` / `.en.md` 和 `docs/evidence_model.md` / `.en.md`，明确
+  `run` / `continue` 的 GDB error 与 run deadline 语义分离。
+- 仓库根目录未发现 `.clang-format`，因此本轮没有做全仓 clang-format，只保持改动块与现有风格一致。
+
 ## Phase 1: Live Session 和证据闭环
 
 状态：Mostly Done

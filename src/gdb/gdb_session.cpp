@@ -53,7 +53,7 @@ void GdbSession::initialize(const DebugTask &task) {
     command("-gdb-set print repeats 10");
     command("-environment-cd " + mi_quote(task.working_directory.string()));
     for (const auto &[key, value] : task.env) {
-        command("-gdb-set environment " + key + "=" + value);
+        command("-gdb-set environment " + key + " " + value);
     }
     command("-file-exec-and-symbols " + mi_quote(task.executable.string()), std::chrono::milliseconds(10000));
     if (!task.args.empty()) {

@@ -73,10 +73,12 @@ MVP action 行保持有意的小而稳定：
 `expression`、probe action 缺少 `location`/`expression`/`number`、`raw_mi` 缺少
 `risk:"advanced"`、on-hit 中使用禁止的 `raw_mi`，以及 replay plan 或 replay 文件校验失败。
 
-`frame_select`、`evaluate` 等需要执行 GDB command 的 action 会保留原始 `GdbCommand`
-evidence。如果 GDB 返回 `result_class=error` 或命令超时，action 返回 `ok:false`，
-response 会包含错误 `evidence` 和原始命令的 `command_evidence`。Agent 不需要打开 raw MI
-就能知道该 action 失败；raw MI 仍可用于审计。
+`frame_select`、`evaluate`、`run`、`continue` 等需要执行 GDB command/control command 的
+action 会保留原始 command evidence。如果 GDB 返回 `result_class=error`，action 返回
+`ok:false`，response 会包含错误 `evidence` 和原始命令的 `command_evidence`。`frame_select`
+和 `evaluate` 命令超时时也会按结构化失败处理；`run`/`continue` 的 run deadline 仍表示
+inferior 运行超时/被工具中断，不等同于 GDB command 失败。Agent 不需要打开 raw MI 就能知道该
+action 是否被 GDB 拒绝；raw MI 仍可用于审计。
 
 ## Replay
 

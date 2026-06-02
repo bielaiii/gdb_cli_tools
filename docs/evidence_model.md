@@ -59,10 +59,12 @@ Raw MI 会故意放在更深一层：
 <assets>/evidence/index.json
 ```
 
-进入 live session 后的 action 校验失败会写 `ToolError` evidence。`frame_select`、`evaluate`
-等 GDB command action 如果底层 GDB 返回 `result_class=error` 或 timeout，会同时保留原始
-`GdbCommand` evidence，并写 `ToolError` evidence；action response 中的 `command_evidence`
-指向原始命令 evidence，`evidence` 指向错误 evidence。
+进入 live session 后的 action 校验失败会写 `ToolError` evidence。`frame_select`、`evaluate`、
+`run`、`continue` 等 GDB-backed action 如果底层 GDB 返回 `result_class=error`，会同时保留
+原始 command evidence，并写 `ToolError` evidence；action response 中的 `command_evidence`
+指向原始命令 evidence，`evidence` 指向错误 evidence。`frame_select` 和 `evaluate` 的命令
+timeout 也按结构化失败记录；`run`/`continue` 的 run deadline 是 inferior 运行超时/中断语义，
+不等同于 GDB command failure。
 
 它包含与每个 evidence Markdown view 相同的 metadata。Raw 文件完整保留；summary 文件受
 byte limit 限制，该限制记录在 index 中。如果 summary 被截断，`truncated` 会被设置为

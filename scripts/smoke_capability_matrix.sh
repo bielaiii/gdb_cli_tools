@@ -370,14 +370,14 @@ io_report="$work_dir/io-report.md"
 io_assets="$work_dir/io-report.assets"
 stdin_file="$work_dir/stdin.txt"
 printf 'matrix input\n' >"$stdin_file"
-write_task "$io_task" "Capability inferior I/O task." "io" "$stdin_file" "MATRIX_ENV=fixture-env"
+write_task "$io_task" "Capability inferior I/O task." "io" "$stdin_file" "MATRIX_ENV=fixture env spaced"
 create_io="$("$agent" create "$io_task" --socket "$socket_path" --session IO1 --out "$io_report" --assets "$io_assets")"
 require_contains "$create_io" '"ok":true'
 require_contains "$create_io" '"state":"exited"'
 finish_io="$("$agent" finish IO1 --socket "$socket_path" --out "$io_report")"
 require_contains "$finish_io" '"ok":true'
 grep -R -F 'stdin=matrix input' "$io_assets/evidence" >/dev/null
-grep -R -F 'env=fixture-env' "$io_assets/evidence" >/dev/null
+grep -R -F 'env=fixture env spaced' "$io_assets/evidence" >/dev/null
 grep -R -F 'stderr=capability-fixture' "$io_assets/evidence" >/dev/null
 artifact_check "$io_assets" "$io_report" "InferiorOutput,EnvironmentInfo,StopEvent"
 

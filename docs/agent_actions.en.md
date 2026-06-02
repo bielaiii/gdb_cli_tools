@@ -67,11 +67,15 @@ return `ok:false` and write `ToolError` evidence. Examples include a missing
 `raw_mi` usage inside on-hit actions, and replay file or replay plan validation
 failures.
 
-Actions such as `frame_select` and `evaluate` keep the raw command output as
-`GdbCommand` evidence. If GDB returns `result_class=error` or the command times
-out, the action returns `ok:false`; the response includes the error `evidence`
-and the raw command's `command_evidence`. Agents can see that the action failed
-without opening raw MI, while the raw MI remains available for audit.
+Actions such as `frame_select`, `evaluate`, `run`, and `continue` keep the raw
+command/control-command output as evidence. If GDB returns
+`result_class=error`, the action returns `ok:false`; the response includes the
+error `evidence` and the raw command's `command_evidence`. `frame_select` and
+`evaluate` command timeouts are also reported as structured failures.
+`run`/`continue` run deadlines still mean the inferior ran until the tool
+interrupted it; they are not treated as GDB command failures. Agents can see
+whether GDB rejected the action without opening raw MI, while the raw MI remains
+available for audit.
 
 Saved replay plans are written as both a compatibility JSONL file and a
 structured `replay/<name>.json` plan. Use `--replay-before-run plan.json` to

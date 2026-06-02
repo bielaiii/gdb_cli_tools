@@ -1668,6 +1668,15 @@ static void handle_action_line(GdbSession &session,
         if (outcome != nullptr) {
             update_outcome_from_stop(*outcome, result);
         }
+        if (result.result_class == "error") {
+            write_action_error(session,
+                               out,
+                               "run",
+                               command_error_message(result, "GDB rejected run"),
+                               "Run failed",
+                               {{"command_evidence", ev.id}});
+            return;
+        }
         if (outcome != nullptr) {
             collect_stop_followup(session, *outcome, result);
         }
@@ -1686,6 +1695,15 @@ static void handle_action_line(GdbSession &session,
         auto ev = session.evidence_store().add("StopEvent", "Continue stop", result.command, result.raw_lines, false, result.record_sequences);
         if (outcome != nullptr) {
             update_outcome_from_stop(*outcome, result);
+        }
+        if (result.result_class == "error") {
+            write_action_error(session,
+                               out,
+                               "continue",
+                               command_error_message(result, "GDB rejected continue"),
+                               "Continue failed",
+                               {{"command_evidence", ev.id}});
+            return;
         }
         if (outcome != nullptr) {
             collect_stop_followup(session, *outcome, result);
