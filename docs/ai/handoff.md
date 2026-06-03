@@ -4,36 +4,20 @@
 
 ## 本轮完成
 
-- 按 `docs/ai/next_cli_task.md` 执行 advanced hypothesis assertions、summary/sanitizer 校准和
-  report 可读性增强。
-- 扩展 `hypothesis_check` assertion：
-  - 新增 `between`，`expected` 使用 `LOW..HIGH`，闭区间判断，支持十进制、负数和 `0x`
-    十六进制整数。
-  - 新增 `address_non_null`，从 observed 中解析唯一 `0x...` 地址，非零时 `passed`。
-  - 新增 `address_equals`，从 observed 和 expected 中各解析唯一 `0x...` 地址，相等时
-    `passed`。
-  - 对缺少 expected、无效区间、LOW 大于 HIGH、无法解析整数/地址、多值歧义等情况稳定返回
-    `status:"unknown"`，并沿用 `ToolError` / `error_evidence` 链路。
-- 增强 summary sanitizer：
-  - 新增 `std::pair<const K, V>` 和 `std::pair<K const, V>` key const 噪声压缩。
-  - raw evidence、raw MI、session log 和 raw 文件布局未改变。
-- 改进 report：
-  - Hypotheses 的 `Checks needing attention` 现在会对带 `error_evidence` 的 check 展示对应
-    `ToolError` summary。
-  - Limitations 明确提示 hypothesis observed value 是有损 summary，最终结论前应检查 linked raw
-    evidence。
-- 扩展 smoke 和测试：
-  - `hypothesis_assertion_tests` 覆盖 `between`、`address_non_null`、`address_equals` 的
-    pass/fail/unknown、负数、十六进制、无效区间、缺少 expected 和多值歧义。
-  - `mi_summary_tests` 覆盖 pair key const 降噪。
-  - `scripts/smoke_capability_matrix.sh` 增加真实 `between` hypothesis check，并断言 report 中
-    `between` 和 unknown assertion error summary 可见。
-- 同步更新：
-  - `docs/agent_actions.md`
-  - `docs/agent_actions.en.md`
-  - `docs/evidence_model.md`
-  - `docs/evidence_model.en.md`
-  - `docs/ai/progress.md`
+- 按 `docs/ai/next_cli_task.md` 执行新一轮 Execution mode。
+- 本轮任务文件把上一轮 advanced hypothesis assertions 的口径收窄为：
+  - 聚焦 `between` / address assertion。
+  - 聚焦 summary/sanitizer 校准。
+  - 不把 report 改进作为主目标。
+- 核对当前 HEAD 后确认：上一轮提交 `2297e19 Add advanced hypothesis assertions` 已满足本轮收窄后的完成标准。
+  - `between`、`address_non_null`、`address_equals` 已实现。
+  - 新 assertion 的 pass/fail/unknown、十进制、负数、十六进制、缺少 expected、无效区间和多值歧义已有
+    `hypothesis_assertion_tests` 覆盖。
+  - `scripts/smoke_capability_matrix.sh` 已包含真实 `between` hypothesis check。
+  - `std::pair<const K, V>` / `std::pair<K const, V>` key const 噪声压缩已实现，并由
+    `mi_summary_tests` 覆盖。
+  - `docs/ai/progress.md` 的过期“numeric 比较”建议已更新为 float、changed 或跨 check 历史比较。
+- 本轮没有新增源码行为变更；只纳入更新后的 `docs/ai/next_cli_task.md` 任务记录，并记录本轮验证结果。
 
 ## 验证
 
@@ -42,15 +26,12 @@
 - `./build/mi_summary_tests`
 - `./build/gdb-agent check examples/segfault_task.md`
 - `git diff --check`
-- `ctest --test-dir build --output-on-failure`
 
-当前 Linux 环境安装了 GDB，完整 CTest 9/9 通过；其中 `daemon_action_flow`、`core_dump_mode`、
-`edge_case_flow` 和 `capability_matrix_flow` 都实际执行了 Linux + GDB smoke。
+本轮没有修改 smoke 脚本或源码行为，因此没有额外运行完整 `ctest`。上一轮实现提交已在同一 Linux + GDB
+环境中通过完整 CTest 9/9。
 
 ## 限制和注意事项
 
 - 仍未实现浮点 assertion、`changed` 或跨 check 历史比较。
-- `between` 和已有 numeric assertion 只支持整数；遇到多个不同整数会返回 `unknown`，避免从有损
-  summary 中猜测。
-- address assertion 只解析 `0x...` 十六进制地址；无法解析或存在多个不同地址时返回 `unknown`。
 - 本轮没有扩展 catchpoint event，没有引入 PTY 或交互式 stdin，也没有修改 raw evidence/schema 布局。
+- 当前 `docs/ai/next_cli_task.md` 已被提交为本轮任务记录；下一轮需要先写入新的具体任务，否则会继续指向已完成范围。

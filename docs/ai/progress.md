@@ -465,6 +465,18 @@ metadata。`raw_mi` 已作为受限高级 escape hatch。
 - 同步更新 `docs/agent_actions.md`、`docs/agent_actions.en.md`、`docs/evidence_model.md` 和
   `docs/evidence_model.en.md`。
 
+## 2026-06-03 本轮更新（task scope refinement verification）
+
+- 本轮 `docs/ai/next_cli_task.md` 将 advanced hypothesis assertions 任务口径收窄为：
+  - 只聚焦 `between` / address assertion 和 summary/sanitizer。
+  - 不把 report 改进作为主目标。
+- 核对当前 HEAD，上一轮提交 `2297e19 Add advanced hypothesis assertions` 已覆盖该收窄任务的完成标准：
+  - `between`、`address_non_null`、`address_equals` 已实现并有单元测试和 smoke 覆盖。
+  - `std::pair<const K, V>` / `std::pair<K const, V>` key const 噪声压缩已实现并有
+    `mi_summary_tests` 覆盖。
+  - 末尾建议已从“numeric 比较”更新为 float、changed 或跨 check 历史比较。
+- 本轮没有新增源码行为变更，只验证当前实现与更新后的任务口径一致，并保留本轮任务记录。
+
 ## 建议的下一步
 
 1. 用真实 Linux GDB raw 输出继续校准 MI parser、类型 sanitizer 和 backtrace/thread summary。
