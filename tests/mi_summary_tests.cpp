@@ -46,6 +46,14 @@ int main() {
             "sanitizer should remove vector allocator noise");
     require(contains(sanitize_output("std::unique_ptr<Foo, std::default_delete<Foo> >", "/tmp/project"), "std::unique_ptr<Foo>"),
             "sanitizer should remove unique_ptr default_delete noise");
+    require(contains(sanitize_output("std::map<int, std::string, std::less<int>, std::allocator<std::pair<int const, std::string> > >", "/tmp/project"),
+                     "std::map<int, std::string>"),
+            "sanitizer should remove map comparator and allocator noise");
+    require(contains(sanitize_output("std::unordered_map<int, std::string, std::hash<int>, std::equal_to<int>, std::allocator<std::pair<int const, std::string> > >", "/tmp/project"),
+                     "std::unordered_map<int, std::string>"),
+            "sanitizer should remove unordered_map hash/equality/allocator noise");
+    require(contains(sanitize_output("/tmp/project/src/server.cpp:17", "/tmp/project"), "src/server.cpp:17"),
+            "sanitizer should keep working-directory paths relative");
 
     std::vector<std::string> raw_records{
         R"(9^done,bkpt={number="1",type="breakpoint"})",

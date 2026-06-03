@@ -4,32 +4,32 @@
 
 ## 本轮完成
 
-- 按 `docs/ai/next_cli_task.md` 执行一轮代码质量 review，重点审查性能开销、架构职责边界和会影响
-  Agent 判断的行为风险。
-- 审查范围包括：
-  - `src/cli.cpp` action dispatch、state guard、run/continue、replay/probe/hypothesis glue。
-  - `src/gdb/` MI command/control command 收发和 timeout 语义。
-  - `src/evidence/` raw/summary/view/index 写入。
-  - `src/workflow/` 静态/轻量取证入口。
-  - `src/report/` report 聚合。
-  - 相关 Linux + GDB smoke scripts。
-- 修复一个高置信行为问题：
-  - `backtrace`、`locals`、`args_info`、`registers`、`threads` 和 `hypothesis_check`
-    之前通过 `collect_console` 保存 raw evidence 后直接返回 `ok:true`。
-  - 如果底层 GDB console command 返回 `result_class=error` 或命令 timeout，Agent 会看到成功响应，
-    必须打开 raw MI 才能发现 GDB 拒绝。例如 core fixture 中 `bt` 返回 `No stack.` 时会被包装成成功
-    backtrace。
-  - 现在这些 action 会返回 `ok:false`，写 `ToolError` evidence，并通过 `command_evidence` 关联原始
-    `GdbCommand` evidence。
-  - `hypothesis_check` 的表达式 GDB command 失败时不再写入 check result，避免把命令失败误写成
-    assertion passed/failed/unknown。
-- 新增 `collect_console_with_result`，让 action dispatch 能检查 `CommandResult`；原
-  `collect_console` 保持兼容默认 light/core evidence collection。
-- 更新 smoke：
-  - `scripts/smoke_edge_cases.sh` 新增 `hypothesis_check` missing symbol 的结构化失败覆盖。
-  - `scripts/smoke_core_dump_mode.sh` 和 `scripts/smoke_capability_matrix.sh` 调整 core 静态 action
-    断言：GDB 有时可能对 generated core 返回 `No stack.`，允许 action 失败，但失败必须带
-    `command_evidence`。
+- 按 `docs/ai/next_cli_task.md` 执行 Agent 友好能力增强，聚焦 hypothesis numeric assertion、
+  summary/sanitizer 降噪和 report 可读性。
+- 扩展 `hypothesis_check` assertion：
+  - 新增 `greater_than`、`less_than`、`greater_equal`、`less_equal`。
+  - 同时新增 `equals_number`、`not_equals_number`。
+  - 支持十进制、负数和 `0x` 十六进制整数。
+  - 会跳过 GDB value-history 前缀，例如 `$1 = 42` 中的 `$1`。
+  - 缺少 expected、无法解析整数、observed/expected 中存在多个不同整数时稳定返回
+    `status:"unknown"`，并沿用现有 `ToolError` / `error_evidence` 链路。
+- 增强 summary sanitizer：
+  - 新增常见 `std::map<K, V, std::less<K>, std::allocator<std::pair<...>>>` 到
+    `std::map<K, V>` 的压缩。
+  - 新增常见 `std::unordered_map<K, V, std::hash<K>, std::equal_to<K>, std::allocator<std::pair<...>>>`
+    到 `std::unordered_map<K, V>` 的压缩。
+  - raw evidence 和 session MI log 不变。
+- 改进 report：
+  - Hypotheses 表格新增 `Observed Summary` 列。
+  - `unknown` 或带 `error_evidence` 的 check 会额外出现在 `Checks needing attention` 列表。
+  - 新增 `Tool Errors` 区域，汇总 ToolError evidence、action、error、summary，并展示
+    `command_evidence` 链路。
+- 扩展 smoke 和测试：
+  - `hypothesis_assertion_tests` 覆盖 numeric assertion 的 pass/fail/unknown、负数、十六进制、
+    缺少 expected、无数字和多数字歧义。
+  - `mi_summary_tests` 覆盖 map/unordered_map 降噪和路径相对化。
+  - `scripts/smoke_capability_matrix.sh` 增加真实 `greater_than` hypothesis check，并断言 report 中
+    `Tool Errors`、`Checks needing attention`、`Observed Summary` 和 `greater_than` 展示。
 - 同步更新：
   - `docs/agent_actions.md`
   - `docs/agent_actions.en.md`
@@ -40,40 +40,19 @@
 ## 验证
 
 - `cmake --build build`
-- `ctest --test-dir build --output-on-failure`
+- `./build/hypothesis_assertion_tests`
+- `./build/mi_summary_tests`
 - `./build/gdb-agent check examples/segfault_task.md`
 - `git diff --check`
+- `ctest --test-dir build --output-on-failure`
 
 当前 Linux 环境安装了 GDB，因此 CTest 中的 `daemon_action_flow`、`core_dump_mode`、
 `edge_case_flow` 和 `capability_matrix_flow` 都实际执行了 Linux + GDB smoke，而不是 skip。
 
-## Code Review Findings
-
-1. 现象：静态 GDB-backed action 通过 `collect_console` 保存 command evidence 后未检查
-   `CommandResult`，导致 `backtrace`、`locals`、`args_info`、`registers`、`threads` 和
-   `hypothesis_check` 在 GDB 返回 `result_class=error` 或 timeout 时仍可能返回 `ok:true`。
-   影响范围：Agent 可能把 GDB 拒绝、无栈 core、缺失 symbol 或命令超时误判为成功取证；
-   `hypothesis_check` 还可能把表达式求值失败记录成 assertion 结果。
-   处理结果：已修复为结构化失败，并用 edge/core/capability smoke 覆盖。
-
-2. 现象：`src/cli.cpp` 仍承担 CLI/daemon request handling、action validation、GDB 调用、
-   evidence 写入、replay/probe/hypothesis 状态维护和 session artifact 写出等大量职责。
-   影响范围：当前功能可运行，但后续新增 action 或扩展 replay/probe/hypothesis 时容易造成重复校验和
-   response/evidence 语义漂移。
-   处理结果：本轮未展开大规模重构；建议后续渐进拆出 action handlers、probe/replay/hypothesis store
-   helpers 和 daemon request handling，避免一次性重写。
-
-3. 现象：`EvidenceStore::add` / `add_text` 每新增一条 evidence 都全量重写
-   `assets/evidence/index.json`。
-   影响范围：当前 smoke 规模可接受；如果真实长 session 产生大量 evidence，会出现 O(N^2) index 写入
-   开销和更多同步文件 I/O。
-   处理结果：本轮不为微优化改变 evidence 可审计性。建议后续在有真实规模数据后评估 append/journal
-   或 finish-time compact index，同时保留中途审计需求。
-
 ## 限制和注意事项
 
-- 本轮没有新增 Agent-facing action，未扩展 catchpoint event，未实现 numeric hypothesis assertion。
-- 默认 light/core evidence collection 仍使用兼容 `collect_console`，本轮只改变高层 action response
-  语义；默认取证阶段不会因为某个静态命令失败而中断整轮 session。
-- 非法 JSON 在 CLI client 本地解析阶段失败时仍没有 session context，因此不会写入 session evidence；
-  这是既有已知限制。
+- numeric assertion 当前只支持整数，不支持浮点数。
+- numeric parser 是保守解析：如果 observed 或 expected 中存在多个不同整数，会返回
+  `unknown`，避免从有损 summary 中猜测。
+- 本轮没有新增新的调试 action，`hypothesis_check` 仍是原 action。
+- 本轮没有扩展 catchpoint event，没有引入 PTY 或交互式 stdin，也没有实现完整 C++ demangler。

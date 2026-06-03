@@ -261,16 +261,28 @@ Supported assertions are:
   `expected`.
 - `not_equals`: `passed` when trimmed `observed` does not equal non-empty
   `expected`.
+- `greater_than`: parses one integer from `observed` and one from non-empty
+  `expected`; `passed` when `observed > expected`.
+- `less_than`: `passed` when parsed integers satisfy `observed < expected`.
+- `greater_equal`: `passed` when parsed integers satisfy `observed >= expected`.
+- `less_equal`: `passed` when parsed integers satisfy `observed <= expected`.
+- `equals_number`: `passed` when parsed integers are equal.
+- `not_equals_number`: `passed` when parsed integers are different.
 
-Unknown assertions, and assertions that require `expected` when `expected` is
-empty, return `status:"unknown"` and record `ToolError` evidence. This means
-the tool could not evaluate that check; it does not prove or disprove the
-hypothesis.
+Numeric assertions support decimal integers, negative integers, and `0x`
+hexadecimal integers. They ignore GDB value-history prefixes such as `$1` in
+`$1 = 42`. Floating-point values are not supported. Unknown assertions,
+assertions that require `expected` when `expected` is empty, unparseable
+integers, or multiple different integers in `observed`/`expected` return
+`status:"unknown"` and record `ToolError` evidence. This means the tool could
+not evaluate that check; it does not prove or disprove the hypothesis.
 
 The final report's Hypotheses section aggregates hypothesis title, tool status,
-checks, evidence ids, agent inference, and final agent conclusion from
-`assets/hypotheses/index.json`. If the index is missing or cannot be parsed,
-the report falls back to listing the per-hypothesis Markdown files.
+checks, observed summaries, evidence ids, error evidence, agent inference, and
+final agent conclusion from `assets/hypotheses/index.json`. Checks with
+`status:"unknown"` or `error_evidence` are additionally listed as needing
+attention. If the index is missing or cannot be parsed, the report falls back to
+listing the per-hypothesis Markdown files.
 
 The global final report sections `Agent Inference` and `Final Agent
 Conclusion` are populated from `finish_session`,

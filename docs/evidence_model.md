@@ -215,12 +215,18 @@ Hypothesis workflow 的机器可读入口是：
 `evidence` 指向原始 GDB 取证 entry，raw evidence 仍是权威来源。`status` 是工具对
 `observed` 执行 assertion 后的结果，不是根因结论。
 
-未知 assertion，或者缺少必需 `expected` 的 assertion，会产生 `status:"unknown"`，并通过
-`error_evidence` 引用一条 `ToolError` evidence。`unknown` 只表示工具无法判断该 check，
-不表示支持或反驳 hypothesis。
+numeric assertion（`greater_than`、`less_than`、`greater_equal`、`less_equal`、
+`equals_number`、`not_equals_number`）会从 `observed` 和 `expected` 中各解析一个唯一整数。
+支持十进制、负数和 `0x` 十六进制；不支持浮点数。未知 assertion、缺少必需 `expected`、
+无法解析整数或存在多个不同整数时，会产生 `status:"unknown"`，并通过 `error_evidence`
+引用一条 `ToolError` evidence。`unknown` 只表示工具无法判断该 check，不表示支持或反驳
+hypothesis。
 
 最终报告会从 `index.json` 聚合 hypothesis、checks、evidence id、Agent inference 和 final
-agent conclusion。如果 index 缺失或无法解析，报告会降级为列出单个 Markdown 文件。
+agent conclusion。报告的 Hypotheses 区域会展示 observed 摘要，并把 `unknown` 或带
+`error_evidence` 的 check 列为需要注意的项；报告还会单独汇总 `ToolError` evidence，并在存在
+`command_evidence` 时展示原始 GDB command evidence 链路。如果 index 缺失或无法解析，报告会降级为
+列出单个 Markdown 文件。
 
 ## 报告引用规则
 
@@ -230,5 +236,5 @@ raw hash，方便 Agent 验证报告引用的 raw 文件没有变化。
 Raw 文件和 session MI log 是审计时的权威来源；summary 是低噪声、有损视图，只适合作为
 Agent 上下文入口。
 
-Summary 层会做有限降噪，例如 C++ `std::string` 类型归一化、常见 allocator 噪声压缩、
-路径相对化，以及 backtrace/thread 的稳定摘要。所有这些都不修改 raw MI。
+Summary 层会做有限降噪，例如 C++ `std::string` 类型归一化、常见 allocator/comparator/hash
+噪声压缩、路径相对化，以及 backtrace/thread 的稳定摘要。所有这些都不修改 raw MI。

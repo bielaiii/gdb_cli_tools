@@ -44,6 +44,22 @@ static std::string short_report_text(std::string value) {
     return value;
 }
 
+static std::string table_cell(std::string value) {
+    value = short_report_text(std::move(value));
+    replace_all(value, "|", "\\|");
+    replace_all(value, "\r", " ");
+    replace_all(value, "\n", "<br>");
+    return value.empty() ? "-" : value;
+}
+
+static Json parse_json_or_null(const std::string &text) {
+    try {
+        return parse_json(text);
+    } catch (const std::exception &) {
+        return {};
+    }
+}
+
 static bool write_hypotheses_from_index(std::ostringstream &md, const fs::path &assets, const fs::path &index) {
     std::string text = read_text_or_empty(index);
     if (text.empty()) {
@@ -97,23 +113,42 @@ static bool write_hypotheses_from_index(std::ostringstream &md, const fs::path &
 
         const Json *checks = hypothesis.find("checks");
         if (checks != nullptr && checks->is_array() && !checks->array_value.empty()) {
-            md << "\n| Check | Description | Expression | Assertion | Expected | Status | Evidence | Error Evidence |\n";
-            md << "| --- | --- | --- | --- | --- | --- | --- | --- |\n";
+            std::vector<const Json *> attention_checks;
+            md << "\n| Check | Description | Expression | Assertion | Expected | Status | Evidence | Error Evidence | Observed Summary |\n";
+            md << "| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n";
             for (const auto &check : checks->array_value) {
                 if (!check.is_object()) {
                     continue;
                 }
                 std::string error_evidence = json_string_value(check, "error_evidence");
+                std::string status = json_string_value(check, "status");
+                if (!error_evidence.empty() || status == "unknown") {
+                    attention_checks.push_back(&check);
+                }
                 md << "| `" << json_string_value(check, "id")
-                   << "` | " << json_string_value(check, "description")
+                   << "` | " << table_cell(json_string_value(check, "description"))
                    << " | `" << json_string_value(check, "expression")
                    << "` | `" << json_string_value(check, "assertion")
                    << "` | `" << json_string_value(check, "expected")
-                   << "` | `" << json_string_value(check, "status")
+                   << "` | `" << status
                    << "` | `" << json_string_value(check, "evidence")
-                   << "` | " << (error_evidence.empty() ? "`-`" : ("`" + error_evidence + "`")) << " |\n";
+                   << "` | " << (error_evidence.empty() ? "`-`" : ("`" + error_evidence + "`"))
+                   << " | " << table_cell(json_string_value(check, "observed")) << " |\n";
             }
             md << "\n";
+            if (!attention_checks.empty()) {
+                md << "Checks needing attention:\n\n";
+                for (const Json *check : attention_checks) {
+                    std::string error_evidence = json_string_value(*check, "error_evidence");
+                    md << "- `" << json_string_value(*check, "id") << "` status `"
+                       << json_string_value(*check, "status") << "`";
+                    if (!error_evidence.empty()) {
+                        md << ", error evidence `" << error_evidence << "`";
+                    }
+                    md << ", evidence `" << json_string_value(*check, "evidence") << "`\n";
+                }
+                md << "\n";
+            }
             for (const auto &check : checks->array_value) {
                 if (!check.is_object()) {
                     continue;
@@ -215,6 +250,29 @@ void write_report(const fs::path &report,
         md << "- No SIGSEGV was observed during the initial run.\n";
     }
     md << "\n";
+
+    std::vector<const Evidence *> tool_errors;
+    for (const auto &ev : evidence) {
+        if (ev.kind == "ToolError") {
+            tool_errors.push_back(&ev);
+        }
+    }
+    if (!tool_errors.empty()) {
+        md << "## Tool Errors\n\n";
+        md << "| Evidence | Action | Error | Command Evidence | Summary |\n";
+        md << "| --- | --- | --- | --- | --- |\n";
+        for (const auto *ev : tool_errors) {
+            Json payload = parse_json_or_null(ev->summary);
+            std::string action = payload.is_object() ? json_string_value(payload, "action") : ev->command;
+            std::string error = payload.is_object() ? json_string_value(payload, "error") : "";
+            std::string command_evidence = payload.is_object() ? json_string_value(payload, "command_evidence") : "";
+            md << "| `" << ev->id << "` | `" << action << "` | "
+               << table_cell(error.empty() ? ev->title : error)
+               << " | " << (command_evidence.empty() ? "`-`" : ("`" + command_evidence + "`"))
+               << " | " << table_cell(ev->summary) << " |\n";
+        }
+        md << "\n";
+    }
 
     md << "## Evidence Summary\n\n";
     for (const auto &ev : evidence) {

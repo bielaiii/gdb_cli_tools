@@ -404,6 +404,37 @@ metadata。`raw_mi` 已作为受限高级 escape hatch。
     若真实 session 产生大量 evidence，建议后续改为可审计的 append/journal 或 finish-time compact
     index 策略。
 
+## 2026-06-03 本轮更新（Agent 友好能力增强）
+
+- 扩展 `hypothesis_check` assertion：
+  - 新增 `greater_than`、`less_than`、`greater_equal`、`less_equal`。
+  - 同时新增 `equals_number`、`not_equals_number`。
+  - numeric parser 支持十进制、负数和 `0x` 十六进制整数，并跳过 GDB value-history 前缀
+    （例如 `$1 = 42` 中的 `$1`）。
+  - observed/expected 无法解析整数、缺少 expected 或存在多个不同整数时稳定返回
+    `status:"unknown"`，继续通过既有路径记录 `ToolError` evidence。
+  - 当前不支持浮点数。
+- 增强 summary sanitizer：
+  - 在已有 `std::string`、vector allocator 和 unique_ptr default_delete 降噪基础上，增加常见
+    `std::map<K, V, std::less<K>, std::allocator<std::pair<...>>>` 到 `std::map<K, V>` 的压缩。
+  - 增加常见 `std::unordered_map<K, V, std::hash<K>, std::equal_to<K>, std::allocator<std::pair<...>>>`
+    到 `std::unordered_map<K, V>` 的压缩。
+  - 继续保持 raw evidence 不变，只影响 summary/view。
+- 改进 report 的 Agent 可读性：
+  - Hypotheses 表格新增 observed summary 列。
+  - `unknown` 或带 `error_evidence` 的 check 会在 Hypotheses 区域额外列为
+    `Checks needing attention`。
+  - report 新增 `Tool Errors` 区域，按 evidence id 汇总 action、error、summary，并在存在
+    `command_evidence` 时展示原始 GDB command evidence 链路。
+- 扩展测试：
+  - `hypothesis_assertion_tests` 覆盖 numeric assertion pass/fail/unknown、负数、十六进制、
+    缺少 expected、无数字和多数字歧义。
+  - `mi_summary_tests` 覆盖 map/unordered_map 降噪和路径相对化。
+  - `scripts/smoke_capability_matrix.sh` 增加真实 `greater_than` hypothesis check，并断言 report 中
+    `Tool Errors`、`Checks needing attention`、`Observed Summary` 和 numeric assertion 展示。
+- 同步更新 `docs/agent_actions.md`、`docs/agent_actions.en.md`、`docs/evidence_model.md` 和
+  `docs/evidence_model.en.md`。
+
 ## 建议的下一步
 
 1. 用真实 Linux GDB raw 输出继续校准 MI parser、类型 sanitizer 和 backtrace/thread summary。

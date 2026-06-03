@@ -2,192 +2,243 @@
 
 ## 目标
 
-执行一轮面向代码质量的 code review，重点审查当前实现中是否存在不必要的性能开销、过度复杂的控制流、边界不清的模块职责或会妨碍后续演进的架构问题。
+执行一轮 Agent 友好能力增强，重点降低 AI Agent 阅读 evidence、判断 hypothesis 和使用 report 时的 token 成本与歧义。
 
-本轮不是格式审查。缩进、空格、换行、局部排版等纯格式问题默认忽略；格式统一交给项目级 `.clang-format` 或后续单独格式化任务处理。除非格式问题直接造成可读性误判、宏/模板解析风险或实际 bug，否则不要把它列为 review finding。
+本轮聚焦三件事：
+
+1. 扩展 `hypothesis_check` 的 assertion 能力，优先支持常用 numeric 比较。
+2. 增强低噪声 summary / sanitizer，让 GDB 输出里的 C++ 噪声更少、更稳定。
+3. 改进 report 中 hypothesis、ToolError 和 command evidence 的展示，让 Agent 不必频繁打开 raw MI 才能判断下一步。
+
+这不是大规模架构重构任务，也不是格式整理任务。格式问题交给 `.clang-format` 或后续单独格式化任务处理。
 
 ## 背景
 
-当前项目已经完成 MVP 的主要能力：
+当前 MVP 主链路已经基本完整：
 
-- Markdown task file 解析和校验。
-- GDB/MI live session、Run Mode 和 Core Dump Mode。
+- Markdown task file、Run Mode、Core Dump Mode。
 - daemon/create/action/status/finish/close/shutdown flow。
 - evidence raw/summary/view/index、session summary/snapshot/report。
 - replay store、probe metadata/on-hit policy、hypothesis workflow。
-- 多组 Linux + GDB smoke，包括 daemon flow、core dump、edge cases 和 capability matrix。
+- Linux + GDB smoke 和不依赖 GDB 的单元测试。
 
-上一轮已修复若干会误导 Agent 的行为问题，包括 task env 传递和 run/continue command error 语义。本轮应从“功能已经能跑”切换到“实现是否足够轻、边界是否足够清楚、后续扩展是否容易”的审查视角。
+`docs/ai/progress.md` 当前把 “深度摘要和高级 MI” 标为 Early，并把以下内容列为后续建议：
 
-## 审查重点
+- 用真实 Linux GDB raw 输出继续校准 MI parser、类型 sanitizer 和 backtrace/thread summary。
+- 按真实调试需求继续扩展 hypothesis assertion，例如 numeric 比较。
+- 继续优化 report 中 hypothesis 聚合、长 observed 展示、错误 evidence 和跳转体验。
 
-### 1. 不必要的性能开销
+本轮应优先补这些直接影响 Agent 使用体验的能力。
 
-重点检查 hot path 和高频 action 路径：
+## 范围
 
-- daemon action dispatch。
-- `GdbSession` MI command send/receive 和 stop event handling。
-- evidence 写入、index 更新、summary/view/raw 文件生成。
-- MI parsing、summary sanitizer、backtrace/thread summarizer。
-- replay/probe/hypothesis 相关状态读写。
-- report/session snapshot/session summary 生成。
+### 1. 扩展 hypothesis numeric assertion
 
-优先寻找：
+在现有 `src/workflow/hypothesis.cpp` / `.hpp` 的 assertion helper 上扩展小而稳定的 numeric 比较。
 
-- 每个 action 都重复全量读写大文件或全量重建 JSON 的路径。
-- 可以轻量缓存却反复扫描目录、反复读取 evidence index、反复解析 task/replay/probe/hypothesis 状态的路径。
-- 大对象、JSON、字符串、MI record 或 evidence payload 的不必要拷贝。
-- 同步文件 I/O 放在明显可避免的 action fast path 上。
-- 为生成低噪声 summary 反复处理 raw 全量文本，而不是只处理当前 record 或当前 evidence。
-- GDB round trip 明显多余、可以合并或可以从已有 stop record/probe state 推导的情况。
-- 没有预算控制的输出聚合、字符串拼接或 report 生成。
+优先支持以下 assertion：
 
-注意：
+- `greater_than`
+- `less_than`
+- `greater_equal`
+- `less_equal`
 
-- 不要为了“看起来更快”做没有证据的微优化。
-- 如果性能问题只在极大数据量下出现，请说明触发条件和可能影响，不要把它夸大成当前 blocker。
-- 对外契约、evidence 可审计性和 raw 保留优先于过度压缩 I/O。
+可按实现情况增加但不要过度扩展：
 
-### 2. 架构和职责边界
+- `equals_number`
+- `not_equals_number`
 
-重点检查模块边界是否符合项目设计：
+语义要求：
 
-- `src/cli.cpp` 是否承担了过多 session/action/evidence/replay/probe/hypothesis 业务逻辑。
-- `src/gdb/` 是否只处理 GDB/MI process、session state、MI utility，而不是混入 report 或 Agent 推理语义。
-- `src/evidence/` 是否保持 evidence store 职责清晰，不把 summary 当 raw 替代。
-- `src/workflow/` 是否适合作为 crash/session outcome/light/core evidence collection 的承载层。
-- replay/probe/hypothesis 状态是否保持“高层 action 可重放、live state 与 finish artifact 分离”的设计。
-- Core Dump Mode 和 Run Mode 的 state guard 是否集中、清晰、可扩展。
-- 工具观察、action result、ToolError evidence 和 Agent conclusion 是否仍保持分离。
+- `observed` 来自 `hypothesis_check` 新产生的 evidence summary，仍然是低噪声、有损视图。
+- numeric parser 应能从常见 GDB print 输出中提取数字，例如：
+  - `$1 = 42`
+  - `42`
+  - `$2 = -7`
+  - `$3 = 0x10`
+  - `value = 17`
+- `expected` 必须存在并能解析为数字；否则返回 `unknown`，并由现有路径写 `ToolError` evidence。
+- `observed` 为空、无法解析数字或包含多个明显冲突数字时，返回 `unknown`，不要猜。
+- 支持十进制和 `0x` 十六进制；是否支持浮点数由实现难度决定，若不支持需在文档和 handoff 中明确。
+- 不要把 numeric assertion 的 pass/fail 解释成 hypothesis 被支持或反驳；仍然只是工具级 check result。
 
-优先寻找：
+测试要求：
 
-- 一个函数同时做 CLI 参数解析、业务校验、GDB 调用、evidence 写入和 report 拼装。
-- action validation 分散在多个地方，导致 response/evidence 语义不一致。
-- session state、probe state、replay state、hypothesis state 的所有权不清。
-- 为了当前 smoke test 临时拼接出来、后续难以维护的特殊路径。
-- 可以通过小型 helper 或局部模块化降低重复和错误概率的地方。
-- 与 `design.md` / `docs/ai/decision.md` 明确决策冲突的实现。
+- 扩展 `hypothesis_assertion_tests`，覆盖 pass、fail、unknown。
+- 覆盖十进制、负数、十六进制、缺少 expected、observed 无数字、observed 多数字歧义。
+- 如果 smoke 中已有合适停点，可在 `scripts/smoke_capability_matrix.sh` 中增加一个真实 `hypothesis_check`
+  numeric assertion；避免新增重复脚本。
 
-注意：
+### 2. 增强 summary / sanitizer
 
-- 不要提出大规模重写 daemon/session 架构，除非能说明具体风险和渐进迁移方案。
-- 不要把“可以更优雅”作为 finding；finding 必须指向实际风险、维护成本或未来功能阻塞。
-- 如果发现架构问题但本轮不宜修复，应在 handoff 中写清建议拆分的后续任务。
+检查并增强当前 MI summary 和 C++ 类型 sanitizer，目标是减少 Agent 看到的噪声，而不是追求完整 demangler。
 
-### 3. 行为风险和测试缺口
+优先增强：
 
-性能和架构审查过程中，如果发现会影响 Agent 判断的行为风险，也应记录：
+- 常见 STL 容器类型压缩：
+  - `std::vector<T, std::allocator<T>>` -> `std::vector<T>`
+  - `std::map<K, V, ..., std::allocator<...>>` -> `std::map<K, V>`
+  - `std::unordered_map<K, V, ..., std::allocator<...>>` -> `std::unordered_map<K, V>`
+- 常见智能指针噪声压缩：
+  - `std::unique_ptr<T, std::default_delete<T>>` -> `std::unique_ptr<T>`
+  - `std::shared_ptr<T>` 保持稳定。
+- 常见路径归一化：
+  - 对 repo 内路径或 working directory 下路径，summary/view 中尽量展示相对路径。
+  - 不要改变 raw evidence。
+- backtrace/thread summary 中优先保留 Agent 判断最需要的信息：
+  - frame number
+  - function
+  - file:line
+  - 当前线程标记
+  - stop reason
 
-- 失败 action 是否可能返回过于乐观的 response。
-- evidence 是否可能丢 raw、错链 evidence id、错标 lossy/truncated。
-- report/session summary 是否可能遗漏关键错误或 probe/hypothesis/replay 状态。
-- smoke test 是否覆盖了实现中的关键分支，还是只覆盖了“正好能过”的路径。
+约束：
 
-本轮不以扩展测试矩阵为主要目标，但如果发现一个小测试能锁住高价值问题，可以补充。
+- raw MI 和 raw evidence 必须完整保留。
+- summary 是有损视图，相关 `lossy_summary` / `truncated` 标记不能被破坏。
+- 不要引入重型依赖或完整 C++ demangling 系统。
+- 不要为了 summary 美化改变 action result 的 machine-readable 字段语义。
+
+测试要求：
+
+- 扩展 `mi_summary_tests`，覆盖新增 sanitizer 规则和路径归一化。
+- 如果新增路径归一化 helper，尽量用不依赖 GDB 的单元测试覆盖。
+
+### 3. 改进 report 的 Agent 可读性
+
+在不改变 report 基本结构的前提下，增强 Agent 快速定位关键信号的能力。
+
+优先改进：
+
+- Hypotheses 区域：
+  - 展示 assertion、expected、observed 摘要、status、error evidence。
+  - 对 `unknown` 和 ToolError 链路更明确。
+  - 长 observed 应截断展示，并保留 evidence id 供 Agent 回看。
+- Errors / ToolError 展示：
+  - report 中应能快速看到失败 action、错误信息、error evidence id。
+  - 如果存在 `command_evidence`，应展示它，方便 Agent 关联原始 GDB command output。
+- Replay / Probe / On-hit 相关区域：
+  - 如果本轮触及 report 聚合逻辑，可以顺手让失败 step、on-hit error 和 degraded watchpoint evidence
+    更容易被扫到。
+  - 不要大规模重排 report，保持当前用户和 smoke 预期稳定。
+
+测试要求：
+
+- 优先扩展现有 smoke 对 report 内容的 grep 断言。
+- 不要让测试过度依赖完整自然语言句子；断言关键字段、evidence id、status 和 action name 即可。
 
 ## 工作方式
 
-1. 先阅读本任务和项目入口文档：
+1. 先阅读：
    - `final_feature.md`
    - `design.md`
    - `docs/ai/current_goal.md`
    - `docs/ai/decision.md`
    - `docs/ai/progress.md`
    - `docs/ai/handoff.md`
-2. 使用 `rg` / `rg --files` 快速建立代码结构视图。
-3. 优先审查高风险文件：
-   - `src/cli.cpp`
-   - `src/gdb/`
-   - `src/evidence/`
-   - `src/workflow/`
-   - `src/report/`
-   - 相关 tests 和 smoke scripts
-4. 形成 findings 时，按严重程度排序，并标明：
-   - 文件和行号。
-   - 现象。
-   - 影响。
-   - 建议处理方式。
-5. 如果发现高置信、低风险、范围小的问题，可以在本轮直接修复。
-6. 如果问题需要较大重构，先不要展开实现；把它作为后续任务建议写入 `docs/ai/handoff.md`。
+   - 本文件
+2. 快速定位相关代码：
+   - `src/workflow/hypothesis.cpp`
+   - `tests/hypothesis_assertion_tests.cpp`
+   - `src/gdb/mi_utils.cpp`
+   - `tests/mi_summary_tests.cpp`
+   - `src/report/report.cpp`
+   - `scripts/smoke_capability_matrix.sh`
+   - 相关 docs
+3. 优先实现 numeric assertion，因为它是清晰的 Agent-facing 能力。
+4. 再做低风险 sanitizer/report 增强；如果发现范围过大，选择最有价值的小集合完成，不要展开成大重构。
+5. 修改 action、evidence、summary 或 report 语义时，同步更新文档。
 
 ## 可写范围
 
-本轮允许修改：
+允许修改：
 
-- 为修复高置信 review finding 所需的源码文件。
-- 为锁住修复所需的最小测试或 smoke script。
+- `src/workflow/hypothesis.cpp`
+- `src/workflow/hypothesis.hpp`
+- `tests/hypothesis_assertion_tests.cpp`
+- `src/gdb/mi_utils.cpp`
+- `src/gdb/mi_utils.hpp`
+- `tests/mi_summary_tests.cpp`
+- `src/report/report.cpp`
+- 现有 smoke scripts，优先 `scripts/smoke_capability_matrix.sh`
 - 与实际行为变化对应的文档：
   - `docs/agent_actions.md`
   - `docs/agent_actions.en.md`
   - `docs/evidence_model.md`
   - `docs/evidence_model.en.md`
-  - `docs/task_format.md`
-  - `docs/task_format.en.md`
 - 任务结束记录：
   - `docs/ai/progress.md`
   - `docs/ai/handoff.md`
-  - `docs/ai/decision.md`，仅当发现并确认新的项目级设计决策时更新。
+  - `docs/ai/decision.md`，仅当产生新的项目级决策时更新。
+
+如确实需要，也可小范围修改调用上述 helper 的邻近源码。不要做 unrelated cleanup。
 
 不要修改：
 
-- 与 review finding 无关的源码。
-- 纯格式文件或大规模格式化输出。
+- 与本轮 Agent 友好能力无关的模块。
 - `docs/ai/next_cli_task.md`，除非用户明确要求重新规划下一轮任务。
+- 纯格式文件或大规模格式化输出。
 
 ## 不做
 
-- 不做纯格式审查；格式问题交给 `.clang-format`。
-- 不进行全仓 clang-format。
-- 不做 unrelated cleanup。
-- 不新增 Agent-facing action。
+- 不新增新的调试 action，除非 numeric assertion 需要文档列出新 assertion 名称；`hypothesis_check`
+  仍是原 action。
 - 不扩展 catchpoint event。
-- 不实现 numeric hypothesis assertion。
 - 不引入 PTY 或交互式 stdin。
+- 不实现完整 C++ demangler。
 - 不把工具变成自动根因分析器。
+- 不大规模重构 `src/cli.cpp` 或 daemon/session 架构。
 - 不为了 macOS live GDB 做兼容；目标运行平台仍是 Linux。
+- 不做全仓 clang-format。
 
-## 输出要求
+## 文档同步
 
-在 `docs/ai/handoff.md` 中记录本轮 code review 结果：
+按实际行为更新：
 
-- 如果发现问题，列出 findings，按严重程度排序。
-- 如果直接修复了问题，记录修复内容、验证结果和剩余风险。
-- 如果只发现需要后续较大重构的问题，记录建议拆分方式。
-- 如果没有发现值得处理的问题，也要明确说明审查范围和残余风险。
+- `docs/agent_actions.md`
+- `docs/agent_actions.en.md`
+- `docs/evidence_model.md`
+- `docs/evidence_model.en.md`
 
-在 `docs/ai/progress.md` 中追加本轮进度摘要：
+文档中需要明确：
 
-- 审查范围。
-- 已修复的问题或确认没有直接修复项。
-- 后续建议。
+- 新增 numeric assertion 的名称和语义。
+- 解析失败、缺少 expected、observed 歧义时返回 `unknown`。
+- `observed` 仍来自有损 summary，不是 raw，也不是 Agent 结论。
+- report 中新增或调整的错误/evidence 链路展示。
+
+任务结束时必须更新：
+
+- `docs/ai/progress.md`
+- `docs/ai/handoff.md`
 
 ## 验证要求
 
-如果本轮修改了源码或测试，至少运行：
+至少运行：
 
 ```bash
 cmake --build build
-ctest --test-dir build --output-on-failure
+./build/hypothesis_assertion_tests
+./build/mi_summary_tests
 ./build/gdb-agent check examples/segfault_task.md
 git diff --check
 ```
 
-如果只更新 review 记录而没有代码变更：
+如果修改了 smoke 或 report 聚合逻辑，并且当前 Linux 环境有 GDB，还应运行：
 
-- 不要求运行完整 build/test。
-- 仍应运行 `git diff --check`，确保文档改动没有明显 whitespace 问题。
+```bash
+ctest --test-dir build --output-on-failure
+```
 
-如果发现性能或架构问题但暂不修复：
-
-- 不要伪造验证结果。
-- 在 `docs/ai/handoff.md` 说明没有执行对应验证的原因。
+如果当前环境没有 GDB，必须在 `docs/ai/handoff.md` 和最终回复中说明哪些 live smoke 未运行。
 
 ## 完成标准
 
-- 完成一轮聚焦性能开销和架构设计的 code review。
-- findings 不包含纯格式问题，除非格式直接导致实际风险。
-- 高置信、低风险的问题已修复或明确记录为后续任务。
-- `docs/ai/progress.md` 和 `docs/ai/handoff.md` 已更新。
-- 如有代码或测试改动，已按要求完成 build/test。
+- `hypothesis_check` 支持至少 `greater_than`、`less_than`、`greater_equal`、`less_equal`。
+- numeric assertion 对解析失败和歧义情况稳定返回 `unknown`，并保留 ToolError 链路。
+- `hypothesis_assertion_tests` 覆盖新增 numeric assertion。
+- summary / sanitizer 至少完成一组高价值 C++ 噪声压缩或路径归一化增强，并有测试。
+- report 对 hypothesis unknown / ToolError / command evidence 的展示更利于 Agent 扫描。
+- 相关中英文文档同步。
+- `docs/ai/progress.md` 和 `docs/ai/handoff.md` 记录实际完成内容、验证结果和限制。
 - 按 Execution mode 约定 stage 本轮相关文件，创建一次 commit，并推送当前分支。

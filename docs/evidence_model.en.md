@@ -226,19 +226,28 @@ Each check entry contains:
 GDB evidence entry, which remains authoritative. `status` is the tool's
 assertion result over `observed`, not a root-cause conclusion.
 
-Unknown assertions, and assertions missing required `expected` input, produce
-`status:"unknown"` and reference `ToolError` evidence through `error_evidence`.
-`unknown` means the tool could not evaluate that check; it does not support or
-refute the hypothesis.
+Numeric assertions (`greater_than`, `less_than`, `greater_equal`, `less_equal`,
+`equals_number`, and `not_equals_number`) parse one integer from `observed` and
+one from `expected`. Decimal integers, negative integers, and `0x`
+hexadecimal integers are supported; floating-point values are not supported.
+Unknown assertions, missing required `expected` input, unparseable integers, or
+multiple different integers produce `status:"unknown"` and reference
+`ToolError` evidence through `error_evidence`. `unknown` means the tool could
+not evaluate that check; it does not support or refute the hypothesis.
 
 The final report aggregates hypotheses, checks, evidence ids, agent inference,
-and final agent conclusion from `index.json`. If the index is missing or cannot
-be parsed, the report falls back to listing the per-hypothesis Markdown files.
+and final agent conclusion from `index.json`. The Hypotheses section includes
+observed summaries and lists `unknown` checks or checks with `error_evidence` as
+needing attention. The report also summarizes `ToolError` evidence separately
+and shows `command_evidence` when a raw GDB command evidence link exists. If the
+index is missing or cannot be parsed, the report falls back to listing the
+per-hypothesis Markdown files.
 
 Reports should cite evidence ids rather than relying on summaries alone.
 Reports now include each evidence item's raw hash so an Agent can verify that
 the cited raw file still matches the report.
 
 The summary layer applies limited noise reduction, including C++ `std::string`
-normalization, common allocator compression, relative path shortening, and
-stable backtrace/thread summaries. None of these transformations modify raw MI.
+normalization, common allocator/comparator/hash compression, relative path
+shortening, and stable backtrace/thread summaries. None of these
+transformations modify raw MI.
