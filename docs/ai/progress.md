@@ -477,6 +477,19 @@ metadata。`raw_mi` 已作为受限高级 escape hatch。
   - 末尾建议已从“numeric 比较”更新为 float、changed 或跨 check 历史比较。
 - 本轮没有新增源码行为变更，只验证当前实现与更新后的任务口径一致，并保留本轮任务记录。
 
+## 2026-06-03 本轮更新（report scope verification）
+
+- 本轮 `docs/ai/next_cli_task.md` 再次将 report 小幅增强纳入 advanced hypothesis assertions 范围：
+  - Hypotheses unknown check 展示 error summary。
+  - Tool Errors 稳定展示 action、error、ToolError evidence id 和 `command_evidence`。
+  - Limitations 提醒 hypothesis observed 来自有损 summary。
+- 核对当前 HEAD，上一轮提交 `2297e19 Add advanced hypothesis assertions` 已覆盖这些 report 信号：
+  - `src/report/report.cpp` 的 `Checks needing attention` 会反查并展示 error summary。
+  - `Tool Errors` 表格包含 Evidence、Action、Error、Command Evidence 和 Summary。
+  - `scripts/smoke_capability_matrix.sh` 已断言 `## Tool Errors`、`Checks needing attention`、
+    `between` 和 `unknown assertion: numeric_greater_than`。
+- 本轮没有新增源码行为变更，只验证当前实现与更新后的任务口径一致，并保留本轮任务记录。
+
 ## 建议的下一步
 
 1. 用真实 Linux GDB raw 输出继续校准 MI parser、类型 sanitizer 和 backtrace/thread summary。

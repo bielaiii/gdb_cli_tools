@@ -2,12 +2,14 @@
 
 ## 目标
 
-继续增强 Agent 友好能力，但本轮只做两件事：
+继续增强 Agent 友好能力，但本轮只做三件事：
 
 1. 扩展更贴近真实调试场景的 hypothesis assertion。
 2. 用真实 Linux + GDB 输出继续校准 summary / sanitizer。
+3. 小幅增强 report 的 Agent 扫描信号，但不重排 report。
 
-不要重复上一轮已经完成的整数 numeric assertion，也不要把 report 改进作为本轮主目标。若新增 assertion 或 summary 语义自然影响 report 展示，只做必要同步，不展开 report 重排。
+不要重复上一轮已经完成的整数 numeric assertion。report 只做小幅增强，围绕 unknown、ToolError 和
+`command_evidence` 等关键信号补充展示，不展开 report 重排。
 
 本轮不是格式整理任务，也不是架构重构任务。格式问题交给 `.clang-format` 或后续单独格式化任务处理。
 
@@ -27,7 +29,7 @@
 - summary sanitizer 已增加常见 `std::map` / `std::unordered_map` 降噪。
 - report 已增加 `Observed Summary`、`Checks needing attention` 和 `Tool Errors` 区域。
 
-当前仍有价值的 Agent 友好增强是：让 hypothesis 更能表达真实调试判断，并继续让 summary 在真实 GDB 输出上更省 token、更少歧义。
+当前仍有价值的 Agent 友好增强是：让 hypothesis 更能表达真实调试判断，继续让 summary 在真实 GDB 输出上更省 token、更少歧义，并让 report 更容易被 Agent 快速扫出下一步动作。
 
 ## 范围
 
@@ -109,7 +111,35 @@
 - 扩展 `mi_summary_tests`，覆盖新增 sanitizer 或 summary 规则。
 - 如果修改 smoke，尽量断言关键字段和 evidence id，不断言整段自然语言。
 
-### 3. 修正进度记录中的过期建议
+### 3. 小幅增强 report，而不是重排 report
+
+上一轮已经新增 `Observed Summary`、`Checks needing attention` 和 `Tool Errors`。本轮只在现有结构上补强 Agent 扫描信号，不做章节大重排，不改变 report 的整体形态。
+
+优先增强：
+
+- Hypotheses 区域：
+  - 对 `unknown` check 展示 unknown reason 或 error summary，避免 Agent 只看到 `unknown`。
+  - 长 observed 继续截断展示，并保留 evidence id 供 Agent 回看。
+- Tool Errors 区域：
+  - 稳定展示 `action`、`error`、ToolError evidence id。
+  - 如果存在 `command_evidence`，展示对应 evidence id，方便 Agent 关联原始 GDB command output。
+  - 同一 action 多次失败时，不做模糊合并，保持按 evidence id 可追踪。
+- Report 限制说明：
+  - 如果 report 引用了有损 summary 作为 hypothesis observed，继续提醒 raw evidence 才是审计来源。
+
+约束：
+
+- 不大规模重排 report。
+- 不把 report 做成结论生成器。
+- 不改变已有 report 中关键章节的基本位置和含义。
+- 不让 smoke 依赖整段自然语言；只断言关键字段、evidence id、status、action name。
+
+测试要求：
+
+- 如果修改 `src/report/report.cpp`，优先扩展现有 smoke 的 report grep 断言。
+- 覆盖至少一个 `unknown` check 或 ToolError / `command_evidence` 展示路径。
+
+### 4. 修正进度记录中的过期建议
 
 `docs/ai/progress.md` 末尾的“建议的下一步”当前仍写着“继续扩展 hypothesis assertion，例如 numeric 比较”。上一轮已经完成整数 numeric 比较，因此本轮结束时应把该建议改成更准确的说法。
 
@@ -135,10 +165,12 @@
    - `src/gdb/mi_utils.cpp`
    - `src/gdb/mi_utils.hpp`
    - `tests/mi_summary_tests.cpp`
+   - `src/report/report.cpp`
    - `scripts/smoke_capability_matrix.sh`
 3. 优先实现 `between` 和 address assertions。
 4. 再做一到两项高价值 summary/sanitizer 增强。
-5. 修改 action、evidence 或 summary 语义时，同步更新文档。
+5. 最后做 report 小幅增强，只补 Agent 扫描信号，不重排章节。
+6. 修改 action、evidence、summary 或 report 语义时，同步更新文档。
 
 ## 可写范围
 
@@ -150,6 +182,7 @@
 - `src/gdb/mi_utils.cpp`
 - `src/gdb/mi_utils.hpp`
 - `tests/mi_summary_tests.cpp`
+- `src/report/report.cpp`
 - 现有 smoke scripts，优先 `scripts/smoke_capability_matrix.sh`
 - 与实际行为变化对应的文档：
   - `docs/agent_actions.md`
@@ -166,14 +199,13 @@
 不要修改：
 
 - 与本轮 assertion 或 summary/sanitizer 无关的模块。
-- `src/report/report.cpp`，除非新增 assertion 或 summary 语义导致 report 必须做最小同步。
 - `docs/ai/next_cli_task.md`，除非用户明确要求重新规划下一轮任务。
 - 纯格式文件或大规模格式化输出。
 
 ## 不做
 
 - 不新增新的调试 action；`hypothesis_check` 仍是原 action。
-- 不把 report 改进作为主目标，不做 report 大重排。
+- 不做 report 大重排；本轮只允许小幅增强现有 report 信号。
 - 不扩展 catchpoint event。
 - 不引入 PTY 或交互式 stdin。
 - 不实现完整 C++ demangler。
@@ -197,6 +229,7 @@
 - 解析失败、缺少 expected、observed 歧义时返回 `unknown`。
 - `observed` 仍来自有损 summary，不是 raw，也不是 Agent 结论。
 - 本轮新增或调整的 summary/sanitizer 行为。
+- 本轮新增或调整的 report 小幅展示行为。
 
 任务结束时必须更新：
 
@@ -215,7 +248,7 @@ cmake --build build
 git diff --check
 ```
 
-如果修改了 smoke，并且当前 Linux 环境有 GDB，还应运行：
+如果修改了 smoke 或 report 聚合逻辑，并且当前 Linux 环境有 GDB，还应运行：
 
 ```bash
 ctest --test-dir build --output-on-failure
@@ -229,6 +262,7 @@ ctest --test-dir build --output-on-failure
 - 新 assertion 对解析失败和歧义情况稳定返回 `unknown`，并保留 ToolError 链路。
 - `hypothesis_assertion_tests` 覆盖新增 assertion。
 - summary / sanitizer 至少完成一组高价值真实 GDB 噪声压缩或错误 summary 增强，并有测试。
+- report 小幅增强 unknown reason / ToolError / `command_evidence` 的展示，不做结构重排。
 - `docs/ai/progress.md` 中过期的“numeric 比较”后续建议已修正为当前真实剩余能力。
 - 相关中英文文档同步。
 - `docs/ai/progress.md` 和 `docs/ai/handoff.md` 记录实际完成内容、验证结果和限制。
