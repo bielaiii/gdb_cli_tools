@@ -57,6 +57,18 @@ require_file() {
     fi
 }
 
+require_gdb_action_response() {
+    local response="$1"
+    local action="$2"
+    require_contains "$response" "\"action\":\"$action\""
+    require_contains "$response" '"evidence":"'
+    if [[ "$response" == *'"ok":false'* ]]; then
+        require_contains "$response" '"command_evidence":"'
+    else
+        require_contains "$response" '"ok":true'
+    fi
+}
+
 if ! gdb --batch -q \
         -ex 'set debuginfod enabled off' \
         -ex 'set confirm off' \
@@ -130,40 +142,22 @@ require_contains "$status_response" '"mode":"core"'
 require_contains "$status_response" '"stop_reason":"core_loaded"'
 
 backtrace_response="$("$agent" action C1 '{"action":"backtrace"}' --socket "$socket_path")"
-require_contains "$backtrace_response" '"ok":true'
-require_contains "$backtrace_response" '"action":"backtrace"'
-require_contains "$backtrace_response" '"evidence":"'
+require_gdb_action_response "$backtrace_response" "backtrace"
 
 threads_response="$("$agent" action C1 '{"action":"threads"}' --socket "$socket_path")"
-require_contains "$threads_response" '"ok":true'
-require_contains "$threads_response" '"action":"threads"'
-require_contains "$threads_response" '"evidence":"'
+require_gdb_action_response "$threads_response" "threads"
 
 frame_response="$("$agent" action C1 '{"action":"frame_select","frame":0}' --socket "$socket_path")"
-require_contains "$frame_response" '"action":"frame_select"'
-require_contains "$frame_response" '"evidence":"'
-if [[ "$frame_response" == *'"ok":false'* ]]; then
-    require_contains "$frame_response" '"command_evidence":"'
-else
-    require_contains "$frame_response" '"ok":true'
-fi
+require_gdb_action_response "$frame_response" "frame_select"
 
 args_response="$("$agent" action C1 '{"action":"args_info"}' --socket "$socket_path")"
-require_contains "$args_response" '"ok":true'
-require_contains "$args_response" '"action":"args_info"'
+require_gdb_action_response "$args_response" "args_info"
 
 locals_response="$("$agent" action C1 '{"action":"locals"}' --socket "$socket_path")"
-require_contains "$locals_response" '"ok":true'
-require_contains "$locals_response" '"action":"locals"'
+require_gdb_action_response "$locals_response" "locals"
 
 evaluate_response="$("$agent" action C1 '{"action":"evaluate","expression":"session"}' --socket "$socket_path")"
-require_contains "$evaluate_response" '"action":"evaluate"'
-require_contains "$evaluate_response" '"evidence":"'
-if [[ "$evaluate_response" == *'"ok":false'* ]]; then
-    require_contains "$evaluate_response" '"command_evidence":"'
-else
-    require_contains "$evaluate_response" '"ok":true'
-fi
+require_gdb_action_response "$evaluate_response" "evaluate"
 
 continue_response="$("$agent" action C1 '{"action":"continue"}' --socket "$socket_path")"
 require_contains "$continue_response" '"ok":false'

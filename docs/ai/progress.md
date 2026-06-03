@@ -372,6 +372,38 @@ metadata。`raw_mi` 已作为受限高级 escape hatch。
 - thread/backtrace summarizer 需要在 Linux + GDB raw 输出上继续校准。
 - raw MI 的风险说明和跨 evidence 相关记录归因还可以更细。
 
+## 2026-06-03 本轮更新（代码质量 review）
+
+- 完成一轮面向性能开销、架构职责边界和行为风险的 code review，重点查看：
+  - `src/cli.cpp` action dispatch、state guard、replay/probe/hypothesis glue。
+  - `src/gdb/` MI command/control command 收发。
+  - `src/evidence/` raw/summary/view/index 写入。
+  - `src/workflow/` 静态/轻量取证入口。
+  - `src/report/` report 聚合。
+  - Linux + GDB smoke scripts。
+- 修复静态 GDB-backed action 的失败语义：
+  - `backtrace`、`locals`、`args_info`、`registers`、`threads` 和 `hypothesis_check`
+    现在如果底层 GDB console command 返回 `result_class=error` 或命令 timeout，会返回
+    `ok:false`。
+  - response 保留错误 `evidence`，并通过 `command_evidence` 指向原始 `GdbCommand`
+    evidence，避免 Agent 把 GDB 拒绝或无栈 core 的 `No stack.` 误判为成功取证。
+  - `hypothesis_check` 的表达式 GDB command 失败时不再写入成功/失败/unknown check result。
+- 新增 `collect_console_with_result`，保留原 `collect_console` 兼容默认取证流程，同时让 action
+  dispatch 能检查 `CommandResult`。
+- 扩展 `scripts/smoke_edge_cases.sh` 覆盖 `hypothesis_check` missing symbol 的
+  `ok:false` + `command_evidence` 路径。
+- 调整 `scripts/smoke_core_dump_mode.sh` 和 `scripts/smoke_capability_matrix.sh` 中 core 静态
+  action 断言：core fixture 可能没有可用 stack，静态 action 可以失败，但失败必须保留
+  `command_evidence`。
+- 同步更新 `docs/agent_actions.md`、`docs/agent_actions.en.md`、`docs/evidence_model.md` 和
+  `docs/evidence_model.en.md` 的失败语义。
+- 本轮 review 确认的后续维护建议：
+  - `src/cli.cpp` 仍是主要职责集中点，后续可渐进拆出 action handlers、probe/replay/hypothesis
+    store helpers 和 daemon request handling。
+  - `EvidenceStore::add*` 每新增一条 evidence 都全量重写 `evidence/index.json`，当前 smoke 规模可接受；
+    若真实 session 产生大量 evidence，建议后续改为可审计的 append/journal 或 finish-time compact
+    index 策略。
+
 ## 建议的下一步
 
 1. 用真实 Linux GDB raw 输出继续校准 MI parser、类型 sanitizer 和 backtrace/thread summary。

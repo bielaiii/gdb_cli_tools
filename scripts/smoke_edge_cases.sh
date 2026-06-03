@@ -106,6 +106,18 @@ require_action_error() {
     require_contains "$response" "$expected_error"
 }
 
+require_gdb_action_response() {
+    local response="$1"
+    local action="$2"
+    require_contains "$response" "\"action\":\"$action\""
+    require_contains "$response" '"evidence":"'
+    if [[ "$response" == *'"ok":false'* ]]; then
+        require_contains "$response" '"command_evidence":"'
+    else
+        require_contains "$response" '"ok":true'
+    fi
+}
+
 "$agent" daemon --socket "$socket_path" >"$daemon_log" 2>&1 &
 daemon_pid="$!"
 
@@ -179,6 +191,13 @@ invalid_eval="$("$agent" action S1 '{"action":"evaluate","expression":"definitel
 require_action_error "$invalid_eval" '"action":"evaluate"'
 require_contains "$invalid_eval" '"evidence":"'
 require_contains "$invalid_eval" '"command_evidence":"'
+
+hypothesis_create="$("$agent" action S1 '{"action":"hypothesis_create","id":"H-edge-command-error","title":"command error is not a successful check"}' --socket "$socket_path")"
+require_contains "$hypothesis_create" '"ok":true'
+hypothesis_command_error="$("$agent" action S1 '{"action":"hypothesis_check","hypothesis":"H-edge-command-error","description":"missing symbol should fail as command error","expression":"definitely_missing_symbol","assertion":"contains","expected":"anything"}' --socket "$socket_path")"
+require_action_error "$hypothesis_command_error" '"action":"hypothesis_check"'
+require_contains "$hypothesis_command_error" '"evidence":"'
+require_contains "$hypothesis_command_error" '"command_evidence":"'
 
 long_inline_payload="$(python3 - <<'PY'
 import json
@@ -377,8 +396,7 @@ require_contains "$create_core" '"ok":true'
 require_contains "$create_core" '"mode":"core"'
 
 core_backtrace="$("$agent" action C1 '{"action":"backtrace"}' --socket "$socket_path")"
-require_contains "$core_backtrace" '"ok":true'
-require_contains "$core_backtrace" '"evidence":"'
+require_gdb_action_response "$core_backtrace" "backtrace"
 
 for payload in \
     '{"action":"run"}' \

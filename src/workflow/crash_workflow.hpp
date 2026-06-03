@@ -38,6 +38,18 @@ struct SessionOutcome {
     std::string final_agent_conclusion;
 };
 
+struct CollectedConsoleEvidence {
+    Evidence evidence;
+    CommandResult result;
+};
+
+CollectedConsoleEvidence collect_console_with_result(
+    GdbSession &session,
+    const std::string &title,
+    const std::string &console_command,
+    bool backtrace_summary = false,
+    std::chrono::milliseconds timeout = std::chrono::milliseconds(5000));
+
 Evidence collect_console(GdbSession &session,
                          const std::string &title,
                          const std::string &console_command,

@@ -2,211 +2,169 @@
 
 ## 目标
 
-修复上一轮 edge-case / capability matrix 测试暴露出的工具可靠性薄弱点，让 Agent 面对失败动作、
-GDB error、watchpoint stop 和 probe 删除状态时，能从 response、evidence、summary/report 中得到
-一致、可审计的信号。
+执行一轮面向代码质量的 code review，重点审查当前实现中是否存在不必要的性能开销、过度复杂的控制流、边界不清的模块职责或会妨碍后续演进的架构问题。
 
-本轮聚焦产品行为一致性修复，不新增新的调试能力。优先解决 `docs/ai/handoff.md` 和
-`docs/ai/progress.md` 已记录的 weakness：
-
-1. action validation failure 没有统一写 `ToolError` evidence。
-2. `raw_mi` 缺少 `risk:"advanced"` 时没有 `ToolError` evidence。
-3. CLI inline JSON 参数过长时会先走 `fs::exists` 并触发 `File name too long`。
-4. `frame_select` / `evaluate` 遇到 GDB `result_class=error` 时仍可能返回 `ok:true`。
-5. `probe_delete` 后 `probe_list` 仍返回 deleted probe metadata，语义不清。
-6. watchpoint 能让 inferior 停止，但缺少 `WatchpointHit` evidence 和 on-hit 归属。
+本轮不是格式审查。缩进、空格、换行、局部排版等纯格式问题默认忽略；格式统一交给项目级 `.clang-format` 或后续单独格式化任务处理。除非格式问题直接造成可读性误判、宏/模板解析风险或实际 bug，否则不要把它列为 review finding。
 
 ## 背景
 
-当前项目已完成：
+当前项目已经完成 MVP 的主要能力：
 
-- live session、Run Mode、Core Dump Mode。
-- evidence store、raw/summary/view/index、session summary/snapshot/report。
-- replay store、probe/on-hit policy、hypothesis workflow。
-- edge-case smoke 和 capability matrix smoke。
+- Markdown task file 解析和校验。
+- GDB/MI live session、Run Mode 和 Core Dump Mode。
+- daemon/create/action/status/finish/close/shutdown flow。
+- evidence raw/summary/view/index、session summary/snapshot/report。
+- replay store、probe metadata/on-hit policy、hypothesis workflow。
+- 多组 Linux + GDB smoke，包括 daemon flow、core dump、edge cases 和 capability matrix。
 
-上一轮测试不是缺少覆盖，而是已经把几个“Agent 会被误导”的点暴露出来：
+上一轮已修复若干会误导 Agent 的行为问题，包括 task env 传递和 run/continue command error 语义。本轮应从“功能已经能跑”切换到“实现是否足够轻、边界是否足够清楚、后续扩展是否容易”的审查视角。
 
-- 有些失败只在 response 里出现，没有 evidence，最终 report 无法审计。
-- 有些 GDB error 被包装成 `ok:true`，Agent 可能误判动作成功。
-- watchpoint stop 有状态信号，但没有 probe metadata 归属链路。
-- `probe_list` 对 deleted probe 的展示会让 Agent 分不清 live probe 和历史 probe。
+## 审查重点
 
-本轮应把这些错误路径收敛成稳定契约。
+### 1. 不必要的性能开销
 
-## 范围
+重点检查 hot path 和高频 action 路径：
 
-### 1. 统一 action validation failure 的 `ToolError` evidence
+- daemon action dispatch。
+- `GdbSession` MI command send/receive 和 stop event handling。
+- evidence 写入、index 更新、summary/view/raw 文件生成。
+- MI parsing、summary sanitizer、backtrace/thread summarizer。
+- replay/probe/hypothesis 相关状态读写。
+- report/session snapshot/session summary 生成。
 
-梳理 CLI/daemon action handling 中“已经有 session，但 action payload 校验失败”的路径。
+优先寻找：
 
-至少覆盖：
-
-- 缺少 `action` 字段。
-- `evaluate` 缺少 `expression`。
-- `breakpoint_set` 缺少 `location`。
-- `watchpoint_set` 缺少 `expression`。
-- `raw_mi` 缺少 `risk:"advanced"`。
-- `raw_mi` on-hit 禁止路径。
-- replay 文件不存在或 replay validation 明确失败时，如果已有 session，应保证 response/evidence 一致。
-
-要求：
-
-- 返回 `ok:false`。
-- response 包含：
-  - `action`，如果能确定。
-  - `error`。
-  - `evidence`。
-- 写入 `ToolError` evidence。
-- `evidence/index.json`、view/summary/raw 文件完整。
-- report/session summary 可以反映这些错误 evidence。
+- 每个 action 都重复全量读写大文件或全量重建 JSON 的路径。
+- 可以轻量缓存却反复扫描目录、反复读取 evidence index、反复解析 task/replay/probe/hypothesis 状态的路径。
+- 大对象、JSON、字符串、MI record 或 evidence payload 的不必要拷贝。
+- 同步文件 I/O 放在明显可避免的 action fast path 上。
+- 为生成低噪声 summary 反复处理 raw 全量文本，而不是只处理当前 record 或当前 evidence。
+- GDB round trip 明显多余、可以合并或可以从已有 stop record/probe state 推导的情况。
+- 没有预算控制的输出聚合、字符串拼接或 report 生成。
 
 注意：
 
-- 非法 JSON 如果在 CLI client 本地解析阶段就失败，可能没有 session context。本轮不强制把它写入 session
-  evidence，但应尽量让 CLI 输出稳定 JSON 或至少避免崩溃/异常噪声。
-- 不要把工具 validation failure 解释成 Agent 结论。
+- 不要为了“看起来更快”做没有证据的微优化。
+- 如果性能问题只在极大数据量下出现，请说明触发条件和可能影响，不要把它夸大成当前 blocker。
+- 对外契约、evidence 可审计性和 raw 保留优先于过度压缩 I/O。
 
-### 2. 修复 inline JSON_OR_FILE 参数判定
+### 2. 架构和职责边界
 
-当前长 inline action JSON 作为 CLI 参数传入时，client 可能先调用 `fs::exists(arg)`，导致
-`filesystem error: File name too long`。
+重点检查模块边界是否符合项目设计：
 
-要求：
+- `src/cli.cpp` 是否承担了过多 session/action/evidence/replay/probe/hypothesis 业务逻辑。
+- `src/gdb/` 是否只处理 GDB/MI process、session state、MI utility，而不是混入 report 或 Agent 推理语义。
+- `src/evidence/` 是否保持 evidence store 职责清晰，不把 summary 当 raw 替代。
+- `src/workflow/` 是否适合作为 crash/session outcome/light/core evidence collection 的承载层。
+- replay/probe/hypothesis 状态是否保持“高层 action 可重放、live state 与 finish artifact 分离”的设计。
+- Core Dump Mode 和 Run Mode 的 state guard 是否集中、清晰、可扩展。
+- 工具观察、action result、ToolError evidence 和 Agent conclusion 是否仍保持分离。
 
-- 调整 JSON_OR_FILE 判定逻辑。
-- 如果参数看起来是 JSON object/array，例如 trim 后以 `{` 或 `[` 开头，应优先当作 inline JSON 文本，
-  不做 filesystem lookup。
-- 文件路径仍然可用。
-- 不引入新 CLI 产品形态；本轮只修复现有参数判定。
-- 为长 inline JSON 增加回归测试，至少在 smoke 中覆盖一个足够长的 on-hit policy 或 replay action。
+优先寻找：
 
-### 3. 将 GDB command error 映射为结构化 action failure
+- 一个函数同时做 CLI 参数解析、业务校验、GDB 调用、evidence 写入和 report 拼装。
+- action validation 分散在多个地方，导致 response/evidence 语义不一致。
+- session state、probe state、replay state、hypothesis state 的所有权不清。
+- 为了当前 smoke test 临时拼接出来、后续难以维护的特殊路径。
+- 可以通过小型 helper 或局部模块化降低重复和错误概率的地方。
+- 与 `design.md` / `docs/ai/decision.md` 明确决策冲突的实现。
 
-修复 `frame_select` 和 `evaluate` 等 action 在底层 GDB 返回 `result_class=error` 时仍返回 `ok:true`
-的问题。
+注意：
 
-至少覆盖：
+- 不要提出大规模重写 daemon/session 架构，除非能说明具体风险和渐进迁移方案。
+- 不要把“可以更优雅”作为 finding；finding 必须指向实际风险、维护成本或未来功能阻塞。
+- 如果发现架构问题但本轮不宜修复，应在 handoff 中写清建议拆分的后续任务。
 
-- `frame_select` 使用负数或明显越界 frame。
-- `evaluate` 使用不存在 symbol 或非法表达式。
+### 3. 行为风险和测试缺口
 
-要求：
+性能和架构审查过程中，如果发现会影响 Agent 判断的行为风险，也应记录：
 
-- action response 返回 `ok:false`。
-- response 包含 `action`、`error`、`evidence`。
-- 原 command evidence 仍保留 raw MI。
-- 额外 `ToolError` evidence 或等价错误 evidence 应能让 Agent 不打开 raw 也知道动作失败。
-- 不破坏正常 `frame_select` / `evaluate` 成功路径。
-- 同步更新 `docs/agent_actions.md` / `.en.md` 中相关失败语义。
-- 如 evidence schema 或 report 表达变化，更新 `docs/evidence_model.md` / `.en.md`。
+- 失败 action 是否可能返回过于乐观的 response。
+- evidence 是否可能丢 raw、错链 evidence id、错标 lossy/truncated。
+- report/session summary 是否可能遗漏关键错误或 probe/hypothesis/replay 状态。
+- smoke test 是否覆盖了实现中的关键分支，还是只覆盖了“正好能过”的路径。
 
-### 4. 明确并修复 `probe_delete` / `probe_list` 语义
+本轮不以扩展测试矩阵为主要目标，但如果发现一个小测试能锁住高价值问题，可以补充。
 
-当前 `probe_delete` 后 `probe_list` 仍返回 deleted probe metadata。需要选择并实现一个清晰语义。
+## 工作方式
 
-推荐语义：
+1. 先阅读本任务和项目入口文档：
+   - `final_feature.md`
+   - `design.md`
+   - `docs/ai/current_goal.md`
+   - `docs/ai/decision.md`
+   - `docs/ai/progress.md`
+   - `docs/ai/handoff.md`
+2. 使用 `rg` / `rg --files` 快速建立代码结构视图。
+3. 优先审查高风险文件：
+   - `src/cli.cpp`
+   - `src/gdb/`
+   - `src/evidence/`
+   - `src/workflow/`
+   - `src/report/`
+   - 相关 tests 和 smoke scripts
+4. 形成 findings 时，按严重程度排序，并标明：
+   - 文件和行号。
+   - 现象。
+   - 影响。
+   - 建议处理方式。
+5. 如果发现高置信、低风险、范围小的问题，可以在本轮直接修复。
+6. 如果问题需要较大重构，先不要展开实现；把它作为后续任务建议写入 `docs/ai/handoff.md`。
 
-- `probe_list` 默认只返回 active/live probes。
-- deleted probe 作为历史信息保留在 internal state 或 finish artifact 中，但必须标记 `deleted:true`。
-- 如果当前 action API 不支持 include-deleted，本轮不要新增复杂筛选参数；默认避免让 Agent 把 deleted probe
-  当成 live probe。
+## 可写范围
 
-要求：
+本轮允许修改：
 
-- `probe_delete` 后再次 `probe_list` 不应把 deleted probe 表示为可用 live probe。
-- `assets/probes.json` 如果仍包含 deleted 历史项，必须明确 `deleted` 字段。
-- report 对 deleted probe 的展示必须不误导。
-- 同步更新 `docs/agent_actions.md` / `.en.md` 和 `docs/evidence_model.md` / `.en.md`。
-- 扩展 `scripts/smoke_edge_cases.sh` 或 `scripts/smoke_capability_matrix.sh` 覆盖删除后行为。
+- 为修复高置信 review finding 所需的源码文件。
+- 为锁住修复所需的最小测试或 smoke script。
+- 与实际行为变化对应的文档：
+  - `docs/agent_actions.md`
+  - `docs/agent_actions.en.md`
+  - `docs/evidence_model.md`
+  - `docs/evidence_model.en.md`
+  - `docs/task_format.md`
+  - `docs/task_format.en.md`
+- 任务结束记录：
+  - `docs/ai/progress.md`
+  - `docs/ai/handoff.md`
+  - `docs/ai/decision.md`，仅当发现并确认新的项目级设计决策时更新。
 
-### 5. 增强 watchpoint stop 归属
+不要修改：
 
-上一轮 capability fixture 已确认 `watchpoint_set` 能让 inferior 停止，并返回
-`stop_reason:"watchpoint-trigger"`，但没有 `WatchpointHit` evidence，也没有执行 watchpoint on-hit action。
-
-本轮目标是做最小可用增强：
-
-- 当 GDB/MI stop record 能提供 watchpoint/breakpoint number 时，关联到对应 `ProbeState`。
-- 如果 stop record 缺少 probe number，尝试从当前 watchpoint probe state、raw MI stop reason 或
-  `-break-list` 结果做保守关联。
-- 如果仍不能唯一归属，至少写入一个降级 `WatchpointHit` 或 `ToolError`/`SessionEvent` evidence，说明
-  watchpoint-trigger 已发生但无法唯一关联 probe。
-
-要求：
-
-- 真实 watchpoint stop 后 evidence index 能看到 watchpoint 相关 evidence。
-- 能唯一关联时，`WatchpointHit` evidence 携带：
-  - probe number。
-  - expression。
-  - condition/comment/purpose。
-  - hit_count。
-  - stop reason。
-  - on-hit result/evidence ids。
-- 能唯一关联时执行 watchpoint on-hit policy，语义与 breakpoint/catchpoint on-hit 一致。
-- 不能唯一关联时，不要伪造确定性 probe number；记录降级 evidence，并在 handoff 中说明限制。
-- 扩展 capability matrix smoke，把 watchpoint evidence/on-hit 从 warning 尽量提升为 hard expectation。
-
-### 6. 测试更新
-
-更新现有测试，不要新增过多重复脚本。
-
-至少更新：
-
-- `scripts/smoke_edge_cases.sh`
-- `scripts/smoke_capability_matrix.sh`
-
-按需要更新或新增不依赖 GDB 的单元测试：
-
-- action validation helper。
-- JSON_OR_FILE 判定 helper。
-- probe list filtering / deleted state helper。
-- watchpoint stop attribution helper。
-
-要求：
-
-- 测试应验证修复后的行为，而不是继续把 weakness 当 warning。
-- 如果某项 watchpoint 归属因为 GDB 输出缺失不能稳定 hard fail，需要明确保留 warning，并在
-  `docs/ai/handoff.md` 说明原因。
-
-## 文档同步
-
-按实际行为更新：
-
-- `docs/agent_actions.md`
-- `docs/agent_actions.en.md`
-- `docs/evidence_model.md`
-- `docs/evidence_model.en.md`
-
-如果修改了项目级语义，更新：
-
-- `docs/ai/decision.md`
-
-任务结束时必须更新：
-
-- `docs/ai/progress.md`
-- `docs/ai/handoff.md`
+- 与 review finding 无关的源码。
+- 纯格式文件或大规模格式化输出。
+- `docs/ai/next_cli_task.md`，除非用户明确要求重新规划下一轮任务。
 
 ## 不做
 
-- 不新增新的 Agent-facing action。
-- 不扩展新的 catchpoint event。
+- 不做纯格式审查；格式问题交给 `.clang-format`。
+- 不进行全仓 clang-format。
+- 不做 unrelated cleanup。
+- 不新增 Agent-facing action。
+- 不扩展 catchpoint event。
 - 不实现 numeric hypothesis assertion。
-- 不重构 daemon/session 架构。
 - 不引入 PTY 或交互式 stdin。
 - 不把工具变成自动根因分析器。
 - 不为了 macOS live GDB 做兼容；目标运行平台仍是 Linux。
-- 不做 unrelated cleanup。
 
-## 完成标准
+## 输出要求
 
-- action validation failure 在有 session context 时稳定写 `ToolError` evidence。
-- `raw_mi` 缺少 `risk:"advanced"` 的拒绝路径有 evidence。
-- 长 inline JSON action 不再触发 `File name too long`。
-- `frame_select` / `evaluate` 的 GDB error 映射为 `ok:false` 或明确结构化失败。
-- `probe_delete` 后 `probe_list` 不误导 Agent。
-- watchpoint stop 至少有 watchpoint 相关 evidence；若能唯一归属，则有 `WatchpointHit` 和 on-hit 链路。
-- Linux + GDB 环境运行：
+在 `docs/ai/handoff.md` 中记录本轮 code review 结果：
+
+- 如果发现问题，列出 findings，按严重程度排序。
+- 如果直接修复了问题，记录修复内容、验证结果和剩余风险。
+- 如果只发现需要后续较大重构的问题，记录建议拆分方式。
+- 如果没有发现值得处理的问题，也要明确说明审查范围和残余风险。
+
+在 `docs/ai/progress.md` 中追加本轮进度摘要：
+
+- 审查范围。
+- 已修复的问题或确认没有直接修复项。
+- 后续建议。
+
+## 验证要求
+
+如果本轮修改了源码或测试，至少运行：
 
 ```bash
 cmake --build build
@@ -215,6 +173,21 @@ ctest --test-dir build --output-on-failure
 git diff --check
 ```
 
-- `docs/ai/progress.md` 记录实际修复和剩余限制。
-- `docs/ai/handoff.md` 记录完成内容、验证结果、仍未解决的 weakness。
-- 按 Execution mode 约定提交并推送本轮相关改动。
+如果只更新 review 记录而没有代码变更：
+
+- 不要求运行完整 build/test。
+- 仍应运行 `git diff --check`，确保文档改动没有明显 whitespace 问题。
+
+如果发现性能或架构问题但暂不修复：
+
+- 不要伪造验证结果。
+- 在 `docs/ai/handoff.md` 说明没有执行对应验证的原因。
+
+## 完成标准
+
+- 完成一轮聚焦性能开销和架构设计的 code review。
+- findings 不包含纯格式问题，除非格式直接导致实际风险。
+- 高置信、低风险的问题已修复或明确记录为后续任务。
+- `docs/ai/progress.md` 和 `docs/ai/handoff.md` 已更新。
+- 如有代码或测试改动，已按要求完成 build/test。
+- 按 Execution mode 约定 stage 本轮相关文件，创建一次 commit，并推送当前分支。

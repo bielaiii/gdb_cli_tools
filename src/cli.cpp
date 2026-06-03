@@ -271,6 +271,26 @@ static std::string command_error_message(const CommandResult &result, const std:
     return fallback;
 }
 
+static bool write_console_action_error_if_needed(GdbSession &session,
+                                                 std::ostream &out,
+                                                 const std::string &action_name,
+                                                 const std::string &title,
+                                                 const CollectedConsoleEvidence &collected,
+                                                 const std::map<std::string, std::string> &details = {}) {
+    if (collected.result.result_class != "error" && !collected.result.timed_out) {
+        return false;
+    }
+    std::map<std::string, std::string> error_details = details;
+    error_details["command_evidence"] = collected.evidence.id;
+    write_action_error(session,
+                       out,
+                       action_name,
+                       command_error_message(collected.result, "GDB rejected " + action_name),
+                       title,
+                       error_details);
+    return true;
+}
+
 static std::string breakpoint_number_from(const CommandResult &result) {
     for (const auto &raw : result.raw_lines) {
         std::string number = field_value(raw, "number");
@@ -1307,28 +1327,43 @@ static void handle_action_line(GdbSession &session,
         return;
     }
     if (action_name == "backtrace") {
-        auto ev = collect_console(session, "Backtrace", "bt", true, std::chrono::milliseconds(json_int_field(action, "timeout_ms", 5000)));
-        out << "{\"ok\":true,\"action\":\"backtrace\",\"evidence\":" << json_escape(ev.id) << "}\n";
+        auto collected = collect_console_with_result(session, "Backtrace", "bt", true, std::chrono::milliseconds(json_int_field(action, "timeout_ms", 5000)));
+        if (write_console_action_error_if_needed(session, out, "backtrace", "Backtrace failed", collected)) {
+            return;
+        }
+        out << "{\"ok\":true,\"action\":\"backtrace\",\"evidence\":" << json_escape(collected.evidence.id) << "}\n";
         return;
     }
     if (action_name == "locals") {
-        auto ev = collect_console(session, "Local variables", "info locals", false, std::chrono::milliseconds(json_int_field(action, "timeout_ms", 5000)));
-        out << "{\"ok\":true,\"action\":\"locals\",\"evidence\":" << json_escape(ev.id) << "}\n";
+        auto collected = collect_console_with_result(session, "Local variables", "info locals", false, std::chrono::milliseconds(json_int_field(action, "timeout_ms", 5000)));
+        if (write_console_action_error_if_needed(session, out, "locals", "Locals failed", collected)) {
+            return;
+        }
+        out << "{\"ok\":true,\"action\":\"locals\",\"evidence\":" << json_escape(collected.evidence.id) << "}\n";
         return;
     }
     if (action_name == "args_info") {
-        auto ev = collect_console(session, "Frame arguments", "info args", false, std::chrono::milliseconds(json_int_field(action, "timeout_ms", 5000)));
-        out << "{\"ok\":true,\"action\":\"args_info\",\"evidence\":" << json_escape(ev.id) << "}\n";
+        auto collected = collect_console_with_result(session, "Frame arguments", "info args", false, std::chrono::milliseconds(json_int_field(action, "timeout_ms", 5000)));
+        if (write_console_action_error_if_needed(session, out, "args_info", "Frame arguments failed", collected)) {
+            return;
+        }
+        out << "{\"ok\":true,\"action\":\"args_info\",\"evidence\":" << json_escape(collected.evidence.id) << "}\n";
         return;
     }
     if (action_name == "registers") {
-        auto ev = collect_console(session, "Registers", "info registers", false, std::chrono::milliseconds(json_int_field(action, "timeout_ms", 5000)));
-        out << "{\"ok\":true,\"action\":\"registers\",\"evidence\":" << json_escape(ev.id) << "}\n";
+        auto collected = collect_console_with_result(session, "Registers", "info registers", false, std::chrono::milliseconds(json_int_field(action, "timeout_ms", 5000)));
+        if (write_console_action_error_if_needed(session, out, "registers", "Registers failed", collected)) {
+            return;
+        }
+        out << "{\"ok\":true,\"action\":\"registers\",\"evidence\":" << json_escape(collected.evidence.id) << "}\n";
         return;
     }
     if (action_name == "threads") {
-        auto ev = collect_console(session, "Threads", "info threads", false, std::chrono::milliseconds(json_int_field(action, "timeout_ms", 5000)));
-        out << "{\"ok\":true,\"action\":\"threads\",\"evidence\":" << json_escape(ev.id) << "}\n";
+        auto collected = collect_console_with_result(session, "Threads", "info threads", false, std::chrono::milliseconds(json_int_field(action, "timeout_ms", 5000)));
+        if (write_console_action_error_if_needed(session, out, "threads", "Threads failed", collected)) {
+            return;
+        }
+        out << "{\"ok\":true,\"action\":\"threads\",\"evidence\":" << json_escape(collected.evidence.id) << "}\n";
         return;
     }
     if (action_name == "frame_select") {
@@ -1779,7 +1814,16 @@ static void handle_action_line(GdbSession &session,
         }
         std::string expected = json_string_field(action, "expected");
 
-        auto ev = collect_console(session, "Hypothesis check", "p " + expression);
+        auto collected = collect_console_with_result(session, "Hypothesis check", "p " + expression);
+        if (write_console_action_error_if_needed(session,
+                                                 out,
+                                                 "hypothesis_check",
+                                                 "Hypothesis check command failed",
+                                                 collected,
+                                                 {{"hypothesis", id}, {"expression", expression}})) {
+            return;
+        }
+        const auto &ev = collected.evidence;
         std::string observed = ev.summary;
         auto assertion_result = evaluate_hypothesis_assertion(assertion, observed, expected);
         std::string error_evidence_id;

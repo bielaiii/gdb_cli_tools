@@ -76,6 +76,18 @@ require_file() {
     fi
 }
 
+require_gdb_action_response() {
+    local response="$1"
+    local action="$2"
+    require_contains "$response" "\"action\":\"$action\""
+    require_contains "$response" '"evidence":"'
+    if [[ "$response" == *'"ok":false'* ]]; then
+        require_contains "$response" '"command_evidence":"'
+    else
+        require_contains "$response" '"ok":true'
+    fi
+}
+
 action_seq=0
 run_action() {
     local session="$1"
@@ -438,25 +450,13 @@ for payload in \
     '{"action":"args_info"}' \
     '{"action":"locals"}'; do
     response="$(run_action C1 "$payload")"
-    require_contains "$response" '"ok":true'
-    require_contains "$response" '"evidence":"'
+    action_name="$(printf '%s' "$payload" | sed -n 's/.*"action":"\([^"]*\)".*/\1/p')"
+    require_gdb_action_response "$response" "$action_name"
 done
 core_frame_response="$(run_action C1 '{"action":"frame_select","frame":0}')"
-require_contains "$core_frame_response" '"action":"frame_select"'
-require_contains "$core_frame_response" '"evidence":"'
-if [[ "$core_frame_response" == *'"ok":false'* ]]; then
-    require_contains "$core_frame_response" '"command_evidence":"'
-else
-    require_contains "$core_frame_response" '"ok":true'
-fi
+require_gdb_action_response "$core_frame_response" "frame_select"
 core_eval_response="$(run_action C1 '{"action":"evaluate","expression":"node"}')"
-require_contains "$core_eval_response" '"action":"evaluate"'
-require_contains "$core_eval_response" '"evidence":"'
-if [[ "$core_eval_response" == *'"ok":false'* ]]; then
-    require_contains "$core_eval_response" '"command_evidence":"'
-else
-    require_contains "$core_eval_response" '"ok":true'
-fi
+require_gdb_action_response "$core_eval_response" "evaluate"
 for payload in \
     '{"action":"run"}' \
     '{"action":"continue"}' \

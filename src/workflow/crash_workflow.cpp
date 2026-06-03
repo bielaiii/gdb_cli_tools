@@ -31,18 +31,32 @@ static std::string read_text_delta(const fs::path &path, std::uintmax_t &offset)
     return out.str();
 }
 
+CollectedConsoleEvidence collect_console_with_result(GdbSession &session,
+                                                     const std::string &title,
+                                                     const std::string &console_command,
+                                                     bool backtrace_summary,
+                                                     std::chrono::milliseconds timeout) {
+    auto result = session.command("-interpreter-exec console " + mi_quote(console_command), timeout);
+    auto evidence = session.evidence_store().add("GdbCommand",
+                                                 title,
+                                                 console_command,
+                                                 result.raw_lines,
+                                                 backtrace_summary,
+                                                 result.record_sequences);
+    return {std::move(evidence), std::move(result)};
+}
+
 Evidence collect_console(GdbSession &session,
                          const std::string &title,
                          const std::string &console_command,
                          bool backtrace_summary,
                          std::chrono::milliseconds timeout) {
-    auto result = session.command("-interpreter-exec console " + mi_quote(console_command), timeout);
-    return session.evidence_store().add("GdbCommand",
-                                        title,
-                                        console_command,
-                                        result.raw_lines,
-                                        backtrace_summary,
-                                        result.record_sequences);
+    return collect_console_with_result(session,
+                                       title,
+                                       console_command,
+                                       backtrace_summary,
+                                       timeout)
+        .evidence;
 }
 
 void collect_light_evidence(GdbSession &session) {

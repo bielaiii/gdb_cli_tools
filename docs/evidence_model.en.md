@@ -57,13 +57,14 @@ lossy whenever it is sanitized, decoded from MI streams, summarized, or
 truncated.
 
 Action validation failures that reach a live session write `ToolError`
-evidence. For GDB-backed actions such as `frame_select`, `evaluate`, `run`, and
-`continue`, a GDB `result_class=error` keeps the raw command/control-command as
-evidence and writes separate `ToolError` evidence. The action response's
-`command_evidence` points to the raw command evidence, while `evidence` points
-to the error evidence. `frame_select` and `evaluate` command timeouts are also
-recorded as structured failures; `run`/`continue` run deadlines are inferior
-timeout/interruption semantics, not GDB command failures.
+evidence. For GDB-backed actions such as `backtrace`, `locals`, `args_info`,
+`registers`, `threads`, `frame_select`, `evaluate`, `hypothesis_check`, `run`,
+and `continue`, a GDB `result_class=error` keeps the raw
+command/control-command as evidence and writes separate `ToolError` evidence.
+The action response's `command_evidence` points to the raw command evidence,
+while `evidence` points to the error evidence. Static evidence command timeouts
+are also recorded as structured failures; `run`/`continue` run deadlines are
+inferior timeout/interruption semantics, not GDB command failures.
 
 `raw_records` audits the structure of raw MI without replacing the raw file.
 Current record kinds include `result`, `async`, `stream`, `prompt`, and
