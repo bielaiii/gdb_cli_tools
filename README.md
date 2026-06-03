@@ -31,6 +31,7 @@ GDB 操作、管理 live session、保存原始 evidence、生成低噪声 summa
   - `evaluate`
   - `breakpoint_set`
   - `watchpoint_set`
+  - `catchpoint_set`
   - `probe_list`
   - `probe_enable`
   - `probe_disable`
@@ -144,6 +145,10 @@ examples/segfault_report.md
 - `docs/task_format.md`：task file 格式。
 - `docs/agent_actions.md`：Agent 可调用 action。
 - `docs/evidence_model.md`：evidence、raw、summary、snapshot 和 session log 的关系。
+- `docs/mvp_quickstart.md`：面向 Agent 的最小调试流程 playbook。
+- `docs/mvp_acceptance.md`：MVP 验收标准和回归入口。
+- `docs/known_limitations.md`：当前集中限制说明。
+- `docs/mvp_dogfood.md`：使用示例任务 dogfood 一轮定位流程。
 - `examples/segfault_report.md`：最小示例定位报告。
 - `docs/ai/`：当前目标、设计决策、进度和交接记录。
 
@@ -158,3 +163,5 @@ examples/segfault_report.md
 - 重启后的恢复方式是 replay 高层 action，不是恢复旧 GDB 进程。
 - `raw_mi` 是高级 escape hatch，必须显式标记风险。
 - 工具记录观察和证据；最终根因判断属于 AI Agent。
+
+完整限制列表见 `docs/known_limitations.md`。

@@ -490,6 +490,25 @@ metadata。`raw_mi` 已作为受限高级 escape hatch。
     `between` 和 `unknown assertion: numeric_greater_than`。
 - 本轮没有新增源码行为变更，只验证当前实现与更新后的任务口径一致，并保留本轮任务记录。
 
+## 2026-06-03 本轮更新（MVP documentation convergence）
+
+- 进入 MVP 收敛文档阶段，本轮未新增调试功能、未修改源码行为。
+- README 增加 MVP 文档入口，并补齐当前 action 列表中的 `catchpoint_set`。
+- 新增 `docs/mvp_acceptance.md`：
+  - 明确 Linux 目标平台、构建/check/daemon flow、Run Mode、Core Dump Mode、evidence、report、
+    replay/probe/hypothesis 和 CTest 回归入口的 MVP 验收条件。
+- 新增 `docs/mvp_quickstart.md`：
+  - 面向 Agent 记录从 task file、check、daemon create、第一轮 action、hypothesis workflow 到
+    finish report 的最小 playbook。
+- 新增 `docs/known_limitations.md`：
+  - 集中说明 Linux/GDB、非 PTY、非交互 stdin、snapshot/replay、Core Dump Mode、raw MI、
+    summary/report、hypothesis 和 assertion 支持范围等限制。
+- 新增 `docs/mvp_dogfood.md`：
+  - 记录如何使用 `examples/segfault_task.md` 完成一轮最小 dogfood，区分工具观察和 Agent inference，
+    并明确不提交 generated assets。
+- 当前过期的“numeric 比较”后续建议已修正；整数 numeric assertion 已完成，后续 assertion 扩展不阻塞
+  MVP 收敛。
+
 ## 建议的下一步
 
 1. 用真实 Linux GDB raw 输出继续校准 MI parser、类型 sanitizer 和 backtrace/thread summary。

@@ -2,234 +2,239 @@
 
 ## 目标
 
-继续增强 Agent 友好能力，但本轮只做三件事：
+进入 MVP 收敛，本轮以补充文档为主，不新增调试功能。
 
-1. 扩展更贴近真实调试场景的 hypothesis assertion。
-2. 用真实 Linux + GDB 输出继续校准 summary / sanitizer。
-3. 小幅增强 report 的 Agent 扫描信号，但不重排 report。
+核心目标是让当前 MVP 的使用路径、验收标准、边界限制和后续工作优先级变得清晰，方便后续 Agent 或用户判断：
 
-不要重复上一轮已经完成的整数 numeric assertion。report 只做小幅增强，围绕 unknown、ToolError 和
-`command_evidence` 等关键信号补充展示，不展开 report 重排。
+- 这个工具当前能做什么。
+- 如何用它完成一轮最小 Agent 调试流程。
+- MVP 如何验收。
+- 哪些限制是明确边界，不是当前 blocker。
+- 哪些建议已经过期，需要从进度记录中修正。
 
-本轮不是格式整理任务，也不是架构重构任务。格式问题交给 `.clang-format` 或后续单独格式化任务处理。
+本轮不是功能开发任务，不做架构重构，不做 report 大改，不做全仓格式化。
 
 ## 背景
 
-上一轮 Agent 友好能力增强已经完成：
+当前项目已经具备 MVP 主链路：
 
-- `hypothesis_check` 新增整数 numeric assertion：
-  - `greater_than`
-  - `less_than`
-  - `greater_equal`
-  - `less_equal`
-  - `equals_number`
-  - `not_equals_number`
-- numeric parser 支持十进制、负数和 `0x` 十六进制整数。
-- 对无法解析、缺少 expected、多个不同整数歧义等情况稳定返回 `unknown`。
-- summary sanitizer 已增加常见 `std::map` / `std::unordered_map` 降噪。
-- report 已增加 `Observed Summary`、`Checks needing attention` 和 `Tool Errors` 区域。
+- Markdown task file。
+- Run Mode 和 Core Dump Mode。
+- daemon/create/action/status/finish/close/shutdown flow。
+- 高层 action、probe/on-hit、replay、hypothesis workflow。
+- evidence raw/summary/view/index、session summary/snapshot/report。
+- Linux + GDB smoke 和不依赖 GDB 的单元测试。
 
-当前仍有价值的 Agent 友好增强是：让 hypothesis 更能表达真实调试判断，继续让 summary 在真实 GDB 输出上更省 token、更少歧义，并让 report 更容易被 Agent 快速扫出下一步动作。
+后续继续扩展 catchpoint、assertion、summary/sanitizer 或架构拆分都有价值，但当前更需要先把 MVP 收敛为可验收、可交接、可 dogfood 的状态。
 
 ## 范围
 
-### 1. 扩展进阶 hypothesis assertion
+### 1. 补充 MVP 验收标准
 
-在现有 `src/workflow/hypothesis.cpp` / `.hpp` 上继续扩展 assertion。优先选择高价值、小范围、语义稳定的断言。
+新增或更新文档，明确 MVP 通过条件。
 
-必须实现：
+建议产出位置：
 
-- `between`
-  - `expected` 推荐格式：`LOW..HIGH`，例如 `0..10`、`-5..5`、`0x10..0x20`。
-  - 默认包含边界：`LOW <= observed <= HIGH`。
-  - 如果 `LOW > HIGH`，返回 `unknown`。
-- `address_non_null`
-  - 判断 observed 中的地址是否非零。
-  - 支持常见 GDB 输出：`0x0`、`0x0000000000000000`、`0x7ffff...`、`ptr = 0x...`。
-- `address_equals`
-  - `expected` 是一个地址，支持 `0x0` 和非零十六进制地址。
-  - 用于验证两个指针、generation pointer 或 sentinel address 是否一致。
+- 优先更新 `README.md`。
+- 如内容较长，可新增 `docs/mvp_acceptance.md` 并在 README 中链接。
 
-可以评估但不要强行实现：
+验收标准至少覆盖：
 
-- `changed`
-  - 只有当当前 hypothesis store 已经有同一 hypothesis/check 的历史 observed 可安全比较时才做。
-  - 如果没有清晰历史语义，本轮不要实现，避免制造伪确定性。
-- 浮点比较
-  - 只有在 parser 和文档能清楚处理精度、NaN、inf 和比较 epsilon 时才做。
-  - 否则保留为后续任务，并在 handoff 说明。
+- Linux 目标平台。
+- 构建命令：
+  - `cmake -S . -B build`
+  - `cmake --build build`
+- task 校验：
+  - `./build/gdb-agent check examples/segfault_task.md`
+- daemon flow：
+  - daemon start
+  - create session
+  - action
+  - finish
+  - report/assets 生成
+- Run Mode 最小 crash/stop 取证。
+- Core Dump Mode 最小静态取证。
+- evidence 文件必须包含 raw、summary、view、index 和 raw hash。
+- report 必须引用 evidence id。
+- replay/probe/hypothesis 至少有可运行 smoke 或文档入口。
+- Linux + GDB smoke / CTest 是 MVP 回归入口。
+- 工具不自动声明根因，最终结论由 Agent 给出。
 
-语义要求：
+### 2. 补充 Agent 使用路径文档
 
-- assertion 仍然只表达工具级观察，不代表 hypothesis 被支持或反驳。
-- `observed` 仍来自有损 summary，不是 raw evidence。
-- 解析失败、缺少 expected、expected 格式错误、observed 歧义时返回 `unknown`。
-- unknown 路径继续通过现有 `ToolError` / `error_evidence` 链路记录原因。
-- 不要把多个不同地址或多个不同数字强行选一个；有歧义就 unknown。
-- address assertion 应优先解析十六进制地址；不要把 GDB value-history 编号 `$1` 当成地址或值。
+补一个偏实际使用的 Agent playbook，让新 Agent 能从 task file 走到 finish report。
 
-测试要求：
+建议产出位置：
 
-- 扩展 `hypothesis_assertion_tests`。
-- 覆盖：
-  - `between` pass/fail/unknown。
-  - 十进制、负数、十六进制 range。
-  - `LOW > HIGH`。
-  - `address_non_null` 的 zero/non-zero/unknown。
-  - `address_equals` 的 equal/not equal/expected 缺失/歧义。
-- 如果 smoke fixture 中已有合适停点，扩展 `scripts/smoke_capability_matrix.sh` 做至少一个真实
-  `between` 或 address assertion。
+- `docs/mvp_quickstart.md`
+- 或 README 中新增 `MVP Quickstart`，但如果 README 变得过长，优先新建文档并从 README 链接。
 
-### 2. 校准真实 GDB summary / sanitizer
+内容至少包括：
 
-基于现有 Linux + GDB smoke 输出，继续增强 summary 的 Agent 可读性。不要追求完整 demangler，只做高价值、低风险规则。
+- 如何编写最小 task file。
+- 如何运行 `check`。
+- 如何启动 daemon。
+- 如何 create session。
+- 第一轮建议动作：
+  - `backtrace`
+  - `threads`
+  - `frame_select`
+  - `locals`
+  - `evaluate`
+- 如何理解 action response：
+  - `ok`
+  - `action`
+  - `evidence`
+  - `command_evidence`
+  - `error`
+- 如何查看 evidence：
+  - raw 是审计来源。
+  - summary 是有损低噪声视图。
+  - Markdown view 是 human-readable 入口。
+  - report 引用 evidence id。
+- 如何使用 hypothesis workflow：
+  - create
+  - check
+  - conclude
+- 如何 finish。
+- 什么情况下应该打开 raw MI。
 
-优先检查：
+### 3. 集中整理 Known Limitations
 
-- backtrace summary 是否仍暴露过多模板、allocator、长绝对路径。
-- threads summary 是否能稳定标出当前线程、stop reason 和关键 frame。
-- GDB command error summary 是否足够短，并能帮助 Agent 判断失败原因。
-- Core Dump Mode 下无栈、缺符号、缺 debug info 时的 summary 是否清楚。
+新增或更新一处集中限制说明，避免限制散落在多份文档中造成误解。
 
-必须至少完成一组高价值 sanitizer 或 summary 增强，例如：
+建议产出位置：
 
-- 对 `std::pair<const K, V>` 做更稳定压缩，辅助 map/unordered_map summary。
-- 压缩 `std::optional<T>`、`std::variant<...>`、`std::function<...>` 等常见类型噪声中的一种或多种。
-- 对 repo 内路径或 working directory 下路径做更稳定的相对化。
-- 对 command error summary 增加一行短原因提取，避免 Agent 只看到大段 MI。
+- `docs/known_limitations.md`
+- README 中新增简短 Known Limitations 并链接完整文档。
 
-约束：
+至少覆盖：
 
-- raw evidence 和 session MI log 必须完整保留。
-- summary/view 可以更短，但必须保持 `lossy_summary` / `truncated` 语义正确。
-- 不引入重型依赖或完整 C++ demangling 系统。
-- 不改变 action response 的 machine-readable 字段语义。
-- 不为了美化 summary 做大范围 parser 重构。
+- 目标运行平台只支持 Linux。
+- live session 需要系统可用 GDB。
+- 不支持 PTY。
+- 不支持交互式 inferior stdin。
+- inferior stdin 只能是 `/dev/null` 或 task 指定文件。
+- `session_snapshot.json` 和 `session_summary.json` 不是 live GDB 会话恢复文件。
+- 重启后的恢复方式是 replay 高层 action，不是恢复旧进程。
+- Core Dump Mode 是静态取证模式，不支持动态 action/probe 操作。
+- `catchpoint_set` 当前只支持 `catch throw`。
+- summary 是有损视图，不能替代 raw evidence。
+- `raw_mi` 是高级 escape hatch，必须显式 `risk:"advanced"`。
+- report 是调试报告草稿，不是自动根因结论。
+- hypothesis check 是工具级 assertion，不是最终根因判断。
+- numeric assertion 当前支持整数，不支持浮点数。
+- sanitizer 不是完整 C++ demangler。
 
-测试要求：
+### 4. 补充 Dogfood 记录
 
-- 扩展 `mi_summary_tests`，覆盖新增 sanitizer 或 summary 规则。
-- 如果修改 smoke，尽量断言关键字段和 evidence id，不断言整段自然语言。
+补一份轻量 dogfood 文档，记录如何用当前工具完成一轮最小示例定位。
 
-### 3. 小幅增强 report，而不是重排 report
+建议产出位置：
 
-上一轮已经新增 `Observed Summary`、`Checks needing attention` 和 `Tool Errors`。本轮只在现有结构上补强 Agent 扫描信号，不做章节大重排，不改变 report 的整体形态。
+- `docs/mvp_dogfood.md`
+- 或 `examples/mvp_dogfood.md`
 
-优先增强：
+内容建议：
 
-- Hypotheses 区域：
-  - 对 `unknown` check 展示 unknown reason 或 error summary，避免 Agent 只看到 `unknown`。
-  - 长 observed 继续截断展示，并保留 evidence id 供 Agent 回看。
-- Tool Errors 区域：
-  - 稳定展示 `action`、`error`、ToolError evidence id。
-  - 如果存在 `command_evidence`，展示对应 evidence id，方便 Agent 关联原始 GDB command output。
-  - 同一 action 多次失败时，不做模糊合并，保持按 evidence id 可追踪。
-- Report 限制说明：
-  - 如果 report 引用了有损 summary 作为 hypothesis observed，继续提醒 raw evidence 才是审计来源。
+- 使用 `examples/segfault_task.md` 或 capability fixture。
+- 记录推荐命令序列。
+- 记录建议 action 序列。
+- 说明关键 evidence/report 链路应该如何查看。
+- 说明 Agent 如何从 evidence 形成最终结论。
+- 说明哪些内容来自工具观察，哪些属于 Agent inference。
+- 不要求提交完整 generated assets，避免 GDB 版本差异造成仓库噪声。
 
-约束：
+### 5. 可选：补 MVP 验收脚本
 
-- 不大规模重排 report。
-- 不把 report 做成结论生成器。
-- 不改变已有 report 中关键章节的基本位置和含义。
-- 不让 smoke 依赖整段自然语言；只断言关键字段、evidence id、status、action name。
+如果范围允许，可以新增一键验收脚本：
 
-测试要求：
+- `scripts/mvp_acceptance.sh`
 
-- 如果修改 `src/report/report.cpp`，优先扩展现有 smoke 的 report grep 断言。
-- 覆盖至少一个 `unknown` check 或 ToolError / `command_evidence` 展示路径。
+建议执行：
 
-### 4. 修正进度记录中的过期建议
+```bash
+cmake -S . -B build
+cmake --build build
+./build/gdb-agent check examples/segfault_task.md
+ctest --test-dir build --output-on-failure
+git diff --check
+```
 
-`docs/ai/progress.md` 末尾的“建议的下一步”当前仍写着“继续扩展 hypothesis assertion，例如 numeric 比较”。上一轮已经完成整数 numeric 比较，因此本轮结束时应把该建议改成更准确的说法。
+要求：
 
-如果本轮完成了 range/address，建议更新为剩余未完成能力，例如：
+- 如果当前环境没有 GDB，应清楚说明 live smoke 可能 skip 或失败的原因。
+- 不要让脚本隐藏失败。
+- 如果新增脚本，需要在 README 或 MVP acceptance 文档中说明。
 
-- 继续扩展 hypothesis assertion，例如 float/change detection。
-- 用更多真实项目 fixture 校准 summary/sanitizer。
+如果脚本实现会牵扯较多边界，本轮可以只补文档中的验收命令，不强制新增脚本。
 
-## 工作方式
+### 6. 修正过期进度建议
 
-1. 先阅读：
-   - `final_feature.md`
-   - `design.md`
-   - `docs/ai/current_goal.md`
-   - `docs/ai/decision.md`
-   - `docs/ai/progress.md`
-   - `docs/ai/handoff.md`
-   - 本文件
-2. 快速定位相关代码：
-   - `src/workflow/hypothesis.cpp`
-   - `src/workflow/hypothesis.hpp`
-   - `tests/hypothesis_assertion_tests.cpp`
-   - `src/gdb/mi_utils.cpp`
-   - `src/gdb/mi_utils.hpp`
-   - `tests/mi_summary_tests.cpp`
-   - `src/report/report.cpp`
-   - `scripts/smoke_capability_matrix.sh`
-3. 优先实现 `between` 和 address assertions。
-4. 再做一到两项高价值 summary/sanitizer 增强。
-5. 最后做 report 小幅增强，只补 Agent 扫描信号，不重排章节。
-6. 修改 action、evidence、summary 或 report 语义时，同步更新文档。
+更新 `docs/ai/progress.md` 中已经过期或容易误导的建议。
+
+至少修正：
+
+- “继续扩展 hypothesis assertion，例如 numeric 比较”这一类表述。
+
+建议改成：
+
+- 整数 numeric assertion 已完成。
+- 后续可扩展 range/address/float/change detection，但不阻塞 MVP。
+- MVP 收敛优先级高于继续新增 assertion。
+
+如果文档中还有其他已完成但仍作为待办描述的内容，也一并小范围修正。
 
 ## 可写范围
 
 允许修改：
 
-- `src/workflow/hypothesis.cpp`
-- `src/workflow/hypothesis.hpp`
-- `tests/hypothesis_assertion_tests.cpp`
-- `src/gdb/mi_utils.cpp`
-- `src/gdb/mi_utils.hpp`
-- `tests/mi_summary_tests.cpp`
-- `src/report/report.cpp`
-- 现有 smoke scripts，优先 `scripts/smoke_capability_matrix.sh`
-- 与实际行为变化对应的文档：
-  - `docs/agent_actions.md`
-  - `docs/agent_actions.en.md`
-  - `docs/evidence_model.md`
-  - `docs/evidence_model.en.md`
-- 任务结束记录：
-  - `docs/ai/progress.md`
-  - `docs/ai/handoff.md`
-  - `docs/ai/decision.md`，仅当产生新的项目级决策时更新。
+- `README.md`
+- `docs/mvp_quickstart.md`
+- `docs/known_limitations.md`
+- `docs/mvp_acceptance.md`
+- `docs/mvp_dogfood.md`
+- `scripts/mvp_acceptance.sh`，可选
+- `docs/ai/progress.md`
+- `docs/ai/handoff.md`
+- `docs/ai/decision.md`，仅当产生新的项目级决策时更新
 
-如确实需要，也可小范围修改调用上述 helper 的邻近源码。不要做 unrelated cleanup。
+如需要链接现有文档，也可小范围修改：
+
+- `docs/task_format.md`
+- `docs/agent_actions.md`
+- `docs/evidence_model.md`
 
 不要修改：
 
-- 与本轮 assertion 或 summary/sanitizer 无关的模块。
+- 源码功能实现。
+- 测试逻辑，除非新增可选 `scripts/mvp_acceptance.sh` 需要 CMake/CTest 说明；一般不应修改测试。
+- build 配置。
+- 与 MVP 文档收敛无关的文件。
 - `docs/ai/next_cli_task.md`，除非用户明确要求重新规划下一轮任务。
-- 纯格式文件或大规模格式化输出。
 
 ## 不做
 
-- 不新增新的调试 action；`hypothesis_check` 仍是原 action。
-- 不做 report 大重排；本轮只允许小幅增强现有 report 信号。
+- 不新增 Agent-facing action。
 - 不扩展 catchpoint event。
+- 不新增 hypothesis assertion。
+- 不改 summary/sanitizer 行为。
+- 不改 report 生成逻辑。
+- 不重构 `src/cli.cpp` 或 daemon/session 架构。
+- 不优化 evidence index 性能。
 - 不引入 PTY 或交互式 stdin。
-- 不实现完整 C++ demangler。
-- 不把工具变成自动根因分析器。
-- 不大规模重构 `src/cli.cpp` 或 daemon/session 架构。
 - 不为了 macOS live GDB 做兼容；目标运行平台仍是 Linux。
 - 不做全仓 clang-format。
 
 ## 文档同步
 
-按实际行为更新：
+本轮文档应保持一致：
 
-- `docs/agent_actions.md`
-- `docs/agent_actions.en.md`
-- `docs/evidence_model.md`
-- `docs/evidence_model.en.md`
-
-文档中需要明确：
-
-- 新增 assertion 的名称和语义。
-- 解析失败、缺少 expected、observed 歧义时返回 `unknown`。
-- `observed` 仍来自有损 summary，不是 raw，也不是 Agent 结论。
-- 本轮新增或调整的 summary/sanitizer 行为。
-- 本轮新增或调整的 report 小幅展示行为。
+- README 应指向新增的 MVP quickstart、known limitations、acceptance 或 dogfood 文档。
+- 新增文档应与 `docs/ai/current_goal.md` 和 `docs/ai/decision.md` 的项目边界一致。
+- 如果引用 action、task 或 evidence 语义，应与 `docs/agent_actions.md`、`docs/task_format.md`、
+  `docs/evidence_model.md` 一致。
+- 不要把工具输出描述成自动根因结论。
 
 任务结束时必须更新：
 
@@ -238,32 +243,27 @@
 
 ## 验证要求
 
-至少运行：
+文档为主时至少运行：
 
 ```bash
-cmake --build build
-./build/hypothesis_assertion_tests
-./build/mi_summary_tests
-./build/gdb-agent check examples/segfault_task.md
 git diff --check
 ```
 
-如果修改了 smoke 或 report 聚合逻辑，并且当前 Linux 环境有 GDB，还应运行：
+如果新增 `scripts/mvp_acceptance.sh`，还应运行：
 
 ```bash
-ctest --test-dir build --output-on-failure
+./scripts/mvp_acceptance.sh
 ```
 
-如果当前环境没有 GDB，必须在 `docs/ai/handoff.md` 和最终回复中说明哪些 live smoke 未运行。
+如果只是补充文档，不要求运行完整 build/test。但如果文档中新增或修改了命令，建议至少确认当前命令文本和已有 README/CTest 入口一致。
 
 ## 完成标准
 
-- `hypothesis_check` 至少新增 `between`、`address_non_null` 和 `address_equals`。
-- 新 assertion 对解析失败和歧义情况稳定返回 `unknown`，并保留 ToolError 链路。
-- `hypothesis_assertion_tests` 覆盖新增 assertion。
-- summary / sanitizer 至少完成一组高价值真实 GDB 噪声压缩或错误 summary 增强，并有测试。
-- report 小幅增强 unknown reason / ToolError / `command_evidence` 的展示，不做结构重排。
-- `docs/ai/progress.md` 中过期的“numeric 比较”后续建议已修正为当前真实剩余能力。
-- 相关中英文文档同步。
+- README 或新增文档明确 MVP 验收标准。
+- 有 Agent 可执行的 MVP quickstart/playbook。
+- 有集中 Known Limitations。
+- 有轻量 dogfood 记录，说明一轮最小示例如何使用当前工具完成。
+- `docs/ai/progress.md` 中过期的“numeric 比较”后续建议已修正。
+- 未新增功能，未修改源码行为。
 - `docs/ai/progress.md` 和 `docs/ai/handoff.md` 记录实际完成内容、验证结果和限制。
 - 按 Execution mode 约定 stage 本轮相关文件，创建一次 commit，并推送当前分支。
