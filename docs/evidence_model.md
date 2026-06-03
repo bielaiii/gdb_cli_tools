@@ -216,17 +216,19 @@ Hypothesis workflow 的机器可读入口是：
 `observed` 执行 assertion 后的结果，不是根因结论。
 
 numeric assertion（`greater_than`、`less_than`、`greater_equal`、`less_equal`、
-`equals_number`、`not_equals_number`）会从 `observed` 和 `expected` 中各解析一个唯一整数。
-支持十进制、负数和 `0x` 十六进制；不支持浮点数。未知 assertion、缺少必需 `expected`、
-无法解析整数或存在多个不同整数时，会产生 `status:"unknown"`，并通过 `error_evidence`
-引用一条 `ToolError` evidence。`unknown` 只表示工具无法判断该 check，不表示支持或反驳
-hypothesis。
+`equals_number`、`not_equals_number`、`between`）会从 `observed` 和 `expected` 中解析整数。
+`between` 的 `expected` 格式为 `LOW..HIGH`，闭区间判断。整数支持十进制、负数和 `0x`
+十六进制；不支持浮点数。地址 assertion（`address_non_null`、`address_equals`）解析唯一
+`0x...` 十六进制地址。未知 assertion、缺少必需 `expected`、无法解析整数/地址、`between`
+边界无效或 LOW 大于 HIGH、存在多个不同整数/地址时，会产生 `status:"unknown"`，并通过
+`error_evidence` 引用一条 `ToolError` evidence。`unknown` 只表示工具无法判断该 check，不表示
+支持或反驳 hypothesis。
 
 最终报告会从 `index.json` 聚合 hypothesis、checks、evidence id、Agent inference 和 final
 agent conclusion。报告的 Hypotheses 区域会展示 observed 摘要，并把 `unknown` 或带
-`error_evidence` 的 check 列为需要注意的项；报告还会单独汇总 `ToolError` evidence，并在存在
-`command_evidence` 时展示原始 GDB command evidence 链路。如果 index 缺失或无法解析，报告会降级为
-列出单个 Markdown 文件。
+`error_evidence` 的 check 列为需要注意的项，并尽量展示对应错误 summary；报告还会单独汇总
+`ToolError` evidence，并在存在 `command_evidence` 时展示原始 GDB command evidence 链路。如果
+index 缺失或无法解析，报告会降级为列出单个 Markdown 文件。
 
 ## 报告引用规则
 
@@ -237,4 +239,5 @@ Raw 文件和 session MI log 是审计时的权威来源；summary 是低噪声�
 Agent 上下文入口。
 
 Summary 层会做有限降噪，例如 C++ `std::string` 类型归一化、常见 allocator/comparator/hash
-噪声压缩、路径相对化，以及 backtrace/thread 的稳定摘要。所有这些都不修改 raw MI。
+噪声压缩、`std::pair<const K, V>` key const 噪声压缩、路径相对化，以及 backtrace/thread 的
+稳定摘要。所有这些都不修改 raw MI。

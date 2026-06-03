@@ -290,6 +290,10 @@ hypothesis_numeric="$(run_action P1 '{"action":"hypothesis_check","hypothesis":"
 require_contains "$hypothesis_numeric" '"status":"passed"'
 require_contains "$hypothesis_numeric" '"assertion":"greater_than"'
 
+hypothesis_between="$(run_action P1 '{"action":"hypothesis_check","hypothesis":"H-capability-value","description":"watch value is inside expected range","expression":"g_watch_value","assertion":"between","expected":"0..10"}')"
+require_contains "$hypothesis_between" '"status":"passed"'
+require_contains "$hypothesis_between" '"assertion":"between"'
+
 hypothesis_unknown="$(run_action P1 '{"action":"hypothesis_check","hypothesis":"H-capability-value","description":"unknown assertion is auditable","expression":"g_watch_value","assertion":"numeric_greater_than","expected":"0"}')"
 require_contains "$hypothesis_unknown" '"status":"unknown"'
 require_contains "$hypothesis_unknown" '"error_evidence":"'
@@ -329,10 +333,13 @@ grep -F '"status": "passed"' "$probe_assets/hypotheses/index.json" >/dev/null
 grep -F '"status": "failed"' "$probe_assets/hypotheses/index.json" >/dev/null
 grep -F '"status": "unknown"' "$probe_assets/hypotheses/index.json" >/dev/null
 grep -F '"assertion": "greater_than"' "$probe_assets/hypotheses/index.json" >/dev/null
+grep -F '"assertion": "between"' "$probe_assets/hypotheses/index.json" >/dev/null
 grep -F '## Tool Errors' "$probe_report" >/dev/null
 grep -F 'Checks needing attention' "$probe_report" >/dev/null
 grep -F 'Observed Summary' "$probe_report" >/dev/null
 grep -F 'greater_than' "$probe_report" >/dev/null
+grep -F 'between' "$probe_report" >/dev/null
+grep -F 'unknown assertion: numeric_greater_than' "$probe_report" >/dev/null
 grep -F 'Final agent conclusion: `Fixture value path explained`' "$probe_report" >/dev/null
 artifact_check "$probe_assets" "$probe_report" "BreakpointHit,WatchpointHit,CatchpointHit,OnHitAction,GdbCommand,ToolError"
 

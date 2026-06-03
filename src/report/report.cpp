@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <exception>
 #include <fstream>
+#include <map>
 #include <string_view>
 #include <utility>
 
@@ -52,6 +53,13 @@ static std::string table_cell(std::string value) {
     return value.empty() ? "-" : value;
 }
 
+static std::string inline_report_text(std::string value) {
+    value = short_report_text(std::move(value));
+    replace_all(value, "\r", " ");
+    replace_all(value, "\n", " ");
+    return value;
+}
+
 static Json parse_json_or_null(const std::string &text) {
     try {
         return parse_json(text);
@@ -60,7 +68,19 @@ static Json parse_json_or_null(const std::string &text) {
     }
 }
 
-static bool write_hypotheses_from_index(std::ostringstream &md, const fs::path &assets, const fs::path &index) {
+static std::string evidence_summary_for(const std::string &evidence_id,
+                                        const std::map<std::string, const Evidence *> &evidence_by_id) {
+    auto it = evidence_by_id.find(evidence_id);
+    if (it == evidence_by_id.end() || it->second == nullptr) {
+        return {};
+    }
+    return inline_report_text(it->second->summary);
+}
+
+static bool write_hypotheses_from_index(std::ostringstream &md,
+                                        const fs::path &assets,
+                                        const fs::path &index,
+                                        const std::map<std::string, const Evidence *> &evidence_by_id) {
     std::string text = read_text_or_empty(index);
     if (text.empty()) {
         return false;
@@ -144,6 +164,10 @@ static bool write_hypotheses_from_index(std::ostringstream &md, const fs::path &
                        << json_string_value(*check, "status") << "`";
                     if (!error_evidence.empty()) {
                         md << ", error evidence `" << error_evidence << "`";
+                        std::string error_summary = evidence_summary_for(error_evidence, evidence_by_id);
+                        if (!error_summary.empty()) {
+                            md << ", error summary: " << error_summary;
+                        }
                     }
                     md << ", evidence `" << json_string_value(*check, "evidence") << "`\n";
                 }
@@ -251,6 +275,11 @@ void write_report(const fs::path &report,
     }
     md << "\n";
 
+    std::map<std::string, const Evidence *> evidence_by_id;
+    for (const auto &ev : evidence) {
+        evidence_by_id[ev.id] = &ev;
+    }
+
     std::vector<const Evidence *> tool_errors;
     for (const auto &ev : evidence) {
         if (ev.kind == "ToolError") {
@@ -304,7 +333,7 @@ void write_report(const fs::path &report,
         fs::path index = hypotheses_dir / "index.json";
         bool rendered_index = false;
         if (fs::exists(index)) {
-            rendered_index = write_hypotheses_from_index(md, assets, index);
+            rendered_index = write_hypotheses_from_index(md, assets, index, evidence_by_id);
         }
         if (!rendered_index) {
             write_hypothesis_file_list(md, hypotheses_dir);
@@ -372,7 +401,8 @@ void write_report(const fs::path &report,
     md << "- Interactive stdin for the inferior is not implemented; task stdin is configured as `" << task.stdin_path.string() << "`.\n";
     md << "- Inferior stdout/stderr are redirected to files; non-empty new output is captured as `InferiorOutput` evidence after stop events.\n";
     md << "- The tool records observations and evidence; final root-cause judgment belongs to the AI Agent.\n";
-    md << "- Evidence summaries are intentionally lossy; raw files and the session MI log remain authoritative.\n\n";
+    md << "- Evidence summaries are intentionally lossy; raw files and the session MI log remain authoritative.\n";
+    md << "- Hypothesis observed values are lossy summaries of command output; inspect linked raw evidence before final conclusions.\n\n";
 
     md << "## Raw Evidence Index\n\n";
     md << "- Session MI log: `" << display_path(assets / "logs" / "session.mi.raw.log") << "`\n";

@@ -52,6 +52,16 @@ int main() {
     require_status("equals_number", "$4 = 0x10", "17", "failed");
     require_status("not_equals_number", "$4 = 0x10", "17", "passed");
     require_status("not_equals_number", "$4 = 0x10", "16", "failed");
+    require_status("between", "$5 = 7", "0..10", "passed");
+    require_status("between", "$5 = -7", "-10..-5", "passed");
+    require_status("between", "$5 = 0x10", "0x10..0x20", "passed");
+    require_status("between", "$5 = 11", "0..10", "failed");
+    require_status("address_non_null", "$6 = (Node *) 0x7fffffff", "", "passed");
+    require_status("address_non_null", "$6 = (Node *) 0x0", "", "failed");
+    require_status("address_non_null", "ptr = 0x0000000000000000", "", "failed");
+    require_status("address_equals", "$7 = 0x10", "0x10", "passed");
+    require_status("address_equals", "$7 = 0x10", "0x11", "failed");
+    require_status("address_equals", "$7 = 0x0", "0x0", "passed");
 
     require_status("contains", "", "$1", "unknown");
     require_status("is_null", "", "", "unknown");
@@ -63,6 +73,15 @@ int main() {
     require_status("greater_than", "first = 7 second = 8", "0", "unknown");
     require_status("greater_than", "$1 = 7", "no expected number", "unknown");
     require_status("greater_than", "$1 = 7", "min = 0 max = 1", "unknown");
+    require_status("between", "$1 = 7", "", "unknown");
+    require_status("between", "$1 = 7", "10..0", "unknown");
+    require_status("between", "$1 = 7", "0-10", "unknown");
+    require_status("between", "first = 7 second = 8", "0..10", "unknown");
+    require_status("address_non_null", "no address", "", "unknown");
+    require_status("address_non_null", "a=0x1 b=0x2", "", "unknown");
+    require_status("address_equals", "$1 = 0x10", "", "unknown");
+    require_status("address_equals", "$1 = 0x10", "0x1 0x2", "unknown");
+    require_status("address_equals", "a=0x1 b=0x2", "0x1", "unknown");
     require_status("definitely_not_supported", "$1 = 7", "", "unknown");
 
     std::cout << "hypothesis_assertion_tests ok\n";

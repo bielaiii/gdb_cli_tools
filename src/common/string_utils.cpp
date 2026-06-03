@@ -89,6 +89,12 @@ std::string sanitize_output(std::string s, const std::filesystem::path &working_
     s = std::regex_replace(s,
                            std::regex(R"(std::unordered_map<\s*([^,<>]+)\s*,\s*([^,<>]+)\s*,\s*std::hash<[^<>]+>\s*,\s*std::equal_to<[^<>]+>\s*,\s*std::allocator<std::pair<[^<>]+>>\s*>)"),
                            "std::unordered_map<$1, $2>");
+    s = std::regex_replace(s,
+                           std::regex(R"(std::pair<\s*const\s+([^,<>]+)\s*,\s*([^<>]+)\s*>)"),
+                           "std::pair<$1, $2>");
+    s = std::regex_replace(s,
+                           std::regex(R"(std::pair<\s*([^,<>]+)\s+const\s*,\s*([^<>]+)\s*>)"),
+                           "std::pair<$1, $2>");
     s = std::regex_replace(s, std::regex(R"(<\s+)"), "<");
     s = std::regex_replace(s, std::regex(R"(\s+>)"), ">");
     s = std::regex_replace(s, std::regex(R"(,\s+)"), ", ");

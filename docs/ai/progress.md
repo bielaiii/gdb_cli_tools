@@ -354,7 +354,8 @@ smoke 覆盖。watchpoint stop 现在能在 MI 提供编号或当前唯一 activ
 
 仍需关注：
 
-- assertion 类型仍然保持小集合，后续可按真实需求增加 numeric 比较。
+- assertion 类型已覆盖基础字符串/null、整数比较/range 和地址判断；后续可按真实需求增加
+  float、changed 或跨 check 历史比较。
 - report 中 hypothesis 聚合已有基础视图，后续可继续优化长 observed 的展示和跳转体验。
 
 ## Phase 5: 深度摘要和高级 MI
@@ -435,10 +436,39 @@ metadata。`raw_mi` 已作为受限高级 escape hatch。
 - 同步更新 `docs/agent_actions.md`、`docs/agent_actions.en.md`、`docs/evidence_model.md` 和
   `docs/evidence_model.en.md`。
 
+## 2026-06-03 本轮更新（advanced hypothesis assertions）
+
+- 继续扩展 `hypothesis_check` assertion：
+  - 新增 `between`，`expected` 使用 `LOW..HIGH`，闭区间判断，边界支持十进制、负数和 `0x`
+    十六进制整数。
+  - 新增 `address_non_null`，从 observed 中解析唯一 `0x...` 地址，非零时 `passed`。
+  - 新增 `address_equals`，从 observed 和 expected 中各解析唯一 `0x...` 地址，相等时
+    `passed`。
+  - `between` 的 expected 缺失、边界格式无效、LOW 大于 HIGH、无法解析整数，以及 address
+    assertion 无法解析地址或存在多个不同地址时，稳定返回 `status:"unknown"` 并沿用
+    `ToolError` / `error_evidence` 链路。
+- 继续校准低噪声 summary：
+  - 在已有 `std::string`、allocator/default_delete、map/unordered_map 降噪基础上，增加
+    `std::pair<const K, V>` 和 `std::pair<K const, V>` key const 噪声压缩。
+  - raw evidence、session MI log 和 raw 文件布局不变。
+- 改进 report：
+  - Hypotheses 的 `Checks needing attention` 会对带 `error_evidence` 的 check 反查并展示
+    对应 `ToolError` summary，方便 Agent 直接看到 unknown 原因。
+  - Limitations 明确提醒 hypothesis observed value 是有损 summary，最终结论前应检查 linked raw
+    evidence。
+- 扩展测试和 smoke：
+  - `hypothesis_assertion_tests` 覆盖 `between`、`address_non_null`、`address_equals` 的
+    pass/fail/unknown、负数、十六进制、缺少 expected、边界无效和多值歧义。
+  - `mi_summary_tests` 覆盖 `std::pair<const K, V>` / `std::pair<K const, V>` 降噪。
+  - `scripts/smoke_capability_matrix.sh` 增加真实 `between` hypothesis check，并断言 report 中
+    `between` 和 `unknown assertion: numeric_greater_than` 的 error summary 可见。
+- 同步更新 `docs/agent_actions.md`、`docs/agent_actions.en.md`、`docs/evidence_model.md` 和
+  `docs/evidence_model.en.md`。
+
 ## 建议的下一步
 
 1. 用真实 Linux GDB raw 输出继续校准 MI parser、类型 sanitizer 和 backtrace/thread summary。
 2. 补 catchpoint 其他事件。
-3. 按真实调试需求继续扩展 hypothesis assertion，例如 numeric 比较。
+3. 按真实调试需求继续扩展 hypothesis assertion，例如 float、changed 或跨 check 历史比较。
 4. 增加更多真实项目 core/replay/probe fixture，覆盖 core dump 兼容性、失败策略、
    watchpoint/catchpoint on-hit 和跨 assets 目录报告展示。

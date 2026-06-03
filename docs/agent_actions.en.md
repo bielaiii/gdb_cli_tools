@@ -268,12 +268,20 @@ Supported assertions are:
 - `less_equal`: `passed` when parsed integers satisfy `observed <= expected`.
 - `equals_number`: `passed` when parsed integers are equal.
 - `not_equals_number`: `passed` when parsed integers are different.
+- `between`: `expected` uses `LOW..HIGH`; parses one integer from `observed`
+  and passes when `LOW <= observed <= HIGH` with inclusive bounds.
+- `address_non_null`: parses one hexadecimal address from `observed` and passes
+  when it is not `0x0`.
+- `address_equals`: parses one hexadecimal address from `observed` and one from
+  non-empty `expected`; passes when they are equal.
 
 Numeric assertions support decimal integers, negative integers, and `0x`
 hexadecimal integers. They ignore GDB value-history prefixes such as `$1` in
 `$1 = 42`. Floating-point values are not supported. Unknown assertions,
 assertions that require `expected` when `expected` is empty, unparseable
-integers, or multiple different integers in `observed`/`expected` return
+integers, invalid `between` bounds, `between` LOW greater than HIGH,
+unparseable hexadecimal addresses, or multiple different integers/addresses in
+`observed`/`expected` return
 `status:"unknown"` and record `ToolError` evidence. This means the tool could
 not evaluate that check; it does not prove or disprove the hypothesis.
 
@@ -281,8 +289,10 @@ The final report's Hypotheses section aggregates hypothesis title, tool status,
 checks, observed summaries, evidence ids, error evidence, agent inference, and
 final agent conclusion from `assets/hypotheses/index.json`. Checks with
 `status:"unknown"` or `error_evidence` are additionally listed as needing
-attention. If the index is missing or cannot be parsed, the report falls back to
-listing the per-hypothesis Markdown files.
+attention, with the corresponding `ToolError` summary when available. If the
+index is missing or cannot be parsed, the report falls back to listing the
+per-hypothesis Markdown files. `observed` comes from a lossy summary; inspect
+linked raw evidence before final conclusions.
 
 The global final report sections `Agent Inference` and `Final Agent
 Conclusion` are populated from `finish_session`,

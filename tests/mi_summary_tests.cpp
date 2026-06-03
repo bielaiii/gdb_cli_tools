@@ -52,6 +52,10 @@ int main() {
     require(contains(sanitize_output("std::unordered_map<int, std::string, std::hash<int>, std::equal_to<int>, std::allocator<std::pair<int const, std::string> > >", "/tmp/project"),
                      "std::unordered_map<int, std::string>"),
             "sanitizer should remove unordered_map hash/equality/allocator noise");
+    require(contains(sanitize_output("std::pair<const int, std::string>", "/tmp/project"), "std::pair<int, std::string>"),
+            "sanitizer should remove pair const-key noise");
+    require(contains(sanitize_output("std::pair<int const, std::string>", "/tmp/project"), "std::pair<int, std::string>"),
+            "sanitizer should remove trailing const-key noise");
     require(contains(sanitize_output("/tmp/project/src/server.cpp:17", "/tmp/project"), "src/server.cpp:17"),
             "sanitizer should keep working-directory paths relative");
 

@@ -262,17 +262,25 @@ Hypothesis 记录会同时写成单个 hypothesis 的 Markdown 文件，以及�
 - `less_equal`：唯一整数满足 `observed <= expected` 时 `passed`。
 - `equals_number`：唯一整数相等时 `passed`。
 - `not_equals_number`：唯一整数不相等时 `passed`。
+- `between`：`expected` 使用 `LOW..HIGH`，从 `observed` 解析唯一整数，且 `LOW <= observed <= HIGH`
+  时 `passed`；边界为闭区间。
+- `address_non_null`：从 `observed` 解析唯一十六进制地址，非 `0x0` 时 `passed`。
+- `address_equals`：从 `observed` 和非空 `expected` 中各解析唯一十六进制地址，相等时
+  `passed`。
 
 numeric assertion 支持十进制整数、负数和 `0x` 十六进制整数，会忽略 GDB value-history
 前缀（例如 `$1 = 42` 中的 `$1`）。当前不支持浮点数。未知 assertion、需要 `expected` 但
-`expected` 为空、无法解析整数或 `observed`/`expected` 中存在多个不同整数时，会返回
+`expected` 为空、无法解析整数、`between` 边界格式无效或 LOW 大于 HIGH、无法解析十六进制地址，
+或 `observed`/`expected` 中存在多个不同整数/地址时，会返回
 `status:"unknown"`，并记录 `ToolError` evidence；这表示工具无法判定该 check，不表示
 hypothesis 被证实或证伪。
 
 最终报告的 Hypotheses 区域会从 `assets/hypotheses/index.json` 聚合 hypothesis title、
 tool status、checks、observed summary、evidence id、error evidence、Agent inference 和
 final agent conclusion。`unknown` 或带 `error_evidence` 的 check 会在报告中额外列为需要注意的
-check。如果 index 缺失或无法解析，报告会降级为列出单个 hypothesis Markdown 文件。
+check，并尽量展示对应 `ToolError` 的摘要原因。如果 index 缺失或无法解析，报告会降级为列出单个
+hypothesis Markdown 文件。`observed` 来自 summary，是有损视图；最终判断前仍应检查对应 raw
+evidence。
 
 最终报告中的全局 `Agent Inference` 和 `Final Agent Conclusion` 来自：
 
