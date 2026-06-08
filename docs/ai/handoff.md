@@ -4,36 +4,41 @@
 
 ## 本轮完成
 
-- 按 `docs/ai/next_cli_task.md` 执行 `catchpoint_set` 最小扩展任务。
-- 扩展 `src/cli.cpp` 中的 `catchpoint_set`：
-  - `event:"throw"` 继续映射到 GDB console command `catch throw`。
-  - 新增 `event:"catch"`，映射到 GDB console command `catch catch`。
-  - probe metadata 继续使用 `kind:"catchpoint"`，并保存原始 `event` 和对应 `location`。
-  - unsupported event、Core Dump Mode guard 和 `raw_mi` 风险约束保持原语义。
-- 更新 `scripts/smoke_capability_matrix.sh`：
-  - 在 probe flow 中设置并验证 `event:"catch"`。
-  - 继续运行到 catch handler catchpoint hit。
-  - 验证 `probe_list`、`CatchpointHit` evidence、`assets/probes.json` 和
-    `session_summary.json` 能体现新增 catchpoint。
-- 更新文档：
-  - `docs/agent_actions.md`
-  - `docs/agent_actions.en.md`
+- 按 `docs/ai/next_cli_task.md` 执行 Phase 5 MI parser / summary / sanitizer hardening 任务。
+- 更新 `src/gdb/mi_utils.cpp`：
+  - malformed non-numeric prefix 不再被误判为 MI token。
+  - `summarize_mi_records` 会从 result/async payload 中提取 `msg`、`value`、`reason`、
+    `thread-id`、`stopped-threads`、`frame`、`bkpt` 和 `wpt` 等低噪声字段。
+- 更新 `src/common/string_utils.cpp`：
+  - 新增轻量 `std::...<...>` template scanner，压缩常见 STL 容器、map/unordered_map、
+    smart pointer、optional/variant/tuple/pair 噪声。
+  - 工作目录路径会先 lexically normalize，再相对化，覆盖 `build/../src/file.cpp` 这类路径。
+- 更新 `src/evidence/evidence_store.cpp`：
+  - backtrace summary 保留 `thread apply all bt` 的 thread boundary。
+  - frame summary 支持 `from /lib/...so` shared-library 来源。
+  - thread summary 继续跳过 header，并保持 truncation 行为稳定。
+- 重写扩展 `tests/mi_summary_tests.cpp`，按 parser、record audit、record summary、sanitizer、
+  EvidenceStore integration 分段覆盖，不依赖系统 GDB。
+- 同步更新：
+  - `docs/evidence_model.md`
+  - `docs/evidence_model.en.md`
   - `docs/known_limitations.md`
-  - `docs/mvp_acceptance.md`
-- 更新 `docs/ai/progress.md`，记录本轮 `catch catch` 支持。
+  - `docs/ai/progress.md`
 
 ## 验证
 
 - `cmake --build build`
+- `./build/mi_summary_tests`
 - `./build/gdb-agent check examples/segfault_task.md`
+- `git diff --check`
 - `ctest --test-dir build --output-on-failure`
-  - 当前 Linux 环境有 `/usr/bin/gdb`。
+  - 当前 Linux 环境有 GDB，完整 CTest 已运行。
   - 结果：9/9 tests passed。
 
 ## 限制和注意事项
 
-- 本轮没有新增 evidence schema，也没有修改 report/schema 布局。
-- Core Dump Mode 仍然拒绝 `catchpoint_set`，保持静态取证边界。
-- `catchpoint_set` 当前只支持 C++ exception 的 `catch throw` 和 `catch catch`。
-- 其他 catchpoint event（例如 syscall、load、unload、fork、exec、signal）仍未实现。
+- 本轮没有新增 Agent-facing action。
+- 本轮没有改变 raw evidence 保存原则、evidence raw 文件布局或 action schema。
+- Sanitizer 仍不是完整 C++ demangler；新增 scanner 只覆盖常见 STL summary 降噪。
+- MI parser/summary 覆盖增强后，raw MI 仍是最终审计来源。
 - 本轮未新增项目级 decision，因此未修改 `docs/ai/decision.md`。

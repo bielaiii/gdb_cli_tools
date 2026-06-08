@@ -76,6 +76,12 @@ byte limit 限制，该限制记录在 index 中。如果 summary 被截断，`t
 和 `log`。`included_records`、`related_records`、`concurrent_records` 继续表示 evidence
 归属关系，raw hash、raw byte count 和 kept summary byte count 仍是完整性审计字段。
 
+MI summary 会从 result/async payload 中提取低噪声关键信号，例如 `msg`、`value`、`reason`、
+`thread-id`、`stopped-threads`、`frame`、`bkpt` 和 `wpt`。这些字段用于帮助 Agent 快速阅读，
+不是 raw MI 的替代品；遇到需要精确判断的情况仍应回到 raw 文件和 session MI log。
+Backtrace/thread summary 会保留 frame number、function、source location、shared library
+来源和 thread boundary，并在无法解析时回退保留原始低噪声行。
+
 ## Session 文件
 
 完整 MI session stream 保存为：

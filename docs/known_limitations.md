@@ -50,8 +50,9 @@
 - Summary 可能经过 MI stream 解码、sanitizer、摘要化或截断。
 - `lossy_summary` 和 `truncated` 标记用于提醒 Agent 不要把 summary 当作完整原文。
 - Sanitizer 不是完整 C++ demangler。
-- 当前 sanitizer 只做有限降噪，例如 `std::string` 归一化、常见 allocator/hash/comparator 噪声压缩、
-  `std::pair<const K, V>` key const 压缩、路径相对化和 backtrace/thread 稳定摘要。
+- 当前 sanitizer 只做有限降噪，例如 `std::string` 归一化、常见 STL 容器
+  allocator/hash/comparator 噪声压缩、智能指针 deleter 噪声压缩、`std::pair<const K, V>`
+  key const 压缩、工作目录路径相对化和 backtrace/thread 稳定摘要。
 
 ## Report
 

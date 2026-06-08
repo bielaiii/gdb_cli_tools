@@ -73,6 +73,14 @@ Current record kinds include `result`, `async`, `stream`, `prompt`, and
 describe evidence attribution. Raw hash, raw byte count, and kept summary byte
 count remain the integrity audit fields.
 
+MI summaries extract low-noise signals from result/async payloads, such as
+`msg`, `value`, `reason`, `thread-id`, `stopped-threads`, `frame`, `bkpt`, and
+`wpt`. These fields help Agents scan evidence quickly, but they do not replace
+raw MI; precise conclusions should still inspect the raw file and session MI
+log. Backtrace/thread summaries preserve frame number, function, source
+location, shared-library source, and thread boundaries, falling back to the
+original low-noise line when a field cannot be parsed safely.
+
 The full MI session stream is stored as:
 
 ```text

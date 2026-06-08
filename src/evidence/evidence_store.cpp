@@ -264,10 +264,17 @@ static std::string simplify_frame_line(std::string line) {
     if (at_pos != std::string::npos) {
         file_line = trim(line.substr(at_pos + 4));
     }
+    std::string from_library;
+    size_t from_pos = line.rfind(" from ");
+    if (from_pos != std::string::npos) {
+        from_library = trim(line.substr(from_pos + 6));
+    }
     std::ostringstream out;
     out << "#" << (frame.empty() ? "?" : frame) << " " << function;
     if (!file_line.empty()) {
         out << " at " << file_line;
+    } else if (!from_library.empty()) {
+        out << " from " << from_library;
     }
     return out.str();
 }
@@ -278,8 +285,13 @@ static std::string summarize_backtrace(const std::string &text) {
     std::string line;
     int frames = 0;
     while (std::getline(in, line)) {
-        if (starts_with(trim_view(line), "#")) {
-            out << simplify_frame_line(line) << '\n';
+        std::string trimmed = trim(line);
+        if (starts_with(trimmed, "Thread ")) {
+            out << trimmed << '\n';
+            continue;
+        }
+        if (starts_with(trimmed, "#")) {
+            out << simplify_frame_line(trimmed) << '\n';
             ++frames;
             if (frames >= 12) {
                 out << "... truncated after 12 frames\n";
@@ -304,6 +316,9 @@ static std::string summarize_threads(const std::string &text) {
         bool current = starts_with(trimmed, "*");
         if (current) {
             trimmed = trim(trimmed.substr(1));
+        }
+        if (starts_with(trimmed, "Id ") || starts_with(trimmed, "Id\t")) {
+            continue;
         }
         if (!current && !std::isdigit(static_cast<unsigned char>(trimmed.front()))) {
             continue;

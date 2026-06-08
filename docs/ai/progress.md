@@ -360,10 +360,13 @@ smoke 覆盖。watchpoint stop 现在能在 MI 提供编号或当前唯一 activ
 
 ## Phase 5: 深度摘要和高级 MI
 
-状态：Early
+状态：In Progress
 
 已有 MI value parser、基础 C++ 类型 sanitizer、backtrace/thread summary 和 raw MI audit
-metadata。`raw_mi` 已作为受限高级 escape hatch。
+metadata。MI record summary 已能提取 result/async payload 中的 `msg`、`value`、`reason`、
+`thread-id`、`stopped-threads`、`frame`、`bkpt` 和 `wpt` 等关键信号。C++ sanitizer 已增加轻量
+STL template scanner，覆盖常见 vector/list/deque/set/map/unordered_map、smart pointer、
+optional/variant/tuple/pair 和工作目录路径归一化。`raw_mi` 已作为受限高级 escape hatch。
 
 仍需关注：
 
@@ -520,6 +523,21 @@ metadata。`raw_mi` 已作为受限高级 escape hatch。
   `session_summary.json` probe hit 计数。
 - 同步更新 `docs/agent_actions.md`、`docs/agent_actions.en.md`、`docs/known_limitations.md`
   和 `docs/mvp_acceptance.md`。
+
+## 2026-06-08 本轮更新（MI summary hardening）
+
+- 强化 MI record audit：malformed non-numeric token prefix 不再被误判为带 token 的 MI record。
+- 强化 MI record summary：对 result/async payload 提取 `msg`、`value`、`reason`、
+  `thread-id`、`stopped-threads`、`frame`、`bkpt` 和 `wpt` 等低噪声字段。
+- 扩展 sanitizer：新增轻量 `std::...<...>` template scanner，压缩常见 STL 容器、
+  map/unordered_map、smart pointer、optional/variant/tuple/pair 噪声，并规范工作目录下
+  `build/../src/file.cpp` 这类路径。
+- 改进 backtrace/thread summary：保留 `thread apply all bt` 的 thread boundary，识别
+  `from /lib/...so` shared-library 来源，并保持 frame/thread truncation 稳定。
+- 大幅扩展 `tests/mi_summary_tests.cpp`，覆盖 MI value parser 成功/失败路径、record audit、
+  payload summary、sanitizer、backtrace/thread summary 和 EvidenceStore 集成；测试不依赖 GDB。
+- 同步更新 `docs/evidence_model.md`、`docs/evidence_model.en.md` 和
+  `docs/known_limitations.md`。
 
 ## 建议的下一步
 

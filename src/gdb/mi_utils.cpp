@@ -2,6 +2,7 @@
 
 #include <cctype>
 #include <sstream>
+#include <string>
 
 namespace {
 
@@ -253,12 +254,33 @@ std::string value_summary(const MiValue &value, int depth = 0) {
     return out.str();
 }
 
-std::string token_prefix(std::string_view line, size_t marker) {
-    size_t start = 0;
-    while (start < marker && std::isdigit(static_cast<unsigned char>(line[start]))) {
-        ++start;
+std::string limit_summary(std::string text, size_t max_size = 160) {
+    if (text.size() <= max_size) {
+        return text;
     }
-    return start == marker ? std::string(line.substr(0, marker)) : "";
+    if (max_size <= 4) {
+        return text.substr(0, max_size);
+    }
+    text.resize(max_size - 4);
+    text += " ...";
+    return text;
+}
+
+std::optional<size_t> record_marker(std::string_view line, std::string_view markers) {
+    size_t marker = line.find_first_of(markers);
+    if (marker == std::string_view::npos) {
+        return std::nullopt;
+    }
+    for (size_t i = 0; i < marker; ++i) {
+        if (!std::isdigit(static_cast<unsigned char>(line[i]))) {
+            return std::nullopt;
+        }
+    }
+    return marker;
+}
+
+std::string token_prefix(std::string_view line, size_t marker) {
+    return marker == 0 ? "" : std::string(line.substr(0, marker));
 }
 
 std::string result_payload(std::string_view line, size_t marker) {
@@ -267,6 +289,76 @@ std::string result_payload(std::string_view line, size_t marker) {
         return {};
     }
     return std::string(line.substr(comma + 1));
+}
+
+const MiValue *tuple_field(const MiValue &value, std::string_view name) {
+    if (value.kind != MiValue::Kind::Tuple) {
+        return nullptr;
+    }
+    for (const auto &field : value.fields) {
+        if (field.first == name) {
+            return &field.second;
+        }
+    }
+    return nullptr;
+}
+
+std::string scalar_summary(const MiValue &value) {
+    if (value.kind == MiValue::Kind::String || value.kind == MiValue::Kind::Bare) {
+        return value.value;
+    }
+    return value_summary(value);
+}
+
+void append_named_field(std::ostringstream &out,
+                        const MiValue &tuple,
+                        std::string_view name,
+                        std::string_view label = {}) {
+    const MiValue *field = tuple_field(tuple, name);
+    if (!field) {
+        return;
+    }
+    out << " " << (label.empty() ? name : label) << "="
+        << limit_summary(scalar_summary(*field));
+}
+
+std::string frame_summary(const MiValue &frame) {
+    const MiValue *func = tuple_field(frame, "func");
+    const MiValue *file = tuple_field(frame, "file");
+    const MiValue *fullname = tuple_field(frame, "fullname");
+    const MiValue *line = tuple_field(frame, "line");
+    std::ostringstream out;
+    if (func) {
+        out << " frame=" << limit_summary(scalar_summary(*func), 80);
+    }
+    const MiValue *path = file ? file : fullname;
+    if (path) {
+        out << " at " << limit_summary(scalar_summary(*path), 120);
+        if (line) {
+            out << ":" << scalar_summary(*line);
+        }
+    }
+    if (!func && !path) {
+        out << " frame=" << limit_summary(value_summary(frame));
+    }
+    return out.str();
+}
+
+void append_payload_summary(std::ostringstream &out, const MiValue &payload) {
+    append_named_field(out, payload, "msg");
+    append_named_field(out, payload, "reason");
+    append_named_field(out, payload, "thread-id");
+    append_named_field(out, payload, "stopped-threads");
+    append_named_field(out, payload, "value");
+    if (const MiValue *frame = tuple_field(payload, "frame")) {
+        out << frame_summary(*frame);
+    }
+    if (const MiValue *bkpt = tuple_field(payload, "bkpt")) {
+        out << " bkpt=" << limit_summary(value_summary(*bkpt));
+    }
+    if (const MiValue *wpt = tuple_field(payload, "wpt")) {
+        out << " wpt=" << limit_summary(value_summary(*wpt));
+    }
 }
 
 } // namespace
@@ -388,12 +480,13 @@ std::vector<MiRecordAudit> audit_mi_records(const std::vector<std::string> &line
             records.push_back(std::move(audit));
             continue;
         }
-        size_t marker = line.find_first_of("^*=~@&");
-        if (marker == std::string_view::npos) {
+        auto marker_opt = record_marker(line, "^*=~@&");
+        if (!marker_opt) {
             audit.record_kind = "unknown";
             records.push_back(std::move(audit));
             continue;
         }
+        size_t marker = *marker_opt;
         audit.token = token_prefix(line, marker);
         char kind = line[marker];
         if (kind == '^') {
@@ -423,10 +516,11 @@ std::string summarize_mi_records(const std::vector<std::string> &lines) {
     std::ostringstream out;
     for (const auto &raw : lines) {
         std::string_view line(raw);
-        size_t marker = line.find_first_of("^*=");
-        if (marker == std::string_view::npos) {
+        auto marker_opt = record_marker(line, "^*=");
+        if (!marker_opt) {
             continue;
         }
+        size_t marker = *marker_opt;
         char kind = line[marker];
         if (kind != '^' && kind != '*' && kind != '=') {
             continue;
@@ -442,7 +536,7 @@ std::string summarize_mi_records(const std::vector<std::string> &lines) {
         if (!payload.empty()) {
             auto parsed = parse_mi_value("{" + payload + "}");
             if (parsed) {
-                out << " " << value_summary(*parsed);
+                append_payload_summary(out, *parsed);
             }
         }
         out << "\n";
