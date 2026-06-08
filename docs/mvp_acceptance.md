@@ -174,7 +174,7 @@ matrix smoke。没有 GDB 的环境需要明确说明 live smoke 未运行或被
 - 不支持 PTY。
 - 不支持交互式 inferior stdin。
 - Core Dump Mode 不支持动态 action/probe 操作。
-- `catchpoint_set` 当前只支持 `catch throw`。
+- `catchpoint_set` 当前只支持 `catch throw` 和 `catch catch`。
 - Numeric assertion 当前只支持整数，不支持浮点数。
 - Sanitizer 不是完整 C++ demangler。
 

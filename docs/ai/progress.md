@@ -38,7 +38,7 @@
   - `evaluate`
   - `breakpoint_set`
   - `watchpoint_set`
-  - `catchpoint_set`（仅 `event: "throw"`）
+  - `catchpoint_set`（`event: "throw"` / `event: "catch"`）
   - `probe_list`
   - `probe_enable`
   - `probe_disable`
@@ -241,7 +241,7 @@
   覆盖 probe、stdin/env/output、thread crash 和 core dump 生成场景。
 - 新增 `scripts/smoke_capability_matrix.sh` 和 CTest `capability_matrix_flow`，Linux + GDB 下覆盖：
   - 真实 `watchpoint_set` 停止、两个真实 `breakpoint_set` 命中、`catchpoint_set event:"throw"`
-    命中和 `probe_list` metadata。
+    / `event:"catch"` 命中和 `probe_list` metadata。
   - on-hit 成功 action、unsupported action、`continue_on_error`、`stop_on_error` skipped evidence
     和 `continue_after_hit:true` wrapper evidence。
   - `raw_mi` 显式 `risk:"advanced"` 成功路径，以及缺少 risk 的稳定拒绝路径。
@@ -332,14 +332,14 @@ fingerprint 校验、force replay warning、replay run evidence 和 replay step 
 状态：Mostly Done
 
 已经支持 breakpoint/watchpoint、condition、comment、purpose、on-hit action、active-only
-probe list 和 probe hit evidence；已有最小 `catch throw` catchpoint。on-hit 已有 policy
+probe list 和 probe hit evidence；已有最小 `catch throw` / `catch catch` catchpoint。on-hit 已有 policy
 schema、failure policy、自动 continue 行为记录、`OnHitAction` evidence 和 Linux + GDB live
 smoke 覆盖。watchpoint stop 现在能在 MI 提供编号或当前唯一 active watchpoint 时归属到
 `WatchpointHit`，并执行 watchpoint on-hit policy。
 
 仍需关注：
 
-- catchpoint 仍只支持 `catch throw`，其他 catchpoint 类型尚未实现。
+- catchpoint 仍只支持 `catch throw` 和 `catch catch`，其他 catchpoint 类型尚未实现。
 - on-hit policy 目前只限制 `OnHitAction` wrapper evidence 的 response 摘要预算；底层 action
   evidence 仍按 evidence store 的全局规则保留。
 - 还可以增加更多 watchpoint/catchpoint 命中 fixture，覆盖多 watchpoint 且 GDB stop record
@@ -509,10 +509,22 @@ metadata。`raw_mi` 已作为受限高级 escape hatch。
 - 当前过期的“numeric 比较”后续建议已修正；整数 numeric assertion 已完成，后续 assertion 扩展不阻塞
   MVP 收敛。
 
+## 2026-06-08 本轮更新（catch catch）
+
+- 扩展 `catchpoint_set`，在既有 `event:"throw"` / `catch throw` 基础上新增
+  `event:"catch"` / `catch catch`。
+- `event:"catch"` 复用现有 catchpoint probe metadata、`CatchpointHit` evidence、
+  on-hit policy 和 Core Dump Mode state guard，不新增 evidence schema。
+- `scripts/smoke_capability_matrix.sh` 增加 `catch catch` 覆盖，验证 action response、
+  `probe_list` metadata、`CatchpointHit` evidence、`assets/probes.json` 和
+  `session_summary.json` probe hit 计数。
+- 同步更新 `docs/agent_actions.md`、`docs/agent_actions.en.md`、`docs/known_limitations.md`
+  和 `docs/mvp_acceptance.md`。
+
 ## 建议的下一步
 
 1. 用真实 Linux GDB raw 输出继续校准 MI parser、类型 sanitizer 和 backtrace/thread summary。
-2. 补 catchpoint 其他事件。
+2. 补 `throw` / `catch` 以外的 catchpoint 事件。
 3. 按真实调试需求继续扩展 hypothesis assertion，例如 float、changed 或跨 check 历史比较。
 4. 增加更多真实项目 core/replay/probe fixture，覆盖 core dump 兼容性、失败策略、
    watchpoint/catchpoint on-hit 和跨 assets 目录报告展示。

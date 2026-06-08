@@ -1557,7 +1557,12 @@ static void handle_action_line(GdbSession &session,
                 << "\"evidence\":" << json_escape(error_ev.id) << "}\n";
             return;
         }
-        if (event != "throw") {
+        std::string command;
+        if (event == "throw") {
+            command = "catch throw";
+        } else if (event == "catch") {
+            command = "catch catch";
+        } else {
             auto error_ev = add_tool_error(session,
                                            "Catchpoint set failed",
                                            "catchpoint_set",
@@ -1580,7 +1585,7 @@ static void handle_action_line(GdbSession &session,
             return;
         }
 
-        auto result = session.command("-interpreter-exec console " + mi_quote("catch throw"));
+        auto result = session.command("-interpreter-exec console " + mi_quote(command));
         auto ev = session.evidence_store().add("GdbCommand", "Catchpoint set", result.command, result.raw_lines, false, result.record_sequences);
         std::string number = breakpoint_number_from(result);
         if (result.result_class == "error" || number.empty()) {
@@ -1599,7 +1604,7 @@ static void handle_action_line(GdbSession &session,
         probe.number = number;
         probe.kind = "catchpoint";
         probe.event = event;
-        probe.location = "catch throw";
+        probe.location = command;
         probe.comment = json_string_field(action, "comment");
         probe.purpose = json_string_field(action, "purpose");
         probe.on_hit_policy = std::move(on_hit_policy);

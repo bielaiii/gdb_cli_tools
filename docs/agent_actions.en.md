@@ -42,6 +42,7 @@ Supported action lines are intentionally small in MVP form:
 {"action":"breakpoint_set","location":"examples/segfault.cpp:14","condition":"session == 0"}
 {"action":"watchpoint_set","expression":"global_counter","condition":"global_counter > 10"}
 {"action":"catchpoint_set","event":"throw"}
+{"action":"catchpoint_set","event":"catch"}
 {"action":"probe_list"}
 {"action":"probe_disable","number":1}
 {"action":"probe_enable","number":1}
@@ -119,14 +120,16 @@ probe, so agents do not mistake historical probes for live ones. Final
 `assets/probes.json` may still retain deleted history, but deleted entries are
 marked with `deleted:true`.
 
-The current catchpoint action only supports C++ exception throws:
+The current catchpoint action supports C++ exception throws and catches:
 
 ```json
 {"action":"catchpoint_set","event":"throw","comment":"stop on C++ throw","purpose":"exception path"}
+{"action":"catchpoint_set","event":"catch","comment":"stop on C++ catch","purpose":"exception handler path"}
 ```
 
-Other `event` values return stable `ok:false` output and write `ToolError`
-evidence.
+`event:"throw"` maps to GDB `catch throw`, and `event:"catch"` maps to GDB
+`catch catch`. Other `event` values return stable `ok:false` output and write
+`ToolError` evidence.
 
 ```json
 {

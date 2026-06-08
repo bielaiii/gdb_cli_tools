@@ -50,6 +50,7 @@ MVP action 行保持有意的小而稳定：
 {"action":"breakpoint_set","location":"examples/segfault.cpp:14","condition":"session == 0"}
 {"action":"watchpoint_set","expression":"global_counter","condition":"global_counter > 10"}
 {"action":"catchpoint_set","event":"throw"}
+{"action":"catchpoint_set","event":"catch"}
 {"action":"probe_list"}
 {"action":"probe_disable","number":1}
 {"action":"probe_enable","number":1}
@@ -161,12 +162,14 @@ metadata，包括 comment、purpose、hit count 和 on-hit policy；它不把 `p
 `probe_delete` 后，默认 `probe_list` 不再返回已删除的 probe，避免 Agent 把历史 probe 误认为仍可命中。
 最终 `assets/probes.json` 仍可保留 deleted 历史项，但必须标记 `deleted:true`。
 
-本轮 catchpoint 只支持 C++ exception throw：
+当前 catchpoint 支持 C++ exception throw 和 catch：
 
 ```json
 {"action":"catchpoint_set","event":"throw","comment":"stop on C++ throw","purpose":"exception path"}
+{"action":"catchpoint_set","event":"catch","comment":"stop on C++ catch","purpose":"exception handler path"}
 ```
 
+`event:"throw"` 映射到 GDB `catch throw`，`event:"catch"` 映射到 GDB `catch catch`。
 其他 `event` 会稳定返回 `ok:false`，并写入 `ToolError` evidence。
 
 ```json

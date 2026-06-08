@@ -1,40 +1,39 @@
 # Handoff
 
-日期：2026-06-03
+日期：2026-06-08
 
 ## 本轮完成
 
-- 按 `docs/ai/next_cli_task.md` 执行 MVP 文档收敛任务。
-- 本轮未新增调试功能、未修改源码行为、未改测试逻辑或 build 配置。
-- 更新 `README.md`：
-  - 增加 MVP quickstart、MVP acceptance、known limitations 和 dogfood 文档入口。
-  - 补齐当前 action 列表中的 `catchpoint_set`。
-- 新增 `docs/mvp_acceptance.md`：
-  - 明确 Linux 目标平台。
-  - 记录构建、task check、daemon flow、Run Mode、Core Dump Mode、evidence、report、
-    replay/probe/hypothesis 和 CTest 回归的 MVP 验收条件。
-- 新增 `docs/mvp_quickstart.md`：
-  - 面向 Agent 记录最小 task、check、daemon create、第一轮 action、evidence 查看、
-    hypothesis workflow、replay/probe 和 finish 流程。
-- 新增 `docs/known_limitations.md`：
-  - 集中说明 Linux/GDB、非 PTY、非交互 stdin、snapshot/replay、Core Dump Mode、raw MI、
-    summary/report、hypothesis 和 assertion 支持范围等限制。
-- 新增 `docs/mvp_dogfood.md`：
-  - 记录如何用 `examples/segfault_task.md` 完成一轮最小 dogfood。
-  - 明确哪些属于工具观察，哪些属于 Agent inference。
-  - 明确不提交 generated assets，避免 GDB 版本和路径差异带来仓库噪声。
-- 更新 `docs/ai/progress.md`，记录本轮 MVP documentation convergence。
+- 按 `docs/ai/next_cli_task.md` 执行 `catchpoint_set` 最小扩展任务。
+- 扩展 `src/cli.cpp` 中的 `catchpoint_set`：
+  - `event:"throw"` 继续映射到 GDB console command `catch throw`。
+  - 新增 `event:"catch"`，映射到 GDB console command `catch catch`。
+  - probe metadata 继续使用 `kind:"catchpoint"`，并保存原始 `event` 和对应 `location`。
+  - unsupported event、Core Dump Mode guard 和 `raw_mi` 风险约束保持原语义。
+- 更新 `scripts/smoke_capability_matrix.sh`：
+  - 在 probe flow 中设置并验证 `event:"catch"`。
+  - 继续运行到 catch handler catchpoint hit。
+  - 验证 `probe_list`、`CatchpointHit` evidence、`assets/probes.json` 和
+    `session_summary.json` 能体现新增 catchpoint。
+- 更新文档：
+  - `docs/agent_actions.md`
+  - `docs/agent_actions.en.md`
+  - `docs/known_limitations.md`
+  - `docs/mvp_acceptance.md`
+- 更新 `docs/ai/progress.md`，记录本轮 `catch catch` 支持。
 
 ## 验证
 
-- `git diff --check`
-
-本轮是文档收敛任务，没有新增脚本、没有修改源码功能，也没有修改测试逻辑，因此未运行完整 build/test。
-文档中新增的命令与 README、CTest 和现有 smoke 入口保持一致。
+- `cmake --build build`
+- `./build/gdb-agent check examples/segfault_task.md`
+- `ctest --test-dir build --output-on-failure`
+  - 当前 Linux 环境有 `/usr/bin/gdb`。
+  - 结果：9/9 tests passed。
 
 ## 限制和注意事项
 
-- 本轮没有新增 `scripts/mvp_acceptance.sh`；MVP 验收命令记录在 `docs/mvp_acceptance.md`。
-- 仍未实现浮点 assertion、`changed` 或跨 check 历史比较。
-- 仍未扩展 catchpoint event，没有引入 PTY 或交互式 stdin，也没有修改 raw evidence/schema 布局。
-- 当前 `docs/ai/next_cli_task.md` 已被纳入本轮任务记录；下一轮需要先写入新的具体任务，否则会继续指向已完成范围。
+- 本轮没有新增 evidence schema，也没有修改 report/schema 布局。
+- Core Dump Mode 仍然拒绝 `catchpoint_set`，保持静态取证边界。
+- `catchpoint_set` 当前只支持 C++ exception 的 `catch throw` 和 `catch catch`。
+- 其他 catchpoint event（例如 syscall、load、unload、fork、exec、signal）仍未实现。
+- 本轮未新增项目级 decision，因此未修改 `docs/ai/decision.md`。

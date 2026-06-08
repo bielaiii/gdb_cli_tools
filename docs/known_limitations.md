@@ -39,7 +39,7 @@
 
 - Agent 默认应使用高层 action，而不是 raw MI。
 - `raw_mi` 是高级 escape hatch，必须显式包含 `risk:"advanced"`。
-- `catchpoint_set` 当前只支持 C++ `catch throw`。
+- `catchpoint_set` 当前只支持 C++ exception 的 `catch throw` 和 `catch catch`。
 - 其他 catchpoint event 尚未实现。
 - `raw_mi` 不能作为 on-hit action。
 

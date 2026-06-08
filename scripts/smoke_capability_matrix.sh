@@ -235,10 +235,16 @@ require_contains "$catch_set" '"ok":true'
 require_contains "$catch_set" '"action":"catchpoint_set"'
 require_contains "$catch_set" '"event":"throw"'
 
+catch_catch_set="$(run_action P1 '{"action":"catchpoint_set","event":"catch","comment":"catch fixture catch","purpose":"capability matrix catch handler"}')"
+require_contains "$catch_catch_set" '"ok":true'
+require_contains "$catch_catch_set" '"action":"catchpoint_set"'
+require_contains "$catch_catch_set" '"event":"catch"'
+
 probe_list="$(run_action P1 '{"action":"probe_list"}')"
 require_contains "$probe_list" '"kind":"watchpoint"'
 require_contains "$probe_list" '"kind":"breakpoint"'
 require_contains "$probe_list" '"kind":"catchpoint"'
+require_contains "$probe_list" '"event":"catch"'
 require_contains "$probe_list" '"comment":"watch global mutation"'
 require_contains "$probe_list" '"purpose":"capability matrix breakpoint"'
 require_contains "$probe_list" '"purpose":"capability matrix stop_on_error"'
@@ -275,6 +281,10 @@ require_contains "$stop_hit" '"action":"not_a_real_action"'
 catch_hit="$(run_action P1 '{"action":"continue","deadline_ms":30000}')"
 require_contains "$catch_hit" '"ok":true'
 require_contains "$catch_hit" '"stop_reason":"breakpoint-hit"'
+
+catch_handler_hit="$(run_action P1 '{"action":"continue","deadline_ms":30000}')"
+require_contains "$catch_handler_hit" '"ok":true'
+require_contains "$catch_handler_hit" '"stop_reason":"breakpoint-hit"'
 
 hypothesis_create="$(run_action P1 '{"action":"hypothesis_create","id":"H-capability-value","title":"watch value reaches breakpoint","description":"Probe evidence should expose g_watch_value and value at stopped frames."}')"
 require_contains "$hypothesis_create" '"ok":true'
@@ -324,9 +334,12 @@ grep -F '"kind":"BreakpointHit"' "$probe_assets/evidence/index.json" >/dev/null
 grep -F '"kind":"CatchpointHit"' "$probe_assets/evidence/index.json" >/dev/null
 grep -F '"kind":"OnHitAction"' "$probe_assets/evidence/index.json" >/dev/null
 grep -R -F '"status": "skipped"' "$probe_assets/evidence" >/dev/null
+grep -R -F '"event": "catch"' "$probe_assets/evidence" >/dev/null
 grep -F '"kind": "watchpoint"' "$probe_assets/probes.json" >/dev/null
 grep -F '"kind": "catchpoint"' "$probe_assets/probes.json" >/dev/null
-grep -F '"probe_hit_count": 4' "$probe_assets/session_summary.json" >/dev/null
+grep -F '"event": "catch"' "$probe_assets/probes.json" >/dev/null
+grep -F '"location": "catch catch"' "$probe_assets/probes.json" >/dev/null
+grep -F '"probe_hit_count": 5' "$probe_assets/session_summary.json" >/dev/null
 grep -F '"on_hit_action_count": 9' "$probe_assets/session_summary.json" >/dev/null
 grep -F '"on_hit_error_count": 3' "$probe_assets/session_summary.json" >/dev/null
 grep -F '"status": "passed"' "$probe_assets/hypotheses/index.json" >/dev/null
