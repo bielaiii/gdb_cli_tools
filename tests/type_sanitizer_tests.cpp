@@ -11,6 +11,12 @@ static void require(bool ok, const std::string &message) {
     }
 }
 
+static void require_equal(const std::string &actual, const std::string &expected, const std::string &message) {
+    if (actual != expected) {
+        throw std::runtime_error(message + ": expected [" + expected + "], got [" + actual + "]");
+    }
+}
+
 static bool contains(const std::string &text, const std::string &needle) {
     return text.find(needle) != std::string::npos;
 }
@@ -24,6 +30,19 @@ static std::string sanitize(const std::string &text) {
 }
 
 static void test_default_policy_compression() {
+    require_equal(sanitize("std::vector<Foo, std::allocator<Foo> >"),
+                  "std::vector<Foo>",
+                  "default vector allocator should produce an exact compressed summary");
+    require_equal(sanitize("std::map<Key, Value, std::less<Key>, std::allocator<std::pair<Key const, Value> > >"),
+                  "std::map<Key, Value>",
+                  "default map policies should produce an exact compressed summary");
+    require_equal(sanitize("std::unordered_map<Key, Value, std::hash<Key>, std::equal_to<Key>, std::allocator<std::pair<const Key, Value> > >"),
+                  "std::unordered_map<Key, Value>",
+                  "default unordered_map policies should produce an exact compressed summary");
+    require_equal(sanitize("std::unique_ptr<Foo, std::default_delete<Foo> >"),
+                  "std::unique_ptr<Foo>",
+                  "default unique_ptr deleter should produce an exact compressed summary");
+
     require(contains(sanitize("std::vector<Foo, std::allocator<Foo> >"),
                      "std::vector<Foo>"),
             "default vector allocator should be compressed");

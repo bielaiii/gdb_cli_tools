@@ -208,6 +208,10 @@ require_file_contains "$default_summary" "std::function<int(std::string_view)> c
 require_file_contains "$default_summary" "std::chrono::duration<long, std::ratio<1, 1000>> timeout"
 require_file_not_contains "$default_summary" "std::allocator<type_sanitizer::Foo>"
 require_file_not_contains "$default_summary" "std::default_delete<type_sanitizer::Foo>"
+require_file_not_contains "$default_summary" "std::less<std::string_view>"
+require_file_not_contains "$default_summary" "std::hash<std::string_view>"
+require_file_not_contains "$default_summary" "std::equal_to<std::string_view>"
+require_file_not_contains "$default_summary" "std::allocator<std::pair<std::string_view"
 
 custom_response="$(run_action TS1 '{"action":"raw_mi","command":"-interpreter-exec console \"ptype type_sanitizer::CustomTypes\"","risk":"advanced"}')"
 require_contains "$custom_response" '"ok":true'

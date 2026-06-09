@@ -1,5 +1,6 @@
 #include "json.hpp"
 
+#include <charconv>
 #include <cctype>
 #include <sstream>
 
@@ -7,7 +8,7 @@ namespace {
 
 class Parser {
 public:
-    explicit Parser(const std::string &text) : text_(text) {}
+    explicit Parser(std::string_view text) : text_(text) {}
 
     Json parse() {
         skip_ws();
@@ -134,7 +135,11 @@ private:
         }
         Json json;
         json.type = Json::Type::Number;
-        json.number_value = std::stod(text_.substr(start, pos_ - start));
+        std::string_view token = text_.substr(start, pos_ - start);
+        auto result = std::from_chars(token.data(), token.data() + token.size(), json.number_value);
+        if (result.ec != std::errc{} || result.ptr != token.data() + token.size()) {
+            throw std::runtime_error("invalid JSON number");
+        }
         return json;
     }
 
@@ -187,11 +192,11 @@ private:
         ++pos_;
     }
 
-    const std::string &text_;
+    std::string_view text_;
     size_t pos_ = 0;
 };
 
-static std::string escape_string(const std::string &s) {
+static std::string escape_string(std::string_view s) {
     std::string out = "\"";
     for (char c : s) {
         switch (c) {
@@ -209,7 +214,7 @@ static std::string escape_string(const std::string &s) {
 
 } // namespace
 
-const Json *Json::find(const std::string &key) const {
+const Json *Json::find(std::string_view key) const {
     if (!is_object()) {
         return nullptr;
     }
@@ -220,15 +225,15 @@ const Json *Json::find(const std::string &key) const {
     return &it->second;
 }
 
-std::string Json::string_or(const std::string &key, const std::string &fallback) const {
+std::string Json::string_or(std::string_view key, std::string_view fallback) const {
     const Json *value = find(key);
     if (value == nullptr || !value->is_string()) {
-        return fallback;
+        return std::string(fallback);
     }
     return value->string_value;
 }
 
-int Json::int_or(const std::string &key, int fallback) const {
+int Json::int_or(std::string_view key, int fallback) const {
     const Json *value = find(key);
     if (value == nullptr || !value->is_number()) {
         return fallback;
@@ -236,7 +241,7 @@ int Json::int_or(const std::string &key, int fallback) const {
     return static_cast<int>(value->number_value);
 }
 
-bool Json::bool_or(const std::string &key, bool fallback) const {
+bool Json::bool_or(std::string_view key, bool fallback) const {
     const Json *value = find(key);
     if (value == nullptr || !value->is_bool()) {
         return fallback;
@@ -244,7 +249,7 @@ bool Json::bool_or(const std::string &key, bool fallback) const {
     return value->bool_value;
 }
 
-Json parse_json(const std::string &text) {
+Json parse_json(std::string_view text) {
     return Parser(text).parse();
 }
 
@@ -290,4 +295,3 @@ std::string dump_json(const Json &json) {
     }
     return "null";
 }
-

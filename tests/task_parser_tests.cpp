@@ -6,6 +6,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <unistd.h>
 
 namespace fs = std::filesystem;
@@ -112,6 +113,18 @@ int main() {
                    "invalid JSON");
     Json typed = parse_json(R"({"action":42,"params":{"expression":true}})");
     require(typed.string_or("action", "fallback") == "fallback", "string_or should reject non-string action");
+
+    std::string padded_json = R"(xx{"action":"run","schema_version":2,"force":true}yy)";
+    std::string_view json_view(padded_json.data() + 2, padded_json.size() - 4);
+    Json view_json = parse_json(json_view);
+    std::string padded_key = "xxactionyy";
+    std::string_view action_key(padded_key.data() + 2, 6);
+    std::string padded_fallback = "xxfallbackyy";
+    std::string_view fallback_view(padded_fallback.data() + 2, 8);
+    require(view_json.string_or(action_key) == "run", "string_view key lookup should not require a string temporary");
+    require(view_json.string_or("missing", fallback_view) == "fallback", "string_view fallback should be accepted");
+    require(view_json.int_or("schema_version") == 2, "string_view parser should preserve numbers");
+    require(view_json.bool_or("force", false), "string_view parser should preserve booleans");
 
     fs::remove_all(root);
     std::cout << "task_parser_tests ok\n";

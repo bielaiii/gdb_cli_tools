@@ -5,14 +5,13 @@
 #include <fstream>
 #include <initializer_list>
 #include <regex>
-#include <sstream>
 #include <stdexcept>
 #include <vector>
 
 namespace {
 
-std::string regex_escape(std::string s) {
-    static const std::string special = R"(\.^$|()[]{}*+?)";
+std::string regex_escape(std::string_view s) {
+    constexpr std::string_view special = R"(\.^$|()[]{}*+?)";
     std::string out;
     out.reserve(s.size() * 2);
     for (char c : s) {
@@ -24,8 +23,8 @@ std::string regex_escape(std::string s) {
     return out;
 }
 
-std::vector<std::string> split_template_args(std::string_view text) {
-    std::vector<std::string> args;
+std::vector<std::string_view> split_template_args(std::string_view text) {
+    std::vector<std::string_view> args;
     size_t start = 0;
     int depth = 0;
     int paren_depth = 0;
@@ -40,74 +39,132 @@ std::vector<std::string> split_template_args(std::string_view text) {
         } else if (c == ')' && paren_depth > 0) {
             --paren_depth;
         } else if (c == ',' && depth == 0 && paren_depth == 0) {
-            args.push_back(trim(std::string(text.substr(start, i - start))));
+            args.push_back(trim_view(text.substr(start, i - start)));
             start = i + 1;
         }
     }
-    args.push_back(trim(std::string(text.substr(start))));
+    args.push_back(trim_view(text.substr(start)));
     return args;
 }
 
 std::string join_template_args(const std::vector<std::string> &args, size_t count) {
-    std::ostringstream out;
-    for (size_t i = 0; i < count && i < args.size(); ++i) {
-        if (i != 0) {
-            out << ", ";
-        }
-        out << args[i];
+    size_t bounded_count = std::min(count, args.size());
+    size_t size = bounded_count > 0 ? (bounded_count - 1) * 2 : 0;
+    for (size_t i = 0; i < bounded_count; ++i) {
+        size += args[i].size();
     }
-    return out.str();
+    std::string out;
+    out.reserve(size);
+    for (size_t i = 0; i < bounded_count; ++i) {
+        if (i != 0) {
+            out += ", ";
+        }
+        out += args[i];
+    }
+    return out;
 }
 
-std::string strip_const_key(std::string arg) {
-    arg = trim(std::move(arg));
+std::string join_template_args(std::initializer_list<std::string_view> args) {
+    size_t size = args.size() > 0 ? (args.size() - 1) * 2 : 0;
+    for (std::string_view arg : args) {
+        size += arg.size();
+    }
+    std::string out;
+    out.reserve(size);
+    size_t i = 0;
+    for (std::string_view arg : args) {
+        if (i++ != 0) {
+            out += ", ";
+        }
+        out += arg;
+    }
+    return out;
+}
+
+bool equals_parts(std::string_view text, std::initializer_list<std::string_view> parts) {
+    size_t size = 0;
+    for (std::string_view part : parts) {
+        size += part.size();
+    }
+    if (text.size() != size) {
+        return false;
+    }
+    size_t pos = 0;
+    for (std::string_view part : parts) {
+        if (text.substr(pos, part.size()) != part) {
+            return false;
+        }
+        pos += part.size();
+    }
+    return true;
+}
+
+std::string_view strip_const_key(std::string_view arg) {
+    arg = trim_view(arg);
     constexpr std::string_view prefix = "const ";
     constexpr std::string_view suffix = " const";
     if (starts_with(arg, prefix)) {
-        arg = trim(arg.substr(prefix.size()));
+        arg.remove_prefix(prefix.size());
+        arg = trim_view(arg);
     }
-    if (arg.size() > suffix.size() && arg.compare(arg.size() - suffix.size(), suffix.size(), suffix) == 0) {
-        arg = trim(arg.substr(0, arg.size() - suffix.size()));
+    if (arg.size() > suffix.size() && arg.substr(arg.size() - suffix.size()) == suffix) {
+        arg.remove_suffix(suffix.size());
+        arg = trim_view(arg);
     }
     return arg;
 }
 
-bool is_default_allocator(const std::string &arg, const std::string &value_type) {
-    return arg == "std::allocator<" + value_type + ">";
+std::string render_template(std::string_view name, const std::vector<std::string> &args) {
+    std::string joined = join_template_args(args, args.size());
+    std::string out;
+    out.reserve(6 + name.size() + joined.size());
+    out += "std::";
+    out += name;
+    out += "<";
+    out += joined;
+    out += ">";
+    return out;
 }
 
-bool is_default_less(const std::string &arg, const std::string &key_type) {
-    return arg == "std::less<" + key_type + ">";
+std::string render_template(std::string_view name, std::initializer_list<std::string_view> args) {
+    std::string joined = join_template_args(args);
+    std::string out;
+    out.reserve(6 + name.size() + joined.size());
+    out += "std::";
+    out += name;
+    out += "<";
+    out += joined;
+    out += ">";
+    return out;
 }
 
-bool is_default_hash(const std::string &arg, const std::string &key_type) {
-    return arg == "std::hash<" + key_type + ">";
+bool is_default_allocator(std::string_view arg, std::string_view value_type) {
+    return equals_parts(arg, {"std::allocator<", value_type, ">"});
 }
 
-bool is_default_equal_to(const std::string &arg, const std::string &key_type) {
-    return arg == "std::equal_to<" + key_type + ">";
+bool is_default_less(std::string_view arg, std::string_view key_type) {
+    return equals_parts(arg, {"std::less<", key_type, ">"});
 }
 
-bool is_default_delete(const std::string &arg, const std::string &value_type) {
-    return arg == "std::default_delete<" + value_type + ">";
+bool is_default_hash(std::string_view arg, std::string_view key_type) {
+    return equals_parts(arg, {"std::hash<", key_type, ">"});
 }
 
-bool is_default_pair_allocator(const std::string &arg,
-                               const std::string &key_type,
-                               const std::string &value_type) {
-    std::string pair = "std::pair<" + strip_const_key(key_type) + ", " + value_type + ">";
-    return is_default_allocator(arg, pair);
+bool is_default_equal_to(std::string_view arg, std::string_view key_type) {
+    return equals_parts(arg, {"std::equal_to<", key_type, ">"});
 }
 
-std::string render_template(const std::string &name, const std::vector<std::string> &args) {
-    return "std::" + name + "<" + join_template_args(args, args.size()) + ">";
+bool is_default_delete(std::string_view arg, std::string_view value_type) {
+    return equals_parts(arg, {"std::default_delete<", value_type, ">"});
 }
 
-std::string render_template(const std::string &name, std::initializer_list<std::string> args) {
-    return render_template(name, std::vector<std::string>(args));
+bool is_default_pair_allocator(std::string_view arg,
+                               std::string_view key_type,
+                               std::string_view value_type) {
+    return equals_parts(arg, {"std::allocator<std::pair<", strip_const_key(key_type), ", ", value_type, ">>"});
 }
 
-std::string render_sequence_container(const std::string &name, const std::vector<std::string> &args) {
+std::string render_sequence_container(std::string_view name, const std::vector<std::string> &args) {
     if (args.empty()) {
         return render_template(name, args);
     }
@@ -138,7 +195,7 @@ std::string render_set_container(const std::vector<std::string> &args) {
     return render_template("set", args);
 }
 
-std::string render_map_container(const std::string &name, const std::vector<std::string> &args) {
+std::string render_map_container(std::string_view name, const std::vector<std::string> &args) {
     if (args.size() < 2) {
         return render_template(name, args);
     }
@@ -216,11 +273,11 @@ size_t matching_template_close(std::string_view s, size_t open) {
     return std::string_view::npos;
 }
 
-std::string simplify_std_templates(std::string s) {
+std::string simplify_std_templates(std::string_view s) {
     std::string out;
     out.reserve(s.size());
     for (size_t i = 0; i < s.size();) {
-        if (s.compare(i, 5, "std::") != 0) {
+        if (s.substr(i, 5) != "std::") {
             out.push_back(s[i++]);
             continue;
         }
@@ -235,21 +292,23 @@ std::string simplify_std_templates(std::string s) {
             ++name_end;
         }
         if (name_end >= s.size() || s[name_end] != '<') {
-            out.append(s, i, name_end - i);
+            out += s.substr(i, name_end - i);
             i = name_end;
             continue;
         }
         size_t close = matching_template_close(s, name_end);
         if (close == std::string::npos) {
-            out.append(s, i, name_end - i);
+            out += s.substr(i, name_end - i);
             i = name_end;
             continue;
         }
 
-        std::string name = s.substr(name_start, name_end - name_start);
-        auto args = split_template_args(std::string_view(s).substr(name_end + 1, close - name_end - 1));
-        for (auto &arg : args) {
-            arg = simplify_std_templates(std::move(arg));
+        std::string_view name = s.substr(name_start, name_end - name_start);
+        auto arg_views = split_template_args(s.substr(name_end + 1, close - name_end - 1));
+        std::vector<std::string> args;
+        args.reserve(arg_views.size());
+        for (std::string_view arg : arg_views) {
+            args.push_back(simplify_std_templates(arg));
         }
 
         if (name == "basic_string" || name == "__cxx11::basic_string") {
@@ -390,7 +449,14 @@ void replace_all(std::string &s, std::string_view from, std::string_view to) {
 }
 
 std::string sanitize_output(std::string s, const std::filesystem::path &working_directory) {
-    s = simplify_std_templates(std::move(s));
+    static const std::regex basic_string_re(
+        R"(std::(__cxx11::)?basic_string<char,\s*std::char_traits<char>,\s*std::allocator<char>\s*>)");
+    static const std::regex adjacent_close_re(R"(\s*>\s*>)");
+    static const std::regex template_open_space_re(R"(<\s+)");
+    static const std::regex template_close_space_re(R"(\s+>)");
+    static const std::regex comma_space_re(R"(,\s+)");
+
+    s = simplify_std_templates(s);
     replace_all(s,
                 "std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >",
                 "std::string");
@@ -403,26 +469,12 @@ std::string sanitize_output(std::string s, const std::filesystem::path &working_
     replace_all(s,
                 "std::basic_string<char,std::char_traits<char>,std::allocator<char> >",
                 "std::string");
-    s = std::regex_replace(s,
-                           std::regex(R"(std::(__cxx11::)?basic_string<char,\s*std::char_traits<char>,\s*std::allocator<char>\s*>)"),
-                           "std::string");
-    s = std::regex_replace(s, std::regex(R"(\s*>\s*>)"), ">>");
-    s = std::regex_replace(s,
-                           std::regex(R"(std::map<\s*([^,<>]+)\s*,\s*([^,<>]+)\s*,\s*std::less<[^<>]+>\s*,\s*std::allocator<std::pair<[^<>]+>>\s*>)"),
-                           "std::map<$1, $2>");
-    s = std::regex_replace(s,
-                           std::regex(R"(std::unordered_map<\s*([^,<>]+)\s*,\s*([^,<>]+)\s*,\s*std::hash<[^<>]+>\s*,\s*std::equal_to<[^<>]+>\s*,\s*std::allocator<std::pair<[^<>]+>>\s*>)"),
-                           "std::unordered_map<$1, $2>");
-    s = std::regex_replace(s,
-                           std::regex(R"(std::pair<\s*const\s+([^,<>]+)\s*,\s*([^<>]+)\s*>)"),
-                           "std::pair<$1, $2>");
-    s = std::regex_replace(s,
-                           std::regex(R"(std::pair<\s*([^,<>]+)\s+const\s*,\s*([^<>]+)\s*>)"),
-                           "std::pair<$1, $2>");
-    s = simplify_std_templates(std::move(s));
-    s = std::regex_replace(s, std::regex(R"(<\s+)"), "<");
-    s = std::regex_replace(s, std::regex(R"(\s+>)"), ">");
-    s = std::regex_replace(s, std::regex(R"(,\s+)"), ", ");
+    s = std::regex_replace(s, basic_string_re, "std::string");
+    s = std::regex_replace(s, adjacent_close_re, ">>");
+    s = simplify_std_templates(s);
+    s = std::regex_replace(s, template_open_space_re, "<");
+    s = std::regex_replace(s, template_close_space_re, ">");
+    s = std::regex_replace(s, comma_space_re, ", ");
     s = relativize_working_directory_paths(std::move(s), working_directory);
     replace_all(s, working_directory.lexically_normal().string() + "/", "");
     replace_all(s, working_directory.string() + "/", "");

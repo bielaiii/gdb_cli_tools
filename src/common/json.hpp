@@ -1,8 +1,10 @@
 #pragma once
 
 #include <map>
+#include <functional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 class Json {
@@ -20,7 +22,7 @@ public:
     bool bool_value = false;
     double number_value = 0;
     std::string string_value;
-    std::map<std::string, Json> object_value;
+    std::map<std::string, Json, std::less<>> object_value;
     std::vector<Json> array_value;
 
     bool is_null() const { return type == Type::Null; }
@@ -30,12 +32,11 @@ public:
     bool is_object() const { return type == Type::Object; }
     bool is_array() const { return type == Type::Array; }
 
-    const Json *find(const std::string &key) const;
-    std::string string_or(const std::string &key, const std::string &fallback = "") const;
-    int int_or(const std::string &key, int fallback = 0) const;
-    bool bool_or(const std::string &key, bool fallback = false) const;
+    const Json *find(std::string_view key) const;
+    std::string string_or(std::string_view key, std::string_view fallback = "") const;
+    int int_or(std::string_view key, int fallback = 0) const;
+    bool bool_or(std::string_view key, bool fallback = false) const;
 };
 
-Json parse_json(const std::string &text);
+Json parse_json(std::string_view text);
 std::string dump_json(const Json &json);
-

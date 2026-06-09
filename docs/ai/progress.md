@@ -593,6 +593,22 @@ optional/variant/tuple/pair 和工作目录路径归一化。`raw_mi` 已作为�
 - 本轮未新增项目级 decision；raw evidence、session log 和 raw 文件布局不变，sanitizer 仍只是有损
   summary/view 增强。
 
+## 2026-06-09 本轮更新（performance review follow-up）
+
+- 根据 code review 结果优化字符串处理性能：
+  - `Json` object lookup 改用 `std::less<>` 和 `std::string_view` key，避免大量字符串字面量
+    lookup 构造临时 `std::string`。
+  - `parse_json` / 内部 parser 改用 `std::string_view` 输入，number token 改用
+    `std::from_chars`，避免 `substr` 后再 `std::stod` 的临时 string。
+  - type sanitizer 的 template arg splitter 改为拆出 trimmed `std::string_view`，渲染和默认策略
+    判断改为 view/append/分段比较，减少中间 vector/string/ostringstream 分配。
+  - 删除 map/unordered_map/pair 的旧 regex 降噪路径；剩余 sanitizer regex 改为 static。
+- 补强测试：
+  - `type_sanitizer_tests` 增加默认策略压缩的精确输出断言。
+  - `task_parser_tests` 覆盖非 null-terminated `std::string_view` JSON 输入和 key/fallback lookup。
+  - `smoke_type_sanitizer.sh` 增加默认策略噪声的负向断言。
+- 本轮未新增项目级 decision；不改变 action schema、evidence schema 或 raw evidence 保存原则。
+
 ## 建议的下一步
 
 1. 用更多真实 Linux GDB raw 输出继续校准 MI parser 和 backtrace/thread summary。
