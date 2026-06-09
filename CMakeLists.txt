@@ -138,6 +138,12 @@ add_test(
 )
 
 add_test(
+    NAME catchpoint_matrix_flow
+    COMMAND /bin/bash ${CMAKE_SOURCE_DIR}/scripts/smoke_catchpoint_matrix.sh
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
+add_test(
     NAME mi_summary_tests
     COMMAND mi_summary_tests
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}

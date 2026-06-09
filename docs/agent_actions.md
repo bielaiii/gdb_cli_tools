@@ -51,6 +51,9 @@ MVP action 行保持有意的小而稳定：
 {"action":"watchpoint_set","expression":"global_counter","condition":"global_counter > 10"}
 {"action":"catchpoint_set","event":"throw"}
 {"action":"catchpoint_set","event":"catch"}
+{"action":"catchpoint_set","event":"syscall","name":"write"}
+{"action":"catchpoint_set","event":"fork"}
+{"action":"catchpoint_set","event":"exec"}
 {"action":"probe_list"}
 {"action":"probe_disable","number":1}
 {"action":"probe_enable","number":1}
@@ -162,15 +165,37 @@ metadata，包括 comment、purpose、hit count 和 on-hit policy；它不把 `p
 `probe_delete` 后，默认 `probe_list` 不再返回已删除的 probe，避免 Agent 把历史 probe 误认为仍可命中。
 最终 `assets/probes.json` 仍可保留 deleted 历史项，但必须标记 `deleted:true`。
 
-当前 catchpoint 支持 C++ exception throw 和 catch：
+当前 catchpoint 支持 C++ exception、Linux syscall、fork/vfork 和 exec 事件：
 
 ```json
 {"action":"catchpoint_set","event":"throw","comment":"stop on C++ throw","purpose":"exception path"}
 {"action":"catchpoint_set","event":"catch","comment":"stop on C++ catch","purpose":"exception handler path"}
+{"action":"catchpoint_set","event":"syscall","comment":"stop on any syscall","purpose":"syscall path"}
+{"action":"catchpoint_set","event":"syscall","name":"write","comment":"stop on write syscall","purpose":"I/O path"}
+{"action":"catchpoint_set","event":"syscall","syscall":"write","comment":"stop on write syscall","purpose":"I/O path"}
+{"action":"catchpoint_set","event":"fork","comment":"stop on fork","purpose":"process creation"}
+{"action":"catchpoint_set","event":"vfork","comment":"stop on vfork","purpose":"process creation"}
+{"action":"catchpoint_set","event":"exec","comment":"stop on exec","purpose":"exec path"}
 ```
 
-`event:"throw"` 映射到 GDB `catch throw`，`event:"catch"` 映射到 GDB `catch catch`。
-其他 `event` 会稳定返回 `ok:false`，并写入 `ToolError` evidence。
+映射关系：
+
+- `event:"throw"` -> GDB `catch throw`
+- `event:"catch"` -> GDB `catch catch`
+- `event:"syscall"` -> GDB `catch syscall`
+- `event:"syscall"` 加 `name` 或 `syscall` -> GDB `catch syscall <selector>`
+- `event:"fork"` -> GDB `catch fork`
+- `event:"vfork"` -> GDB `catch vfork`
+- `event:"exec"` -> GDB `catch exec`
+
+syscall selector 可以是字符串 syscall 名或整数 syscall id。字符串 selector 只允许字母、
+数字和下划线，避免把任意 GDB console 片段拼接进 command。action response、`probe_list`、
+`assets/probes.json` 和 `CatchpointHit` evidence 会记录 `event` 与 `selector`；不带 selector
+时该字段为空字符串。
+
+其他 `event` 或非法 syscall selector 会稳定返回 `ok:false`，并写入 `ToolError` evidence。
+如果某个 Linux/GDB 环境不支持对应 `catch` command，工具不会伪装成功，会返回结构化失败并保留
+原始 command evidence。
 
 ```json
 {

@@ -39,8 +39,11 @@
 
 - Agent 默认应使用高层 action，而不是 raw MI。
 - `raw_mi` 是高级 escape hatch，必须显式包含 `risk:"advanced"`。
-- `catchpoint_set` 当前只支持 C++ exception 的 `catch throw` 和 `catch catch`。
-- 其他 catchpoint event 尚未实现。
+- `catchpoint_set` 支持 C++ exception 的 `catch throw` / `catch catch`，以及 Linux live
+  session 中常用的 `catch syscall`、`catch fork`、`catch vfork` 和 `catch exec`。
+- syscall selector 只接受字符串 syscall 名或整数 syscall id；字符串只允许字母、数字和下划线。
+- 具体 catchpoint command 是否可用仍取决于当前 Linux/GDB/target 组合；不支持时工具会返回
+  `ok:false` 并保留 `ToolError` 与原始 command evidence。
 - `raw_mi` 不能作为 on-hit action。
 
 ## Evidence 和 Summary

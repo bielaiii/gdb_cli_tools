@@ -164,8 +164,8 @@ git diff --check
 ctest --test-dir build --output-on-failure
 ```
 
-当前 Linux + GDB 环境下，CTest 应实际运行 daemon/action、core dump、edge case 和 capability
-matrix smoke。没有 GDB 的环境需要明确说明 live smoke 未运行或被跳过的原因。
+当前 Linux + GDB 环境下，CTest 应实际运行 daemon/action、core dump、edge case、capability
+matrix 和 catchpoint matrix smoke。没有 GDB 的环境需要明确说明 live smoke 未运行或被跳过的原因。
 
 ## 非阻塞限制
 
@@ -174,7 +174,8 @@ matrix smoke。没有 GDB 的环境需要明确说明 live smoke 未运行或被
 - 不支持 PTY。
 - 不支持交互式 inferior stdin。
 - Core Dump Mode 不支持动态 action/probe 操作。
-- `catchpoint_set` 当前只支持 `catch throw` 和 `catch catch`。
+- `catchpoint_set` 的 syscall/fork/vfork/exec 支持依赖当前 Linux/GDB/target 组合；不支持的
+  catch command 应返回结构化失败和 evidence，而不是伪装成功。
 - Numeric assertion 当前只支持整数，不支持浮点数。
 - Sanitizer 不是完整 C++ demangler。
 

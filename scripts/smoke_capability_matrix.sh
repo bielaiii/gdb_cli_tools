@@ -492,6 +492,10 @@ for payload in \
     '{"action":"breakpoint_set","location":"matrix_breakpoint_site"}' \
     '{"action":"watchpoint_set","expression":"g_watch_value"}' \
     '{"action":"catchpoint_set","event":"throw"}' \
+    '{"action":"catchpoint_set","event":"syscall"}' \
+    '{"action":"catchpoint_set","event":"syscall","name":"write"}' \
+    '{"action":"catchpoint_set","event":"fork"}' \
+    '{"action":"catchpoint_set","event":"exec"}' \
     '{"action":"probe_enable","number":1}' \
     '{"action":"probe_disable","number":1}' \
     '{"action":"probe_delete","number":1}'; do

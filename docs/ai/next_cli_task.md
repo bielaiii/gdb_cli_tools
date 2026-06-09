@@ -2,279 +2,218 @@
 
 ## 目标
 
-本轮集中完善 **MI parser / summary / sanitizer**，并补充丰富、不依赖 GDB 的测试用例。
+本轮进入一轮偏长的 **capability matrix hardening**：用真实 Linux + GDB flow
+扩展 catchpoint/probe 能力，校准真实 GDB 输出下的 evidence/report/artifact 链路，并补齐
+Agent 长会话排查时最容易依赖的一组回归覆盖。
 
-这是 Phase 5「深度摘要和高级 MI」的一轮重点任务。目标不是引入新的 Agent-facing action，
-而是让已有 evidence summary 更稳定、更低噪声、更适合 AI Agent 使用，同时保证 raw evidence
-和 session MI log 仍然是审计来源。
+这轮任务可以做得比普通小任务更久、更完整，但必须仍然围绕一个闭环：
 
-本轮可以比普通小任务更完整，但仍要保持边界清楚：聚焦 `src/gdb/mi_utils.*`、
-`src/common/string_utils.*`、`src/evidence/evidence_store.*` 中与 MI 解析、summary 和 sanitizer
-直接相关的逻辑，以及对应测试和文档。不要顺手重构 CLI、daemon、replay、probe 或 hypothesis。
+1. 扩展 `catchpoint_set` 支持更多实用 catchpoint event。
+2. 扩展 `examples/capability_fixture.cpp` 和 Linux smoke，让真实 GDB 停点覆盖更多 stop reason。
+3. 确认每个新增路径都会产生可审计 raw evidence、低噪声 summary、probe metadata、session summary
+   和 report 引用。
+4. 同步更新 Agent-facing 文档、MVP acceptance、known limitations、progress 和 handoff。
+
+不要把本轮做成大规模架构重构。可以在现有 `src/cli.cpp` / `src/gdb` / `src/evidence`
+结构内做必要的小型 helper，但不要拆 action dispatcher、不要重写 daemon 协议、不要引入大型依赖。
 
 ## 背景
 
 当前已有能力：
 
-- `parse_mi_value` 支持递归解析 string、tuple、list 和 bare value。
-- `audit_mi_records` 能分类 result、async、stream 和 prompt，并记录 token/class/stream type。
-- `summarize_mi_records` 能输出基础 `result:done` / `async:stopped` 摘要。
-- `sanitize_output` 已覆盖：
-  - `std::string` spelling 归一化
-  - allocator/default_delete 噪声压缩
-  - `std::map` / `std::unordered_map` 常见模板压缩
-  - `std::pair<const K, V>` / `std::pair<K const, V>` key const 压缩
-  - working directory path 相对化
-- `EvidenceStore` 已对 backtrace/thread 做简单 human summary，并保留 raw/summary/view/index。
-- `tests/mi_summary_tests.cpp` 已有基础覆盖。
+- Run Mode / Core Dump Mode / daemon live session 已有 smoke 和 CTest 覆盖。
+- `catchpoint_set` 当前支持：
+  - `event:"throw"` -> GDB `catch throw`
+  - `event:"catch"` -> GDB `catch catch`
+- breakpoint/watchpoint/catchpoint 都复用 probe metadata、on-hit policy、probe hit evidence、
+  `probe_list` 和 finish-time `assets/probes.json`。
+- `scripts/smoke_capability_matrix.sh` 已覆盖真实 breakpoint/watchpoint、throw/catch catchpoint、
+  raw MI、hypothesis、replay、stdin/env/stdout/stderr、thread crash 和 core dump flow。
+- summary/sanitizer 已增强，但仍需要更多真实 GDB 输出校准。
 
 当前短板：
 
-- MI parser 对边界格式覆盖还不够丰富。
-- MI record summary 对真实 GDB result/async payload 的字段选择不够 Agent-friendly。
-- sanitizer 主要靠若干 regex，复杂 STL/nested template 仍容易残留噪声。
-- backtrace/thread summarizer 对真实 GDB 输出变体覆盖有限。
-- 测试用例数量偏少，没有形成覆盖矩阵。
+- catchpoint 仍只覆盖 C++ exception throw/catch，缺少 syscall、fork/exec 等常见调试事件。
+- capability fixture 对不同 stop reason 的真实 GDB/MI 输出覆盖还可以更系统。
+- report / evidence index / probes / session summary 的一致性检查可以更深入，尤其是新增 stop reason
+  对应的 evidence kind、probe kind/event、hit count 和 report 引用。
+- `docs/known_limitations.md` 里“其他 catchpoint event 尚未实现”的限制需要随着实现更新。
 
 ## 范围
 
-### 1. 强化 MI value parser
+### 1. 扩展 catchpoint_set event
 
-完善 `src/gdb/mi_utils.cpp` / `.hpp` 中的 MI value parser。
+在现有 `catchpoint_set` 基础上，新增一组稳定、Linux + GDB 下常见且适合自动 smoke 的 event。
 
-至少覆盖并测试：
+优先实现：
 
-- tuple：
-  - 空 tuple：`{}`
-  - 多字段 tuple
-  - nested tuple
-  - 字段名包含 `-` 和 `_`
-- list：
-  - 空 list：`[]`
-  - value list：`["a","b"]`
-  - result list：`[frame={...},frame={...}]`
-  - 混合 list：`["x",{name="y"},item={value="z"}]`
-  - nested list
-- string：
-  - escaped quote：`\"`
-  - escaped backslash：`\\`
-  - newline/tab/carriage return：`\n`、`\t`、`\r`
-  - empty string
-  - strings containing braces/brackets/commas that must not be parsed structurally
-- bare value：
-  - `true` / `false`
-  - `0x0`
-  - `<optimized out>`
-  - `<unavailable>`
-  - bare text with spaces until delimiter
-- invalid input：
-  - unterminated string
-  - missing `=`
-  - missing closing brace/list
-  - trailing garbage
-  - empty input
+- `event:"syscall"`，默认映射到 `catch syscall`。
+- `event:"syscall"` + `name` 或 `syscall` 字段，映射到指定 syscall，例如 `catch syscall write`。
+- `event:"fork"`，映射到 `catch fork`。
+- `event:"vfork"`，映射到 `catch vfork`。
+- `event:"exec"`，映射到 `catch exec`。
 
-要求：
+字段设计建议：
 
-- invalid input 必须稳定返回 `std::nullopt`，不能 throw。
-- parser 不需要成为完整 GDB/MI 规范实现，但要比当前更稳健。
-- 不改变 raw evidence 保存逻辑。
-
-### 2. 改进 MI record audit 和 summary
-
-增强 `audit_mi_records` 和 `summarize_mi_records`，让 summary 对 Agent 更有用。
-
-至少覆盖并测试：
-
-- record kind：
-  - result：`^done`、`^running`、`^error`
-  - exec async：`*stopped`、`*running`
-  - notify async：`=thread-created`、`=thread-exited`、`=breakpoint-modified`
-  - stream：`~`、`@`、`&`
-  - prompt：`(gdb)`
-  - unknown line
-- token：
-  - numeric token 被记录
-  - 无 token 时为空字符串
-  - malformed prefix 不误判为 token
-- result/error payload summary：
-  - `msg`
-  - `value`
-  - `frame`
-  - `bkpt`
-  - `wpt`
-  - `reason`
-  - `thread-id`
-  - `stopped-threads`
-- async stopped summary：
-  - breakpoint hit
-  - watchpoint trigger
-  - signal received
-  - exited normally
-  - exited with code
-- stream summary：
-  - console/target/log stream 的 payload 应能被 decoded_streams 保留
-  - `summarize_mi_records` 可以继续只摘要 result/async，但 tests 要确认 stream 不被误分类
-
-建议输出口径：
-
-- 保持低噪声单行 summary。
-- 不要把巨大 payload 完整塞入 summary；需要有字段数量、深度或长度限制。
-- 对 `^error,msg="..."` 明确展示 error message。
-- 对 `*stopped,reason="..."` 明确展示 reason、frame func/file/line、thread id 等关键字段。
-
-### 3. 强化 C++ sanitizer
-
-增强 `sanitize_output`，优先做对 AI token 成本最有帮助且风险低的归一化。
-
-至少覆盖并测试：
-
-- string：
-  - `std::__cxx11::basic_string<...>` -> `std::string`
-  - `std::basic_string<...>` -> `std::string`
-  - spacing 变体
-- vector/list/deque/set：
-  - 去掉常见 allocator 噪声
-  - 保留核心类型参数
-- map/unordered_map：
-  - 去掉 comparator/hash/equality/allocator 噪声
-  - 覆盖 key 为 `std::string`、value 为用户类型或智能指针的常见形式
-- smart pointer：
-  - `std::unique_ptr<T, std::default_delete<T>>` -> `std::unique_ptr<T>`
-  - `std::shared_ptr<T>` / `std::weak_ptr<T>` spacing 归一化
-- optional/variant/tuple/pair：
-  - spacing 归一化
-  - pair const-key 噪声继续稳定压缩
-- paths：
-  - working directory 下路径相对化
-  - `build/../src/file.cpp` 这类路径尽量 normalize 到稳定形式
-  - 不要错误改写不在 working directory 下的系统路径
-- whitespace/template closers：
-  - 归一化 `< T >`、`,T`、`> >`
-  - 避免生成难读的 `std::map<int,std::string>`；优先 `std::map<int, std::string>`
-
-要求：
-
-- sanitizer 是低噪声视图，不是完整 demangler；不要承诺完整 C++ 类型语义解析。
-- raw evidence 必须保持不变。
-- 如果 regex 方案开始变脆，可以增加小型 template string scanner/helper，但不要引入大型依赖。
-
-### 4. 改进 backtrace/thread summarizer
-
-增强 `src/evidence/evidence_store.cpp` 中 backtrace/thread summary 的稳定性。
-
-至少覆盖并测试：
-
-- backtrace：
-  - 普通 frame：`#0 func(args) at file:line`
-  - frame 没有 file/line
-  - frame 使用 `from /lib/...so`
-  - `??`
-  - `inlined` 或 GDB 输出中包含额外注释时不崩溃
-  - `thread apply all bt` 中包含 `Thread N ...` header 时，summary 保留线程边界
-  - frame truncation 行为稳定
-- threads：
-  - current thread `*`
-  - normal thread
-  - thread name
-  - LWP id
-  - stopped/running frame
-  - header line 不进入 summary
-  - truncation 行为稳定
-
-要求：
-
-- summary 应尽量输出 frame number、function、file:line 或 shared library 来源。
-- 如果无法解析，回退保留原 line 的低噪声版本，而不是丢失重要信息。
-- 不要让 summary 误导 Agent：无法提取的字段可以省略，不要猜。
-
-### 5. 丰富测试用例
-
-重点扩展 `tests/mi_summary_tests.cpp`。如果单文件过大，可以拆分为多个测试文件并更新
-`CMakeLists.txt`，例如：
-
-- `tests/mi_parser_tests.cpp`
-- `tests/mi_record_summary_tests.cpp`
-- `tests/sanitizer_tests.cpp`
-- `tests/evidence_summary_tests.cpp`
-
-但如果拆分会造成 CMake 噪声过多，可以继续保留单个测试文件，内部按 section 函数组织。
-
-测试要求：
-
-- 不依赖系统 GDB。
-- 不依赖当前机器路径，使用临时目录或固定 `/tmp/project` 字符串。
-- 覆盖成功路径和失败路径。
-- 每个新增 parser/sanitizer/summarizer 行为都要有断言。
-- 测试失败信息要足够定位问题。
-- 保留现有测试语义，不删除已有覆盖。
-
-建议测试结构：
-
-```cpp
-static void test_mi_value_parser();
-static void test_mi_record_audit();
-static void test_mi_record_summary();
-static void test_cpp_sanitizer();
-static void test_backtrace_summary();
-static void test_thread_summary();
-static void test_evidence_store_integration();
+```json
+{"action":"catchpoint_set","event":"syscall","name":"write"}
+{"action":"catchpoint_set","event":"syscall","syscall":"write"}
+{"action":"catchpoint_set","event":"fork"}
+{"action":"catchpoint_set","event":"vfork"}
+{"action":"catchpoint_set","event":"exec"}
 ```
 
-### 6. 文档同步
+要求：
 
-根据实际变更同步更新：
+- 保持 `event:"throw"` 和 `event:"catch"` 兼容不变。
+- `syscall` 的 selector 字段优先接受字符串；如果当前代码风格更适合，也可以接受数字 syscall id。
+- 对 syscall selector 做保守校验：不能为空，不能包含 shell/control 字符，不允许拼接任意 GDB 命令。
+- unsupported event 或非法 selector 必须返回 `ok:false`，写 `ToolError` evidence。
+- Core Dump Mode 下新增 catchpoint event 必须继续被 state guard 拒绝，并写 `ToolError` evidence。
+- action response、probe metadata、probe hit evidence、`probe_list` 和 `assets/probes.json`
+  都要能看出 catchpoint 的 `event` 和可选 selector。
+- 如果 GDB 在某些环境不支持某个 catchpoint command，不要伪装成功：返回 `ok:false`，
+  并通过 command evidence / ToolError 保留 GDB 原始拒绝信息。
 
-- `docs/evidence_model.md`
-- `docs/evidence_model.en.md`
+### 2. 扩展 capability fixture
+
+扩展 `examples/capability_fixture.cpp`，新增确定性的模式，用于触发新增 catchpoint。
+
+建议新增模式：
+
+- `syscall`：执行一次或多次稳定 syscall，优先选择 `write`，因为 fixture 已有 stdout/stderr。
+- `fork`：执行 `fork()`，父进程等待子进程退出，子进程立即 `_exit(0)`。
+- `exec`：执行一个可控、低风险的 `exec` 路径。优先考虑：
+  - `fork()` 子进程中 `execl("/bin/true", "true", nullptr)`；
+  - 或执行当前 fixture 自身的一个 `exec-child` 模式，避免依赖复杂外部程序。
+- `vfork`：如果实现成本和稳定性可控则覆盖；如果环境差异太大，可以实现 action 支持但在 smoke
+  中降级为 best-effort，并在 handoff 解释。
+
+要求：
+
+- fixture 只用于测试，不要引入复杂业务逻辑。
+- Linux-only 代码可用 `#ifdef __linux__` 隔离；非 Linux 构建不能失败。
+- 不要让 fork/exec 测试遗留后台进程。
+- 输出尽量短、稳定，避免污染 smoke 断言。
+
+### 3. 扩展真实 Linux smoke
+
+重点扩展 `scripts/smoke_capability_matrix.sh`。如果单个脚本过长且难维护，可以新增
+`scripts/smoke_catchpoint_matrix.sh` 并在 `CMakeLists.txt` 加入 CTest。
+
+必须覆盖：
+
+- `catchpoint_set event:"syscall"` 成功或稳定失败路径。
+- `catchpoint_set event:"syscall"` + selector，例如 `write`。
+- `catchpoint_set event:"fork"`。
+- `catchpoint_set event:"exec"`。
+- unsupported event 稳定 `ok:false` + `ToolError` evidence。
+- 非法 syscall selector 稳定 `ok:false` + `ToolError` evidence。
+- Core Dump Mode 下新增动态 catchpoint event 被 state guard 拒绝。
+- `probe_list` 中新增 catchpoint 的 metadata：
+  - `kind:"catchpoint"`
+  - `event`
+  - selector/name/syscall（如果有）
+  - comment/purpose
+  - hit count
+- finish 后：
+  - `assets/probes.json` 含新增 catchpoint metadata。
+  - `assets/session_summary.json` 的 probe hit count / evidence count 与 index 一致。
+  - `assets/evidence/index.json` 中相关 raw/view/summary 文件存在。
+  - report 引用的 evidence id 都能在 index 中找到。
+
+建议覆盖但可按环境稳定性取舍：
+
+- 验证 `CatchpointHit` evidence 对新增 event 能归属到对应 probe。
+- 验证新增 catchpoint 的 on-hit policy 能执行至少一个低风险 action，例如 `threads` 或 `backtrace`。
+- 验证 `continue_after_hit:true` 在 syscall catchpoint 上不会造成无限停住；如果 syscall 太频繁，
+  选择更稳定的 event 或限制动作序列。
+
+注意：
+
+- `catch syscall` 可能在同一次 syscall 的 entry/return 都停住；smoke 断言不要假设只命中一次。
+- `fork` / `exec` 可能改变 inferior/process 状态；测试要用独立 session，避免影响现有 probe flow。
+- 如果某个 GDB/平台组合返回“不支持”，脚本可以将该 event 记录为 skip/best-effort，但必须仍覆盖
+  action 的稳定失败语义和 evidence 链路。不要让测试随机失败。
+
+### 4. 校准 evidence / summary / report
+
+新增 catchpoint event 后，检查并必要时改进：
+
+- `CatchpointHit` evidence summary 是否能表达 event 和 selector。
+- `probe_list` response 是否足够让 Agent 区分不同 catchpoint。
+- `assets/probes.json` 是否保留新增 event/selector/comment/purpose/deleted/hit_count。
+- `session_summary.json` 是否继续准确统计：
+  - `evidence_count`
+  - `probe_hit_count`
+  - `on_hit_action_count`
+  - `on_hit_error_count`
+  - `tool_error_count`
+- Markdown report 的 Probes / Tool Errors / Limitations 区域是否仍然引用正确 evidence。
+- raw MI、session log、raw evidence 文件仍然保留，summary 只作为有损视图。
+
+不要新增“自动根因”或让工具替 Agent 下结论。
+
+### 5. 文档同步
+
+根据实际实现同步更新：
+
+- `docs/agent_actions.md`
+- `docs/agent_actions.en.md`
 - `docs/known_limitations.md`
+- `docs/mvp_acceptance.md`
+- `docs/evidence_model.md`，仅当 evidence/report 字段或语义发生变化
+- `docs/evidence_model.en.md`，同上
+- `README.md`，仅当 quick demo / action 列表明显过期
 - `docs/ai/progress.md`
 - `docs/ai/handoff.md`
 
 文档口径：
 
-- Summary 是更强的有损低噪声视图，不能替代 raw evidence。
-- Sanitizer 仍不是完整 C++ demangler。
-- MI parser 覆盖增强，但 raw MI 是最终审计来源。
-- 如果新增测试 target，在 README 或 MVP acceptance 中确认回归入口仍然准确。
+- 新增 catchpoint event 是高层 action 能力扩展，不改变 raw evidence 优先原则。
+- syscall/fork/exec/vfork 是 Linux + GDB live session 能力；Core Dump Mode 仍是静态取证。
+- 如果某个 event 在部分 GDB 环境中不支持，应说明工具会返回结构化失败和 evidence，而不是保证所有
+  GDB 版本都可用。
 
-仅当产生新的项目级决策时才更新：
+仅当本轮引入新的项目级设计决策时才更新：
 
 - `docs/ai/decision.md`
 
-预计本轮不需要新增 decision，因为这属于既有 D004 raw-first summary 设计下的增强。
+预计本轮大概率不需要新增 decision；它属于既有 D003/D004/D007/D011 下的能力扩展。
 
 ## 可写范围
 
 允许修改：
 
+- `src/cli.cpp`
+- `src/gdb/gdb_session.cpp`
+- `src/gdb/gdb_session.hpp`，仅当 catchpoint command helper 需要调整
 - `src/gdb/mi_utils.cpp`
-- `src/gdb/mi_utils.hpp`
-- `src/common/string_utils.cpp`
-- `src/common/string_utils.hpp`
+- `src/gdb/mi_utils.hpp`，仅当真实 GDB 输出需要 parser/summary 小修
 - `src/evidence/evidence_store.cpp`
-- `src/evidence/evidence_store.hpp`，仅当 summary helper 接口确有必要调整
-- `tests/mi_summary_tests.cpp`
-- 其他新增 `tests/*_tests.cpp`，如确实需要拆分
-- `CMakeLists.txt`，仅当新增测试 target 时
-- `docs/evidence_model.md`
-- `docs/evidence_model.en.md`
+- `src/evidence/evidence_store.hpp`，仅当 catchpoint evidence 字段/summary 确有必要调整
+- `src/report/report.cpp`
+- `src/report/report.hpp`，仅当 report 聚合需展示新增信号
+- `examples/capability_fixture.cpp`
+- `scripts/smoke_capability_matrix.sh`
+- 新增 `scripts/smoke_catchpoint_matrix.sh`，如确实比塞进现有脚本更清楚
+- `CMakeLists.txt`，仅当新增测试 target 或 CTest
+- `tests/*`，如需要新增不依赖 GDB 的 selector/parser/helper 单元测试
+- `docs/agent_actions.md`
+- `docs/agent_actions.en.md`
 - `docs/known_limitations.md`
-- `docs/mvp_acceptance.md`，仅当测试入口变化
-- `README.md`，仅当测试入口变化
+- `docs/mvp_acceptance.md`
+- `docs/evidence_model.md` / `.en.md`，仅当 evidence 语义变化
+- `README.md`，仅当 action/demo 列表需要同步
 - `docs/ai/progress.md`
 - `docs/ai/handoff.md`
-- `docs/ai/decision.md`，仅当产生项目级决策
+- `docs/ai/decision.md`，仅当新增项目级 decision
 
 不要修改：
 
-- `src/cli.cpp`，除非发现必须适配已有 summary API 的小改动
-- daemon/session/replay/probe/hypothesis 行为
-- action schema
-- evidence raw 文件布局
-- report 大结构
-- `docs/ai/current_goal.md`
-- `docs/ai/next_cli_task.md`，除非执行中发现任务口径必须修正
+- `docs/ai/current_goal.md`，除非执行中发现阶段目标必须调整。
+- `docs/ai/next_cli_task.md`，除非执行中发现任务口径本身必须修正。
+- 与本轮无关的格式化、重命名或全仓重构。
 
 ## 验证
 
@@ -282,52 +221,50 @@ static void test_evidence_store_integration();
 
 ```bash
 cmake --build build
-./build/mi_summary_tests
 ./build/gdb-agent check examples/segfault_task.md
+ctest --test-dir build --output-on-failure
 git diff --check
 ```
 
-如果新增了测试 target，也要运行对应测试二进制，例如：
+如果新增了单独测试 target 或脚本，也要直接运行它，例如：
 
 ```bash
-./build/mi_parser_tests
-./build/mi_record_summary_tests
-./build/sanitizer_tests
-./build/evidence_summary_tests
+./build/<new_test_target>
+scripts/smoke_catchpoint_matrix.sh
 ```
 
-如果当前环境支持，也运行：
+Linux + GDB 环境下，必须确认新增 catchpoint flow 的 smoke 实际运行，而不是只被 skip。
+如果当前机器缺少 GDB、权限不足、`catch syscall`/`catch fork`/`catch exec` 在该 GDB 版本不支持，
+必须在 `docs/ai/handoff.md` 和最终回复中记录：
 
-```bash
-ctest --test-dir build --output-on-failure
-```
+- 哪些验证已运行。
+- 哪些验证被 skip 或降级为 best-effort。
+- 原因是工具 bug、环境限制，还是 GDB capability 差异。
 
-本轮主体不依赖 GDB；如果 Linux + GDB smoke 未运行，要在 `docs/ai/handoff.md` 和最终回复中说明。
+## 完成标准
 
-提交前确认：
+本轮完成时应满足：
 
-```bash
-git status --short
-```
+- `catchpoint_set` 至少新增 `syscall`、`fork`、`exec` 三类 event 的 action 支持或稳定失败语义。
+- `throw` / `catch` 既有行为和文档不回退。
+- 新增 event 的 selector 校验不会让 Agent 拼接任意 GDB command。
+- capability fixture 有真实触发新增 event 的模式。
+- Linux smoke 覆盖新增 event 的 set/list/hit/finish/report/artifact 链路；环境不支持的路径有稳定 skip
+  或稳定 `ok:false` 断言。
+- Core Dump Mode guard 覆盖新增动态 catchpoint event。
+- 文档同步说明新增 event、限制和 evidence/report 行为。
+- `docs/ai/progress.md` 记录本轮实际完成内容。
+- `docs/ai/handoff.md` 覆写为本轮交接，包含验证结果和遗留限制。
+- 本轮相关文件被单独 staged、commit，并 push 到当前分支 upstream；如果 commit/push 失败，按
+  AGENTS.md 要求记录原因。
 
-## 不做
+## 禁止事项
 
-- 不新增 Agent-facing action。
-- 不扩展 catchpoint event。
-- 不扩展 hypothesis assertion。
-- 不改 replay/probe/on-hit 语义。
-- 不改变 raw evidence 保存原则。
-- 不把 summary 当作 raw 的替代品。
-- 不引入完整 C++ demangler 或大型第三方依赖。
-- 不做 `src/cli.cpp` 大重构。
-- 不做全仓格式化。
-
-## 提交要求
-
-这是一轮完整 Execution task。完成后需要：
-
-1. 更新 `docs/ai/progress.md` 和 `docs/ai/handoff.md`。
-2. 只 stage 本轮相关文件。
-3. 创建一次 git commit。
-4. 推送当前分支到 upstream；如果没有 upstream，推送到当前分支的同名远程分支。
-5. 如果 commit 或 push 因网络、认证、权限或远程配置失败，在 `docs/ai/handoff.md` 和最终回复中记录原因。
+- 不实现 PTY。
+- 不支持交互式 inferior stdin。
+- 不把 snapshot 设计成 live session 恢复文件。
+- 不把工具输出改成自动根因结论。
+- 不新增独立 Batch Mode。
+- 不把 `raw_mi` 放宽为普通 action。
+- 不为了本轮 catchpoint 扩展重写 replay/probe/hypothesis/report 的整体架构。
+- 不提交 generated report/assets 临时目录，除非明确是仓库中已有的示例 artifact。

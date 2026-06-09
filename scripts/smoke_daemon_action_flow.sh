@@ -103,7 +103,7 @@ require_contains "$probe_response" '"ok":true'
 require_contains "$probe_response" '"kind":"catchpoint"'
 require_contains "$probe_response" '"event":"throw"'
 
-invalid_response="$("$agent" action S1 '{"action":"catchpoint_set","event":"syscall"}' --socket "$socket_path")"
+invalid_response="$("$agent" action S1 '{"action":"catchpoint_set","event":"not-real"}' --socket "$socket_path")"
 require_contains "$invalid_response" '"ok":false'
 require_contains "$invalid_response" '"action":"catchpoint_set"'
 require_contains "$invalid_response" '"error":"unsupported catchpoint event"'

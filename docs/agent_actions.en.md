@@ -43,6 +43,9 @@ Supported action lines are intentionally small in MVP form:
 {"action":"watchpoint_set","expression":"global_counter","condition":"global_counter > 10"}
 {"action":"catchpoint_set","event":"throw"}
 {"action":"catchpoint_set","event":"catch"}
+{"action":"catchpoint_set","event":"syscall","name":"write"}
+{"action":"catchpoint_set","event":"fork"}
+{"action":"catchpoint_set","event":"exec"}
 {"action":"probe_list"}
 {"action":"probe_disable","number":1}
 {"action":"probe_enable","number":1}
@@ -120,16 +123,36 @@ probe, so agents do not mistake historical probes for live ones. Final
 `assets/probes.json` may still retain deleted history, but deleted entries are
 marked with `deleted:true`.
 
-The current catchpoint action supports C++ exception throws and catches:
+The catchpoint action supports C++ exception, Linux syscall, fork/vfork, and
+exec events:
 
 ```json
 {"action":"catchpoint_set","event":"throw","comment":"stop on C++ throw","purpose":"exception path"}
 {"action":"catchpoint_set","event":"catch","comment":"stop on C++ catch","purpose":"exception handler path"}
+{"action":"catchpoint_set","event":"syscall","comment":"stop on any syscall","purpose":"syscall path"}
+{"action":"catchpoint_set","event":"syscall","name":"write","comment":"stop on write syscall","purpose":"I/O path"}
+{"action":"catchpoint_set","event":"syscall","syscall":"write","comment":"stop on write syscall","purpose":"I/O path"}
+{"action":"catchpoint_set","event":"fork","comment":"stop on fork","purpose":"process creation"}
+{"action":"catchpoint_set","event":"vfork","comment":"stop on vfork","purpose":"process creation"}
+{"action":"catchpoint_set","event":"exec","comment":"stop on exec","purpose":"exec path"}
 ```
 
 `event:"throw"` maps to GDB `catch throw`, and `event:"catch"` maps to GDB
-`catch catch`. Other `event` values return stable `ok:false` output and write
-`ToolError` evidence.
+`catch catch`. `event:"syscall"` maps to `catch syscall`; with `name` or
+`syscall`, it maps to `catch syscall <selector>`. `event:"fork"`,
+`event:"vfork"`, and `event:"exec"` map to their matching GDB catch commands.
+
+The syscall selector may be a string syscall name or an integer syscall id.
+String selectors only allow letters, digits, and underscores, so arbitrary GDB
+console fragments cannot be appended to the command. Action responses,
+`probe_list`, `assets/probes.json`, and `CatchpointHit` evidence record both
+`event` and `selector`; when no selector is provided, `selector` is an empty
+string.
+
+Other `event` values or invalid syscall selectors return stable `ok:false`
+output and write `ToolError` evidence. If a Linux/GDB environment does not
+support one of these catch commands, the tool returns a structured failure and
+keeps the raw command evidence instead of pretending success.
 
 ```json
 {

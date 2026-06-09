@@ -157,9 +157,9 @@ Probe 的运行期权威状态是内存中的 `ProbeState`。`assets/probes.json
 明确标记，避免把历史 probe 误认为仍然 live。
 
 Probe 命中 evidence（`BreakpointHit`、`WatchpointHit`、`CatchpointHit`）会保存当次命中的
-必要 metadata 快照，例如 number、kind、location/expression/event、condition、comment、
-purpose、hit count 和 `on_hit_policy`。即使 session 异常结束，这些命中 evidence 仍能解释
-当时为什么停住。
+必要 metadata 快照，例如 number、kind、location/expression/event、catchpoint selector、
+condition、comment、purpose、hit count 和 `on_hit_policy`。即使 session 异常结束，这些命中
+evidence 仍能解释当时为什么停住。
 如果 watchpoint stop record 缺少 probe number，工具只会在唯一 active watchpoint 可判断时
 归属并执行 on-hit；无法唯一归属时会记录降级 watchpoint evidence，不伪造 probe number。
 

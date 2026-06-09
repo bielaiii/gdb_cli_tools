@@ -38,7 +38,7 @@
   - `evaluate`
   - `breakpoint_set`
   - `watchpoint_set`
-  - `catchpoint_set`（`event: "throw"` / `event: "catch"`）
+  - `catchpoint_set`（`event: "throw"` / `"catch"` / `"syscall"` / `"fork"` / `"vfork"` / `"exec"`）
   - `probe_list`
   - `probe_enable`
   - `probe_disable`
@@ -55,7 +55,7 @@
 - Replay JSONL 和结构化 replay plan 输出。
 - `--replay-before-run`。
 - breakpoint/watchpoint metadata、condition、comment、purpose、on-hit action。
-- 最小 catchpoint metadata、on-hit action 和 `CatchpointHit` evidence。
+- catchpoint metadata、可选 syscall selector、on-hit action 和 `CatchpointHit` evidence。
 - hypothesis 记录文件和 `hypotheses/index.json`。
 - action state guard，非法状态下记录 `ToolError` evidence。
 - CTest 覆盖 README demo check；daemon/action live flow 有 Linux + GDB smoke 脚本，
@@ -539,10 +539,37 @@ optional/variant/tuple/pair 和工作目录路径归一化。`raw_mi` 已作为�
 - 同步更新 `docs/evidence_model.md`、`docs/evidence_model.en.md` 和
   `docs/known_limitations.md`。
 
+## 2026-06-09 本轮更新（catchpoint matrix hardening）
+
+- 扩展 `catchpoint_set`：
+  - 新增 `event:"syscall"`，映射到 GDB `catch syscall`。
+  - `event:"syscall"` 支持 `name` 或 `syscall` selector，映射到 `catch syscall <selector>`。
+  - 新增 `event:"fork"` / `"vfork"` / `"exec"`，分别映射到对应 GDB catch command。
+  - syscall selector 支持字符串名或整数 id；字符串只允许字母、数字和下划线，避免拼接任意
+    GDB console command。
+- Probe metadata 新增 `selector` 字段；action response、`probe_list`、finish-time
+  `assets/probes.json` 和 `CatchpointHit` evidence 都会记录 catchpoint `event` 与 selector。
+- 扩展 `examples/capability_fixture.cpp`，新增 `syscall`、`fork` 和 `exec` 模式，稳定触发
+  新增 catchpoint event；非 Linux 构建用条件编译保持可构建。
+- 新增 `scripts/smoke_catchpoint_matrix.sh` 和 CTest `catchpoint_matrix_flow`：
+  - 使用 `--replay-before-run` 在 initial run 前设置 catchpoint。
+  - Linux + GDB 下真实覆盖 generic syscall、`write` syscall selector、fork 和 exec 命中。
+  - 验证 `probe_list` metadata、`CatchpointHit` evidence、`assets/probes.json`、
+    `session_summary.json`、report evidence 引用和 raw/view/summary 文件存在。
+  - 覆盖 unsupported event、非法 syscall selector 和 `syscall` selector 字段别名。
+- 扩展 `scripts/smoke_capability_matrix.sh` 的 Core Dump Mode guard，确认新增动态 catchpoint event
+  在 core mode 下继续被拒绝并写 `ToolError` evidence。
+- 更新 `scripts/smoke_daemon_action_flow.sh`，旧 unsupported catchpoint 负例从 `syscall` 改为
+  `not-real`，避免与新增能力冲突。
+- 同步更新 `docs/agent_actions.md`、`docs/agent_actions.en.md`、`docs/evidence_model.md`、
+  `docs/evidence_model.en.md`、`docs/known_limitations.md` 和 `docs/mvp_acceptance.md`。
+- 本轮未新增项目级 decision；属于既有高层 action、raw evidence 优先和 probe metadata 决策下的能力扩展。
+
 ## 建议的下一步
 
 1. 用真实 Linux GDB raw 输出继续校准 MI parser、类型 sanitizer 和 backtrace/thread summary。
-2. 补 `throw` / `catch` 以外的 catchpoint 事件。
+2. 视目标环境稳定性，为 `vfork` 增加真实 hit smoke，或记录不同 GDB/target 组合的 catchpoint
+   capability 差异。
 3. 按真实调试需求继续扩展 hypothesis assertion，例如 float、changed 或跨 check 历史比较。
 4. 增加更多真实项目 core/replay/probe fixture，覆盖 core dump 兼容性、失败策略、
    watchpoint/catchpoint on-hit 和跨 assets 目录报告展示。

@@ -69,6 +69,7 @@ struct ProbeState {
         std::string stop_reason;
         std::string signal_name;
         std::string event;
+        std::string selector;
         std::string location;
         std::string expression;
         std::string condition;
@@ -83,6 +84,7 @@ struct ProbeState {
         std::string number;
         std::string kind;
         std::string event;
+        std::string selector;
         std::string location;
         std::string expression;
         std::string condition;
@@ -572,6 +574,40 @@ static const Json *json_field(const Json &action, const std::string &key) {
     return params == nullptr ? nullptr : params->find(key);
 }
 
+static std::string json_selector_field(const Json &action, const std::string &key) {
+    const Json *field = json_field(action, key);
+    if (field == nullptr || field->is_null()) {
+        return {};
+    }
+    if (field->is_string()) {
+        return field->string_value;
+    }
+    if (field->is_number()) {
+        if (field->number_value < 0) {
+            return {};
+        }
+        long long value = static_cast<long long>(field->number_value);
+        if (field->number_value != static_cast<double>(value)) {
+            return {};
+        }
+        return std::to_string(value);
+    }
+    return {};
+}
+
+static bool valid_syscall_selector(const std::string &selector) {
+    if (selector.empty()) {
+        return false;
+    }
+    for (char ch : selector) {
+        unsigned char c = static_cast<unsigned char>(ch);
+        if (!(std::isalnum(c) || ch == '_')) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static std::string json_action_array(const std::vector<std::string> &actions) {
     std::ostringstream out;
     out << "[";
@@ -632,6 +668,7 @@ static void write_probe_snapshot(GdbSession &session, const ProbeState &probe_st
         out << "      \"number\": " << json_escape(probe.number) << ",\n";
         out << "      \"kind\": " << json_escape(probe.kind) << ",\n";
         out << "      \"event\": " << json_escape(probe.event) << ",\n";
+        out << "      \"selector\": " << json_escape(probe.selector) << ",\n";
         out << "      \"location\": " << json_escape(probe.location) << ",\n";
         out << "      \"expression\": " << json_escape(probe.expression) << ",\n";
         out << "      \"condition\": " << json_escape(probe.condition) << ",\n";
@@ -655,6 +692,7 @@ static std::string probe_info_json(const ProbeState::ProbeInfo &probe) {
     out << "\"number\":" << json_escape(probe.number) << ",";
     out << "\"kind\":" << json_escape(probe.kind) << ",";
     out << "\"event\":" << json_escape(probe.event) << ",";
+    out << "\"selector\":" << json_escape(probe.selector) << ",";
     out << "\"location\":" << json_escape(probe.location) << ",";
     out << "\"expression\":" << json_escape(probe.expression) << ",";
     out << "\"condition\":" << json_escape(probe.condition) << ",";
@@ -849,6 +887,7 @@ static ProbeState::ProbeHitSnapshot prepare_probe_hit(ProbeState &probe_state,
         probe.last_stop_reason = result.stop_reason;
         hit.known_probe = true;
         hit.event = probe.event;
+        hit.selector = probe.selector;
         hit.location = probe.location;
         hit.expression = probe.expression;
         hit.condition = probe.condition;
@@ -1135,6 +1174,7 @@ static void record_probe_hit(GdbSession &session,
         text << "  \"location\": " << json_escape(hit.location) << ",\n";
         text << "  \"expression\": " << json_escape(hit.expression) << ",\n";
         text << "  \"event\": " << json_escape(hit.event) << ",\n";
+        text << "  \"selector\": " << json_escape(hit.selector) << ",\n";
         text << "  \"condition\": " << json_escape(hit.condition) << ",\n";
         text << "  \"comment\": " << json_escape(hit.comment) << ",\n";
         text << "  \"purpose\": " << json_escape(hit.purpose) << ",\n";
@@ -1558,10 +1598,41 @@ static void handle_action_line(GdbSession &session,
             return;
         }
         std::string command;
+        std::string selector;
         if (event == "throw") {
             command = "catch throw";
         } else if (event == "catch") {
             command = "catch catch";
+        } else if (event == "syscall") {
+            const Json *name_field = json_field(action, "name");
+            const Json *syscall_field = json_field(action, "syscall");
+            if (name_field != nullptr && !name_field->is_null()) {
+                selector = json_selector_field(action, "name");
+            } else if (syscall_field != nullptr && !syscall_field->is_null()) {
+                selector = json_selector_field(action, "syscall");
+            }
+            if ((name_field != nullptr && !name_field->is_null()) ||
+                (syscall_field != nullptr && !syscall_field->is_null())) {
+                if (!valid_syscall_selector(selector)) {
+                    auto error_ev = add_tool_error(session,
+                                                   "Catchpoint set failed",
+                                                   "catchpoint_set",
+                                                   "invalid syscall selector");
+                    out << "{\"ok\":false,\"action\":\"catchpoint_set\","
+                        << "\"error\":\"invalid syscall selector\","
+                        << "\"event\":" << json_escape(event)
+                        << ",\"selector\":" << json_escape(selector)
+                        << ",\"evidence\":" << json_escape(error_ev.id) << "}\n";
+                    return;
+                }
+            }
+            command = selector.empty() ? "catch syscall" : "catch syscall " + selector;
+        } else if (event == "fork") {
+            command = "catch fork";
+        } else if (event == "vfork") {
+            command = "catch vfork";
+        } else if (event == "exec") {
+            command = "catch exec";
         } else {
             auto error_ev = add_tool_error(session,
                                            "Catchpoint set failed",
@@ -1595,6 +1666,7 @@ static void handle_action_line(GdbSession &session,
                                            number.empty() ? "GDB did not return a catchpoint number" : "GDB rejected the catchpoint");
             out << "{\"ok\":false,\"action\":\"catchpoint_set\",\"error\":\"failed to set catchpoint\","
                 << "\"event\":" << json_escape(event)
+                << ",\"selector\":" << json_escape(selector)
                 << ",\"command_evidence\":" << json_escape(ev.id)
                 << ",\"evidence\":" << json_escape(error_ev.id) << "}\n";
             return;
@@ -1604,6 +1676,7 @@ static void handle_action_line(GdbSession &session,
         probe.number = number;
         probe.kind = "catchpoint";
         probe.event = event;
+        probe.selector = selector;
         probe.location = command;
         probe.comment = json_string_field(action, "comment");
         probe.purpose = json_string_field(action, "purpose");
@@ -1611,6 +1684,7 @@ static void handle_action_line(GdbSession &session,
         probe_state.probes_by_number[number] = std::move(probe);
         out << "{\"ok\":true,\"action\":\"catchpoint_set\",\"catchpoint\":" << json_escape(number)
             << ",\"event\":" << json_escape(event)
+            << ",\"selector\":" << json_escape(selector)
             << ",\"evidence\":" << json_escape(ev.id) << "}\n";
         return;
     }

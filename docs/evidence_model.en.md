@@ -165,9 +165,9 @@ with `deleted:true` so historical probes are not confused with live probes.
 
 Probe hit evidence (`BreakpointHit`, `WatchpointHit`, `CatchpointHit`) stores
 the relevant metadata snapshot for that hit, such as number, kind,
-location/expression/event, condition, comment, purpose, hit count, and
-`on_hit_policy`. This keeps the stop context explainable even if the session
-exits unexpectedly.
+location/expression/event, catchpoint selector, condition, comment, purpose,
+hit count, and `on_hit_policy`. This keeps the stop context explainable even if
+the session exits unexpectedly.
 If a watchpoint stop record lacks a probe number, the tool attributes the hit
 and runs on-hit actions only when exactly one active watchpoint can be
 identified. If the stop cannot be uniquely attributed, the tool records
