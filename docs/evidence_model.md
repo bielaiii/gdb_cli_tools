@@ -244,6 +244,8 @@ raw hash，方便 Agent 验证报告引用的 raw 文件没有变化。
 Raw 文件和 session MI log 是审计时的权威来源；summary 是低噪声、有损视图，只适合作为
 Agent 上下文入口。
 
-Summary 层会做有限降噪，例如 C++ `std::string` 类型归一化、常见 allocator/comparator/hash
-噪声压缩、`std::pair<const K, V>` key const 噪声压缩、路径相对化，以及 backtrace/thread 的
-稳定摘要。所有这些都不修改 raw MI。
+Summary 层会做有限降噪，例如 C++ `std::string` / `std::string_view` 类型归一化、常见默认
+allocator/comparator/hash/equality/default deleter 噪声压缩、`std::array` / `std::function` /
+`std::chrono::*` spacing 和 ratio 噪声归一化、`std::pair<const K, V>` key const 噪声压缩、
+路径相对化，以及 backtrace/thread 的稳定摘要。自定义 deleter、allocator、comparator、hash
+和 equality 类型会保留，因为它们可能是调试线索。所有这些都不修改 raw MI。

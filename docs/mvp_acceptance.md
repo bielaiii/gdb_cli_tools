@@ -154,6 +154,7 @@ git diff --check
 ```bash
 ./build/hypothesis_assertion_tests
 ./build/mi_summary_tests
+./build/type_sanitizer_tests
 ./build/replay_plan_tests
 ./build/task_parser_tests
 ```
@@ -165,7 +166,8 @@ ctest --test-dir build --output-on-failure
 ```
 
 当前 Linux + GDB 环境下，CTest 应实际运行 daemon/action、core dump、edge case、capability
-matrix 和 catchpoint matrix smoke。没有 GDB 的环境需要明确说明 live smoke 未运行或被跳过的原因。
+matrix、catchpoint matrix 和 type sanitizer smoke。没有 GDB 的环境需要明确说明 live smoke
+未运行或被跳过的原因。
 
 ## 非阻塞限制
 

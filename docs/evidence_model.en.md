@@ -260,6 +260,10 @@ Reports now include each evidence item's raw hash so an Agent can verify that
 the cited raw file still matches the report.
 
 The summary layer applies limited noise reduction, including C++ `std::string`
-normalization, common allocator/comparator/hash compression,
+/ `std::string_view` normalization, common default
+allocator/comparator/hash/equality/default-deleter compression, `std::array` /
+`std::function` / `std::chrono::*` spacing and ratio normalization,
 `std::pair<const K, V>` key-const compression, relative path shortening, and
-stable backtrace/thread summaries. None of these transformations modify raw MI.
+stable backtrace/thread summaries. Custom deleter, allocator, comparator, hash,
+and equality types are preserved because they may be debugging clues. None of
+these transformations modify raw MI.

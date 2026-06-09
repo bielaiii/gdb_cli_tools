@@ -54,6 +54,18 @@ target_compile_options(capability_fixture PRIVATE
     -O0
 )
 
+add_executable(type_sanitizer_fixture
+    examples/type_sanitizer_fixture.cpp
+)
+
+target_compile_options(type_sanitizer_fixture PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+    -g
+    -O0
+)
+
 add_executable(mi_summary_tests
     tests/mi_summary_tests.cpp
     src/common/string_utils.cpp
@@ -62,6 +74,17 @@ add_executable(mi_summary_tests
 )
 
 target_compile_options(mi_summary_tests PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+)
+
+add_executable(type_sanitizer_tests
+    tests/type_sanitizer_tests.cpp
+    src/common/string_utils.cpp
+)
+
+target_compile_options(type_sanitizer_tests PRIVATE
     -Wall
     -Wextra
     -Wpedantic
@@ -144,8 +167,20 @@ add_test(
 )
 
 add_test(
+    NAME type_sanitizer_flow
+    COMMAND /bin/bash ${CMAKE_SOURCE_DIR}/scripts/smoke_type_sanitizer.sh
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
+add_test(
     NAME mi_summary_tests
     COMMAND mi_summary_tests
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
+add_test(
+    NAME type_sanitizer_tests
+    COMMAND type_sanitizer_tests
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 

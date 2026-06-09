@@ -102,6 +102,13 @@ run timeout ms: 30000
 ctest --test-dir build --output-on-failure
 ```
 
+不依赖 GDB 的 summary/sanitizer 回归可以单独运行：
+
+```bash
+./build/mi_summary_tests
+./build/type_sanitizer_tests
+```
+
 这个 demo 足够小：`main` 创建 `Session *session = nullptr`，然后一路传入
 `read_session_value`，最终访问 `session->value`。对应的源码层面定位报告在：
 

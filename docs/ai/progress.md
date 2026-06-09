@@ -565,9 +565,37 @@ optional/variant/tuple/pair 和工作目录路径归一化。`raw_mi` 已作为�
   `docs/evidence_model.en.md`、`docs/known_limitations.md` 和 `docs/mvp_acceptance.md`。
 - 本轮未新增项目级 decision；属于既有高层 action、raw evidence 优先和 probe metadata 决策下的能力扩展。
 
+## 2026-06-09 本轮更新（type sanitizer hardening）
+
+- 收敛 C++ type sanitizer 的策略压缩语义：
+  - 默认 `std::allocator<T>`、`std::less<T>`、`std::hash<T>`、`std::equal_to<T>` 和
+    `std::default_delete<T>` 只在对应 STL 容器 / `unique_ptr` 上下文中压缩。
+  - 自定义 deleter、allocator、comparator、hash 和 equality 类型默认保留，不再通过全局 regex
+    误删。
+  - map/unordered_map/set/vector/list/deque/unique_ptr 遇到不认识的策略类型时保留完整参数。
+- 增强 sanitizer 支持：
+  - `std::basic_string_view<char, std::char_traits<char>>` -> `std::string_view`。
+  - `std::array<T, N>`、`std::function<R(Args...)>`、`std::ratio<N, D>`、
+    `std::chrono::duration<Rep, Period>` 和
+    `std::chrono::time_point<Clock, Duration>` 的 spacing / ratio 噪声归一化。
+  - template arg splitter 现在识别函数类型括号，避免把 `std::function<int(A, B)>` 的参数逗号误判为
+    template 分隔符。
+- 新增 `tests/type_sanitizer_tests.cpp` 和 CMake target / CTest `type_sanitizer_tests`，覆盖默认策略压缩、
+  自定义策略保留、新类型支持、nested 组合和真实 GDB 输出抽取出的代表性字符串。
+- 新增 `examples/type_sanitizer_fixture.cpp`，用真实类型字段覆盖默认 STL 策略、自定义策略、
+  `std::string_view`、`std::array`、`std::function`、`std::chrono::duration` 和
+  `std::chrono::time_point`。
+- 新增 `scripts/smoke_type_sanitizer.sh` 和 CTest `type_sanitizer_flow`，Linux + GDB 下通过
+  `raw_mi` / `ptype` 抓真实类型输出，并验证 summary 中默认策略被降噪、自定义策略仍可见，以及
+  finish 后 report/evidence index 文件引用一致。
+- 同步更新 `README.md`、`docs/evidence_model.md`、`docs/evidence_model.en.md`、
+  `docs/known_limitations.md` 和 `docs/mvp_acceptance.md`。
+- 本轮未新增项目级 decision；raw evidence、session log 和 raw 文件布局不变，sanitizer 仍只是有损
+  summary/view 增强。
+
 ## 建议的下一步
 
-1. 用真实 Linux GDB raw 输出继续校准 MI parser、类型 sanitizer 和 backtrace/thread summary。
+1. 用更多真实 Linux GDB raw 输出继续校准 MI parser 和 backtrace/thread summary。
 2. 视目标环境稳定性，为 `vfork` 增加真实 hit smoke，或记录不同 GDB/target 组合的 catchpoint
    capability 差异。
 3. 按真实调试需求继续扩展 hypothesis assertion，例如 float、changed 或跨 check 历史比较。
