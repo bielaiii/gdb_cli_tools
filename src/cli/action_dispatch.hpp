@@ -4,9 +4,10 @@
 #include "action_context.hpp"
 
 #include "../gdb/command_result.hpp"
+#include "../replay/replay_runtime.hpp"
+#include "../workflow/probe_runtime.hpp"
 
 #include <chrono>
-#include <filesystem>
 #include <map>
 #include <string>
 
@@ -28,10 +29,4 @@ void update_outcome_from_stop(SessionOutcome &outcome, const CommandResult &resu
 void collect_stop_followup(GdbSession &session,
                            SessionOutcome &outcome,
                            const CommandResult &result);
-std::vector<ActionResult> handle_probe_stop(ActionContext &context, const CommandResult &result);
-void write_probe_snapshot(GdbSession &session, const ProbeState &probe_state);
 void flush_inferior_output(GdbSession &session, SessionOutcome &outcome);
-ActionOutput replay_action_file(ActionContext &context,
-                                const std::filesystem::path &path,
-                                bool force = false,
-                                const std::string &failure_policy_override = "");

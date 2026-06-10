@@ -11,6 +11,7 @@ add_executable(gdb-agent
     src/cli.cpp
     src/cli/action.cpp
     src/cli/action_dispatch.cpp
+    src/replay/replay_runtime.cpp
     src/common/json.cpp
     src/common/string_utils.cpp
     src/evidence/evidence_store.cpp
@@ -22,6 +23,8 @@ add_executable(gdb-agent
     src/task/debug_task.cpp
     src/workflow/crash_workflow.cpp
     src/workflow/hypothesis.cpp
+    src/workflow/hypothesis_store.cpp
+    src/workflow/probe_runtime.cpp
 )
 
 target_compile_options(gdb-agent PRIVATE

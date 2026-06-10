@@ -704,14 +704,41 @@ optional/variant/tuple/pair 和工作目录路径归一化。`raw_mi` 已作为�
   replay plan schema、report schema 或 raw evidence 文件布局。
 - 本轮未新增项目级 decision；属于 D012 typed action boundary 下的物理模块拆分。
 
+## 2026-06-10 本轮更新（probe/replay/hypothesis runtime split）
+
+- 执行 `docs/ai/next_cli_task.md` 中的 1-3 架构拆分任务，保持行为和外部 schema 不变：
+  - 新增 `src/workflow/probe_runtime.hpp` / `src/workflow/probe_runtime.cpp`。
+  - 新增 `src/replay/replay_runtime.hpp` / `src/replay/replay_runtime.cpp`。
+  - 新增 `src/workflow/hypothesis_store.hpp` / `src/workflow/hypothesis_store.cpp`。
+- `ProbeState` 不再定义在 `src/cli/action_context.hpp`：
+  - probe metadata、hit attribution、probe snapshot、on-hit action 执行和 probe list result
+    生成移入 `probe_runtime`。
+  - `ProbeState` 继续保存 probe runtime 状态，并通过 typed `ActionRequest` /
+    `ActionOutput` 执行 on-hit action；没有引入内部 JSON/string action 协议。
+- replay 执行从 `src/cli/action_dispatch.cpp` 移入 `replay_runtime`：
+  - JSONL/plan 读取、step execution、failure policy、ReplayStep/ReplayRun evidence 和最终
+    replay result 构造集中到 replay runtime。
+  - `save_action` 仍复用现有 replay plan schema，`replay_runtime` 提供
+    `rebuild_replay_plan_from_jsonl`。
+- hypothesis markdown/index 持久化从 action dispatch 移入 `hypothesis_store`：
+  - `HypothesisStore` 保存 hypothesis records 和 id counter。
+  - `hypothesis_file_for`、`write_hypothesis_index`、append markdown helper 集中在 store 模块。
+  - action dispatch 只保留 action payload 校验、GDB evidence collection 和对 store API 的调用。
+- `src/cli/action_dispatch.cpp` 现在聚焦 typed action dispatch switch，不再承载完整 probe/on-hit
+  runtime、replay execution runtime 或 hypothesis store persistence。
+- 更新 `CMakeLists.txt`，将三个新 runtime/store 源文件接入 `gdb-agent` target。
+- 保持外部行为兼容：未改变用户可见 action schema、response schema、evidence schema/raw 文件布局、
+  replay plan schema、report schema、CLI 语法、GDB/MI parser、type sanitizer 或 hypothesis
+  assertion 语义。
+- 本轮未新增项目级 decision；属于 D012 typed action boundary 下的物理模块拆分。
+
 ## 建议的下一步
 
-1. 继续渐进拆分 `src/cli/action_dispatch.cpp` 中的 probe/on-hit runtime，形成独立
-   `probe_runtime` 模块。
-2. 拆分 replay execution 到独立 `replay_runtime` 模块，保留 `replay_plan` 专注 artifact schema。
-3. 继续收集不同 GDB 版本和真实项目 core 的 raw 输出，扩展 MI summary fixture 覆盖面。
-4. 视目标环境稳定性，为 `vfork` 增加真实 hit smoke，或记录不同 GDB/target 组合的 catchpoint
+1. 继续收集不同 GDB 版本和真实项目 core 的 raw 输出，扩展 MI summary fixture 覆盖面。
+2. 视目标环境稳定性，为 `vfork` 增加真实 hit smoke，或记录不同 GDB/target 组合的 catchpoint
    capability 差异。
-5. 按真实调试需求继续扩展 hypothesis assertion，例如 float、changed 或跨 check 历史比较。
-6. 增加更多真实项目 core/replay/probe fixture，覆盖 core dump 兼容性、失败策略、
+3. 按真实调试需求继续扩展 hypothesis assertion，例如 float、changed 或跨 check 历史比较。
+4. 增加更多真实项目 core/replay/probe fixture，覆盖 core dump 兼容性、失败策略、
    watchpoint/catchpoint on-hit 和跨 assets 目录报告展示。
+5. 后续若继续架构收敛，可把 session lifecycle / daemon client glue 从 `src/cli.cpp` 继续拆出；
+   本轮未触碰该范围。
