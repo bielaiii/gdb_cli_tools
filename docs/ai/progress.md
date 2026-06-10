@@ -634,6 +634,32 @@ optional/variant/tuple/pair 和工作目录路径归一化。`raw_mi` 已作为�
 - 说明：本轮完成了 typed action boundary 和 replay/on-hit 去 response 文本反解析；更深层的
   probe runtime、session runtime、daemon/client 物理拆分仍可在后续小步重构中继续推进。
 
+## 2026-06-10 本轮更新（remove remaining action string transports）
+
+- 继续落实 D012，将 action/on-hit/replay 的内部传输从 JSON/string/ostream 协议推进到 typed
+  request/result：
+  - `ActionRequest` 改为 `std::variant` typed payload，不再持有 raw `Json on_hit` 或
+    `Json saved_action`。
+  - `ActionResult` 删除 generic `Json fields` 和 `std::vector<Json> prelude_responses`；
+    固定字段使用明确成员，半开放 response metadata 使用 `ResultField` / `ResultObject` /
+    `ResultArray` 结构化 KV。
+  - 新增 `ActionOutput { prelude, final }` 表达 on-hit/replay 的多行兼容输出，最终只在
+    CLI/daemon 边界 dump JSON 行。
+- 删除旧 `handle_action_line_legacy` / `handle_action_line` 字符串 handler 和 response 文本
+  反解析 wrapper；action 分发改为 `dispatch_action(..., const ActionRequest&) -> ActionOutput`。
+- on-hit policy 运行期改为保存 typed `ActionRequest`，执行时直接调用 typed dispatcher；
+  timeout/deadline 注入通过 typed payload 的 default 标记完成，不再 parse/dump action JSON。
+  `continue_after_hit` 也改为构造 typed continue request。
+- replay runtime 引入 typed `ReplayActionStep`，structured plan、JSONL 和 legacy single-action
+  文件读取后立即转换为 typed action；step 执行不再接收 action JSON string。
+- `write_replay_plan` 内部 API 改为接收 `std::vector<ActionRequest>`，写文件时才把 typed action
+  dump 成现有 `gdb-agent-replay-plan-v1` JSON schema；`replay_plan_tests` 同步使用 typed
+  action 调用 writer。
+- 保持外部行为兼容：CLI/daemon action JSON schema、response 字段、evidence schema、replay
+  plan schema、report schema 和 raw evidence 文件布局未改。
+- 同步更新 D012，明确请求侧已知 payload 使用 typed struct；结果侧天然半开放 metadata 可以保留
+  结构化 KV，但不能用 JSON 文本或 generic `Json` AST 当内部协议。
+
 ## 建议的下一步
 
 1. 用更多真实 Linux GDB raw 输出继续校准 MI parser 和 backtrace/thread summary。

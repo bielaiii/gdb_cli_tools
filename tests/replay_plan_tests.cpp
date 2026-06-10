@@ -36,6 +36,10 @@ static DebugTask make_task(const std::string &problem, const std::string &args) 
     return task;
 }
 
+static ActionRequest action_from_text(const std::string &text) {
+    return parse_action_request(parse_json(text));
+}
+
 int main() {
     try {
         DebugTask task = make_task("segfault in callback", "crash");
@@ -43,7 +47,8 @@ int main() {
                              ("gdb-agent-replay-plan-test-" + std::to_string(getpid()) + ".json");
         write_replay_plan(plan_path,
                           "bt checks",
-                          {R"({"action":"backtrace"})", R"({"action":"args_info"})"},
+                          {action_from_text(R"({"action":"backtrace"})"),
+                           action_from_text(R"({"action":"args_info"})")},
                           &task,
                           "S1",
                           kReplayPolicyStop,

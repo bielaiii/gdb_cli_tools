@@ -41,15 +41,7 @@ struct CliOptions {
 };
 
 struct ProbeState {
-    struct OnHitPolicy {
-        bool configured = false;
-        std::vector<std::string> actions;
-        int timeout_ms = 5000;
-        int max_output_bytes = 8192;
-        int max_summary_lines = 80;
-        std::string failure_policy = "continue_on_error";
-        bool continue_after_hit = false;
-    };
+    using OnHitPolicy = OnHitPolicyRequest;
 
     struct OnHitActionResult {
         int index = 0;
@@ -163,19 +155,23 @@ static CliOptions parse_cli(int argc, char **argv) {
     return opts;
 }
 
-static ActionResult handle_action_line(GdbSession &session,
+static ActionOutput handle_action_request(GdbSession &session,
+                                          const DebugTask *task,
+                                          SessionOutcome *outcome,
+                                          ProbeState &probe_state,
+                                          const ActionRequest &request);
+static ActionOutput handle_action_json(GdbSession &session,
                                        const DebugTask *task,
                                        SessionOutcome *outcome,
                                        ProbeState &probe_state,
-                                       const std::string &line);
-static void replay_action_file(GdbSession &session,
-                               const DebugTask *task,
-                               SessionOutcome *outcome,
-                               ProbeState &probe_state,
-                               const fs::path &path,
-                               std::ostream &out,
-                               bool force = false,
-                               const std::string &failure_policy_override = "");
+                                       const Json &action);
+static ActionOutput replay_action_file(GdbSession &session,
+                                       const DebugTask *task,
+                                       SessionOutcome *outcome,
+                                       ProbeState &probe_state,
+                                       const fs::path &path,
+                                       bool force = false,
+                                       const std::string &failure_policy_override = "");
 static std::string json_escape(const std::string &s);
 static std::string json_string_array(const std::vector<std::string> &items);
 static std::string json_string_map(const std::map<std::string, std::string> &items);
@@ -239,25 +235,6 @@ static Evidence add_action_tool_error(GdbSession &session,
     return session.evidence_store().add_text("ToolError", title, action_name, text.str());
 }
 
-static void write_action_error(GdbSession &session,
-                               std::ostream &out,
-                               const std::string &action_name,
-                               const std::string &message,
-                               const std::string &title = "Action validation failed",
-                               const std::map<std::string, std::string> &details = {}) {
-    auto ev = add_action_tool_error(session, title, action_name, message, details);
-    out << "{\"ok\":false";
-    if (!action_name.empty()) {
-        out << ",\"action\":" << json_escape(action_name);
-    }
-    out << ",\"error\":" << json_escape(message)
-        << ",\"evidence\":" << json_escape(ev.id);
-    for (const auto &[key, value] : details) {
-        out << "," << json_escape(key) << ":" << json_escape(value);
-    }
-    out << "}\n";
-}
-
 static std::string command_error_message(const CommandResult &result, const std::string &fallback) {
     for (const auto &raw : result.raw_lines) {
         std::string msg = field_value(raw, "msg");
@@ -269,26 +246,6 @@ static std::string command_error_message(const CommandResult &result, const std:
         return "GDB command timed out";
     }
     return fallback;
-}
-
-static bool write_console_action_error_if_needed(GdbSession &session,
-                                                 std::ostream &out,
-                                                 const std::string &action_name,
-                                                 const std::string &title,
-                                                 const CollectedConsoleEvidence &collected,
-                                                 const std::map<std::string, std::string> &details = {}) {
-    if (collected.result.result_class != "error" && !collected.result.timed_out) {
-        return false;
-    }
-    std::map<std::string, std::string> error_details = details;
-    error_details["command_evidence"] = collected.evidence.id;
-    write_action_error(session,
-                       out,
-                       action_name,
-                       command_error_message(collected.result, "GDB rejected " + action_name),
-                       title,
-                       error_details);
-    return true;
 }
 
 static std::string breakpoint_number_from(const CommandResult &result) {
@@ -519,80 +476,6 @@ static bool action_allowed_in_state(const SessionOutcome &outcome,
     return true;
 }
 
-static bool guard_action_state(GdbSession &session,
-                               const SessionOutcome *outcome,
-                               const std::string &action_name,
-                               std::ostream &out) {
-    if (outcome == nullptr) {
-        return true;
-    }
-    std::string reason;
-    if (action_allowed_in_state(*outcome, action_name, reason)) {
-        return true;
-    }
-
-    std::ostringstream evidence_text;
-    evidence_text << "{\n";
-    evidence_text << "  \"action\": " << json_escape(action_name) << ",\n";
-    evidence_text << "  \"state\": " << json_escape(std::string(session_state_name(outcome->state))) << ",\n";
-    evidence_text << "  \"reason\": " << json_escape(reason) << "\n";
-    evidence_text << "}\n";
-    auto ev = session.evidence_store().add_text("ToolError", "Action rejected by state guard", action_name, evidence_text.str());
-    out << "{\"ok\":false,\"action\":" << json_escape(action_name)
-        << ",\"state\":" << json_escape(std::string(session_state_name(outcome->state)))
-        << ",\"error\":" << json_escape(reason)
-        << ",\"evidence\":" << json_escape(ev.id) << "}\n";
-    return false;
-}
-
-static std::string json_string_field(const Json &action, const std::string &key) {
-    std::string value = action.string_or(key);
-    if (!value.empty()) {
-        return value;
-    }
-    const Json *params = action.find("params");
-    return params == nullptr ? "" : params->string_or(key);
-}
-
-static int json_int_field(const Json &action, const std::string &key, int fallback) {
-    const Json *direct = action.find(key);
-    if (direct != nullptr && direct->is_number()) {
-        return static_cast<int>(direct->number_value);
-    }
-    const Json *params = action.find("params");
-    return params == nullptr ? fallback : params->int_or(key, fallback);
-}
-
-static const Json *json_field(const Json &action, const std::string &key) {
-    const Json *direct = action.find(key);
-    if (direct != nullptr) {
-        return direct;
-    }
-    const Json *params = action.find("params");
-    return params == nullptr ? nullptr : params->find(key);
-}
-
-static std::string json_selector_field(const Json &action, const std::string &key) {
-    const Json *field = json_field(action, key);
-    if (field == nullptr || field->is_null()) {
-        return {};
-    }
-    if (field->is_string()) {
-        return field->string_value;
-    }
-    if (field->is_number()) {
-        if (field->number_value < 0) {
-            return {};
-        }
-        long long value = static_cast<long long>(field->number_value);
-        if (field->number_value != static_cast<double>(value)) {
-            return {};
-        }
-        return std::to_string(value);
-    }
-    return {};
-}
-
 static bool valid_syscall_selector(const std::string &selector) {
     if (selector.empty()) {
         return false;
@@ -606,14 +489,14 @@ static bool valid_syscall_selector(const std::string &selector) {
     return true;
 }
 
-static std::string json_action_array(const std::vector<std::string> &actions) {
+static std::string json_action_array(const std::vector<ActionRequestPtr> &actions) {
     std::ostringstream out;
     out << "[";
     for (size_t i = 0; i < actions.size(); ++i) {
         if (i != 0) {
             out << ",";
         }
-        out << actions[i];
+        out << (actions[i] ? dump_json(action_request_to_json(*actions[i])) : std::string("null"));
     }
     out << "]";
     return out.str();
@@ -630,10 +513,6 @@ static std::string json_string_vector(const std::vector<std::string> &items) {
     }
     out << "]";
     return out.str();
-}
-
-static bool valid_on_hit_failure_policy(const std::string &policy) {
-    return policy == "continue_on_error" || policy == "stop_on_error";
 }
 
 static std::string on_hit_policy_json(const ProbeState::OnHitPolicy &policy) {
@@ -721,103 +600,6 @@ static std::string probe_array_json(const ProbeState &probe_state, bool include_
     }
     out << "]";
     return out.str();
-}
-
-static const Json *on_hit_json_from(const Json &action) {
-    const Json *on_hit = action.find("on_hit");
-    if (on_hit == nullptr) {
-        const Json *params = action.find("params");
-        if (params != nullptr) {
-            on_hit = params->find("on_hit");
-        }
-    }
-    return on_hit;
-}
-
-static bool parse_on_hit_action(const Json &item,
-                                std::vector<std::string> &actions,
-                                std::string &error) {
-    if (!item.is_object()) {
-        error = "on_hit actions must be JSON objects";
-        return false;
-    }
-    std::string action_name = item.string_or("action");
-    if (action_name == "raw_mi") {
-        error = "on_hit raw_mi action is not allowed";
-        return false;
-    }
-    actions.push_back(dump_json(item));
-    return true;
-}
-
-static bool parse_on_hit_actions_array(const Json &actions_json,
-                                       std::vector<std::string> &actions,
-                                       std::string &error) {
-    if (!actions_json.is_array()) {
-        error = "on_hit actions must be an array";
-        return false;
-    }
-    for (const auto &item : actions_json.array_value) {
-        if (!parse_on_hit_action(item, actions, error)) {
-            return false;
-        }
-    }
-    return true;
-}
-
-static bool parse_on_hit_policy(const Json &action,
-                                ProbeState::OnHitPolicy &policy,
-                                std::string &error) {
-    const Json *on_hit = on_hit_json_from(action);
-    if (on_hit == nullptr || on_hit->is_null()) {
-        return true;
-    }
-
-    policy.configured = true;
-    if (on_hit->is_array()) {
-        return parse_on_hit_actions_array(*on_hit, policy.actions, error);
-    }
-    if (!on_hit->is_object()) {
-        error = "on_hit must be an array or policy object";
-        return false;
-    }
-
-    const Json *actions = on_hit->find("actions");
-    if (actions != nullptr && !parse_on_hit_actions_array(*actions, policy.actions, error)) {
-        return false;
-    }
-
-    if (const Json *timeout = on_hit->find("timeout_ms"); timeout != nullptr) {
-        if (!timeout->is_number() || timeout->number_value <= 0) {
-            error = "on_hit.timeout_ms must be a positive number";
-            return false;
-        }
-        policy.timeout_ms = static_cast<int>(timeout->number_value);
-    }
-    if (const Json *max_output = on_hit->find("max_output_bytes"); max_output != nullptr) {
-        if (!max_output->is_number() || max_output->number_value <= 0) {
-            error = "on_hit.max_output_bytes must be a positive number";
-            return false;
-        }
-        policy.max_output_bytes = static_cast<int>(max_output->number_value);
-    }
-    if (const Json *max_lines = on_hit->find("max_summary_lines"); max_lines != nullptr) {
-        if (!max_lines->is_number() || max_lines->number_value <= 0) {
-            error = "on_hit.max_summary_lines must be a positive number";
-            return false;
-        }
-        policy.max_summary_lines = static_cast<int>(max_lines->number_value);
-    }
-    std::string failure_policy = on_hit->string_or("failure_policy");
-    if (!failure_policy.empty()) {
-        if (!valid_on_hit_failure_policy(failure_policy)) {
-            error = "on_hit.failure_policy must be continue_on_error or stop_on_error";
-            return false;
-        }
-        policy.failure_policy = failure_policy;
-    }
-    policy.continue_after_hit = on_hit->bool_or("continue_after_hit", false);
-    return true;
 }
 
 static std::string truncate_on_hit_response(std::string text,
@@ -958,43 +740,12 @@ static std::vector<std::string> on_hit_result_error_ids(const std::vector<ProbeS
     return ids;
 }
 
-static std::string action_name_from_text(const std::string &action_text) {
-    try {
-        Json action = parse_json(action_text);
-        if (action.is_object()) {
-            return action.string_or("action");
-        }
-    } catch (const std::exception &) {
-    }
-    return {};
-}
-
-static void add_timeout_to_on_hit_action(std::string &action_text, int timeout_ms) {
-    Json action = parse_json(action_text);
-    if (!action.is_object()) {
-        return;
-    }
-    if (action.find("timeout_ms") == nullptr) {
-        Json timeout;
-        timeout.type = Json::Type::Number;
-        timeout.number_value = timeout_ms;
-        action.object_value["timeout_ms"] = timeout;
-    }
-    if (action.find("deadline_ms") == nullptr) {
-        Json deadline;
-        deadline.type = Json::Type::Number;
-        deadline.number_value = timeout_ms;
-        action.object_value["deadline_ms"] = deadline;
-    }
-    action_text = dump_json(action);
-}
-
 static ProbeState::OnHitActionResult add_on_hit_wrapper_evidence(
     GdbSession &session,
     const ProbeState::ProbeHitSnapshot &hit,
     const ProbeState::OnHitPolicy &policy,
     ProbeState::OnHitActionResult result,
-    const std::string &action_text,
+    const ActionRequest &action_request,
     const std::string &response_text) {
     std::ostringstream evidence_text;
     evidence_text << "{\n";
@@ -1005,7 +756,7 @@ static ProbeState::OnHitActionResult add_on_hit_wrapper_evidence(
     evidence_text << "  \"action_name\": " << json_escape(result.action_name) << ",\n";
     evidence_text << "  \"status\": " << json_escape(result.status) << ",\n";
     evidence_text << "  \"failure_policy\": " << json_escape(result.failure_policy) << ",\n";
-    evidence_text << "  \"action\": " << action_text << ",\n";
+    evidence_text << "  \"action\": " << dump_json(action_request_to_json(action_request)) << ",\n";
     evidence_text << "  \"action_evidence_ids\": " << json_string_vector(result.action_evidence_ids) << ",\n";
     evidence_text << "  \"error_evidence\": " << json_escape(result.error_evidence_id) << ",\n";
     evidence_text << "  \"error\": " << json_escape(result.error) << ",\n";
@@ -1031,7 +782,7 @@ static std::vector<ProbeState::OnHitActionResult> run_on_hit_actions(
     SessionOutcome *outcome,
     ProbeState &probe_state,
     const ProbeState::ProbeHitSnapshot &hit,
-    std::ostream &out) {
+    std::vector<ActionResult> &prelude) {
     std::vector<ProbeState::OnHitActionResult> results;
     const auto &policy = hit.on_hit_policy;
     if (hit.number.empty() || policy.actions.empty()) {
@@ -1043,7 +794,8 @@ static std::vector<ProbeState::OnHitActionResult> run_on_hit_actions(
         ProbeState::OnHitActionResult result;
         result.index = static_cast<int>(i + 1);
         result.failure_policy = policy.failure_policy;
-        result.action_name = action_name_from_text(policy.actions[i]);
+        const ActionRequestPtr &configured_action = policy.actions[i];
+        result.action_name = configured_action ? configured_action->action : "";
         if (result.action_name.empty()) {
             result.action_name = "unknown";
         }
@@ -1051,16 +803,26 @@ static std::vector<ProbeState::OnHitActionResult> run_on_hit_actions(
         if (stop_remaining) {
             result.status = "skipped";
             result.skip_reason = "previous on_hit action failed with stop_on_error";
-            result = add_on_hit_wrapper_evidence(session, hit, policy, std::move(result), policy.actions[i], "");
+            if (configured_action) {
+                result = add_on_hit_wrapper_evidence(session, hit, policy, std::move(result), *configured_action, "");
+            }
             results.push_back(std::move(result));
             continue;
         }
 
-        std::string action_text = policy.actions[i];
-        add_timeout_to_on_hit_action(action_text, policy.timeout_ms);
+        if (!configured_action) {
+            result.status = "failed";
+            result.error = "missing on_hit action";
+            results.push_back(std::move(result));
+            continue;
+        }
+        ActionRequest action_request = with_timeout_defaults(*configured_action, policy.timeout_ms);
         size_t evidence_start = session.evidence_store().all().size();
-        ActionResult action_result = handle_action_line(session, task, outcome, probe_state, action_text);
-        std::string response_text = action_result_line(action_result);
+        ActionOutput action_output = handle_action_request(session, task, outcome, probe_state, action_request);
+        std::string response_text = action_output_text(action_output);
+        prelude.insert(prelude.end(), action_output.prelude.begin(), action_output.prelude.end());
+        prelude.push_back(action_output.final);
+        const ActionResult &action_result = action_output.final;
         result.action_evidence_ids = evidence_ids_since(session, evidence_start);
         if (!action_result.ok) {
             result.status = "failed";
@@ -1075,8 +837,7 @@ static std::vector<ProbeState::OnHitActionResult> run_on_hit_actions(
         } else {
             result.status = "success";
         }
-        out << response_text;
-        result = add_on_hit_wrapper_evidence(session, hit, policy, std::move(result), action_text, response_text);
+        result = add_on_hit_wrapper_evidence(session, hit, policy, std::move(result), action_request, response_text);
         results.push_back(std::move(result));
     }
 
@@ -1085,11 +846,16 @@ static std::vector<ProbeState::OnHitActionResult> run_on_hit_actions(
         result.index = static_cast<int>(results.size() + 1);
         result.action_name = "continue_after_hit";
         result.failure_policy = policy.failure_policy;
-        std::ostringstream action_text;
-        action_text << "{\"action\":\"continue\",\"deadline_ms\":" << policy.timeout_ms << "}";
+        ActionRequest action_request;
+        action_request.kind = ActionKind::Continue;
+        action_request.action = "continue";
+        action_request.payload = ContinuePayload{policy.timeout_ms, true};
         size_t evidence_start = session.evidence_store().all().size();
-        ActionResult action_result = handle_action_line(session, task, outcome, probe_state, action_text.str());
-        std::string response_text = action_result_line(action_result);
+        ActionOutput action_output = handle_action_request(session, task, outcome, probe_state, action_request);
+        std::string response_text = action_output_text(action_output);
+        prelude.insert(prelude.end(), action_output.prelude.begin(), action_output.prelude.end());
+        prelude.push_back(action_output.final);
+        const ActionResult &action_result = action_output.final;
         result.action_evidence_ids = evidence_ids_since(session, evidence_start);
         if (!action_result.ok) {
             result.status = "failed";
@@ -1101,8 +867,7 @@ static std::vector<ProbeState::OnHitActionResult> run_on_hit_actions(
         } else {
             result.status = "success";
         }
-        out << response_text;
-        result = add_on_hit_wrapper_evidence(session, hit, policy, std::move(result), action_text.str(), response_text);
+        result = add_on_hit_wrapper_evidence(session, hit, policy, std::move(result), action_request, response_text);
         results.push_back(std::move(result));
     }
 
@@ -1154,20 +919,21 @@ static void record_probe_hit(GdbSession &session,
                                       text.str());
 }
 
-static void handle_probe_stop(GdbSession &session,
-                              const DebugTask *task,
-                              SessionOutcome *outcome,
-                              ProbeState &probe_state,
-                              const CommandResult &result,
-                              std::ostream &out) {
+static std::vector<ActionResult> handle_probe_stop(GdbSession &session,
+                                                   const DebugTask *task,
+                                                   SessionOutcome *outcome,
+                                                   ProbeState &probe_state,
+                                                   const CommandResult &result) {
+    std::vector<ActionResult> prelude;
     auto hit = prepare_probe_hit(probe_state, result);
     if (outcome != nullptr && !hit.number.empty()) {
         outcome->state = SessionState::Stopped;
         outcome->stop_reason = hit.stop_reason;
         outcome->signal_name = hit.signal_name;
     }
-    auto on_hit_results = run_on_hit_actions(session, task, outcome, probe_state, hit, out);
+    auto on_hit_results = run_on_hit_actions(session, task, outcome, probe_state, hit, prelude);
     record_probe_hit(session, hit, on_hit_results);
+    return prelude;
 }
 
 static std::string next_hypothesis_id(ProbeState &probe_state) {
@@ -1236,20 +1002,24 @@ static void write_hypothesis_index(GdbSession &session, const ProbeState &probe_
     write_text_file(path, out.str());
 }
 
-static std::vector<std::string> load_replay_jsonl_actions(const fs::path &path) {
+static std::vector<ActionRequest> load_replay_jsonl_actions(const fs::path &path) {
     std::ifstream in(path);
     if (!in) {
         throw std::runtime_error("failed to open replay file: " + path.string());
     }
 
-    std::vector<std::string> actions;
+    std::vector<ActionRequest> actions;
     std::string line;
     while (std::getline(in, line)) {
         line = trim(line);
         if (line.empty() || line[0] == '#') {
             continue;
         }
-        actions.push_back(line);
+        Json action = parse_json(line);
+        if (!action.is_object()) {
+            throw std::runtime_error("replay JSONL action must be an object: " + path.string());
+        }
+        actions.push_back(parse_action_request(action));
     }
     return actions;
 }
@@ -1276,870 +1046,769 @@ static void append_text(const fs::path &path, const std::string &text) {
     out << text;
 }
 
-static void handle_action_line_legacy(GdbSession &session,
-                                      const DebugTask *task,
-                                      SessionOutcome *outcome,
-                                      ProbeState &probe_state,
-                                      const std::string &line,
-                                      bool &finished,
-                                      std::ostream &out) {
-    if (trim(line).empty()) {
-        return;
-    }
-    Json action;
-    try {
-        action = parse_json(line);
-    } catch (const std::exception &ex) {
-        write_action_error(session, out, "", std::string("invalid json: ") + ex.what());
-        return;
-    }
-    std::string action_name = action.string_or("action");
-    if (action_name.empty()) {
-        write_action_error(session, out, "", "missing action");
-        return;
-    }
-    if (!guard_action_state(session, outcome, action_name, out)) {
-        return;
-    }
-
-    if (action_name == "finish_session" || action_name == "finish") {
-        if (outcome != nullptr) {
-            std::string inference = json_string_field(action, "agent_inference");
-            std::string conclusion = json_string_field(action, "final_conclusion");
-            if (conclusion.empty()) {
-                conclusion = json_string_field(action, "final_agent_conclusion");
-            }
-            if (!inference.empty()) {
-                outcome->agent_inference = inference;
-            }
-            if (!conclusion.empty()) {
-                outcome->final_agent_conclusion = conclusion;
-            }
-        }
-        finished = true;
-        return;
-    }
-    if (action_name == "backtrace") {
-        auto collected = collect_console_with_result(session, "Backtrace", "bt", true, std::chrono::milliseconds(json_int_field(action, "timeout_ms", 5000)));
-        if (write_console_action_error_if_needed(session, out, "backtrace", "Backtrace failed", collected)) {
-            return;
-        }
-        out << "{\"ok\":true,\"action\":\"backtrace\",\"evidence\":" << json_escape(collected.evidence.id) << "}\n";
-        return;
-    }
-    if (action_name == "locals") {
-        auto collected = collect_console_with_result(session, "Local variables", "info locals", false, std::chrono::milliseconds(json_int_field(action, "timeout_ms", 5000)));
-        if (write_console_action_error_if_needed(session, out, "locals", "Locals failed", collected)) {
-            return;
-        }
-        out << "{\"ok\":true,\"action\":\"locals\",\"evidence\":" << json_escape(collected.evidence.id) << "}\n";
-        return;
-    }
-    if (action_name == "args_info") {
-        auto collected = collect_console_with_result(session, "Frame arguments", "info args", false, std::chrono::milliseconds(json_int_field(action, "timeout_ms", 5000)));
-        if (write_console_action_error_if_needed(session, out, "args_info", "Frame arguments failed", collected)) {
-            return;
-        }
-        out << "{\"ok\":true,\"action\":\"args_info\",\"evidence\":" << json_escape(collected.evidence.id) << "}\n";
-        return;
-    }
-    if (action_name == "registers") {
-        auto collected = collect_console_with_result(session, "Registers", "info registers", false, std::chrono::milliseconds(json_int_field(action, "timeout_ms", 5000)));
-        if (write_console_action_error_if_needed(session, out, "registers", "Registers failed", collected)) {
-            return;
-        }
-        out << "{\"ok\":true,\"action\":\"registers\",\"evidence\":" << json_escape(collected.evidence.id) << "}\n";
-        return;
-    }
-    if (action_name == "threads") {
-        auto collected = collect_console_with_result(session, "Threads", "info threads", false, std::chrono::milliseconds(json_int_field(action, "timeout_ms", 5000)));
-        if (write_console_action_error_if_needed(session, out, "threads", "Threads failed", collected)) {
-            return;
-        }
-        out << "{\"ok\":true,\"action\":\"threads\",\"evidence\":" << json_escape(collected.evidence.id) << "}\n";
-        return;
-    }
-    if (action_name == "frame_select") {
-        int frame = json_int_field(action, "frame", 0);
-        std::string console_command = "frame " + std::to_string(frame);
-        auto result = session.command("-interpreter-exec console " + mi_quote(console_command),
-                                      std::chrono::milliseconds(json_int_field(action, "timeout_ms", 5000)));
-        auto ev = session.evidence_store().add("GdbCommand", "Frame select", console_command, result.raw_lines, false, result.record_sequences);
-        if (result.result_class == "error" || result.timed_out) {
-            write_action_error(session,
-                               out,
-                               "frame_select",
-                               command_error_message(result, "GDB rejected frame_select"),
-                               "Frame select failed",
-                               {{"command_evidence", ev.id}, {"frame", std::to_string(frame)}});
-            return;
-        }
-        out << "{\"ok\":true,\"action\":\"frame_select\",\"frame\":" << frame
-            << ",\"evidence\":" << json_escape(ev.id) << "}\n";
-        return;
-    }
-    if (action_name == "evaluate") {
-        std::string expr = json_string_field(action, "expression");
-        if (expr.empty()) {
-            write_action_error(session, out, "evaluate", "missing expression");
-            return;
-        }
-        std::string console_command = "p " + expr;
-        auto result = session.command("-interpreter-exec console " + mi_quote(console_command),
-                                      std::chrono::milliseconds(json_int_field(action, "timeout_ms", 5000)));
-        auto ev = session.evidence_store().add("GdbCommand", "Evaluate", console_command, result.raw_lines, false, result.record_sequences);
-        if (result.result_class == "error" || result.timed_out) {
-            write_action_error(session,
-                               out,
-                               "evaluate",
-                               command_error_message(result, "GDB rejected evaluate"),
-                               "Evaluate failed",
-                               {{"command_evidence", ev.id}, {"expression", expr}});
-            return;
-        }
-        out << "{\"ok\":true,\"action\":\"evaluate\",\"evidence\":" << json_escape(ev.id) << "}\n";
-        return;
-    }
-    if (action_name == "breakpoint_set") {
-        std::string location = json_string_field(action, "location");
-        if (location.empty()) {
-            write_action_error(session, out, "breakpoint_set", "missing location");
-            return;
-        }
-        ProbeState::OnHitPolicy on_hit_policy;
-        std::string on_hit_error;
-        if (!parse_on_hit_policy(action, on_hit_policy, on_hit_error)) {
-            auto error_ev = add_tool_error(session,
-                                           "Breakpoint on-hit policy failed",
-                                           "breakpoint_set",
-                                           on_hit_error);
-            out << "{\"ok\":false,\"action\":\"breakpoint_set\","
-                << "\"error\":\"invalid on_hit policy\","
-                << "\"evidence\":" << json_escape(error_ev.id) << "}\n";
-            return;
-        }
-
-        auto insert = session.command("-break-insert " + mi_quote(location));
-        add_command_evidence(session, "GdbCommand", "Breakpoint set", insert);
-        std::string number = breakpoint_number_from(insert);
-        if (insert.result_class == "error" || number.empty()) {
-            auto ev = add_tool_error(session,
-                                     "Breakpoint set failed",
-                                     "breakpoint_set",
-                                     number.empty() ? "GDB did not return a breakpoint number" : "GDB rejected the breakpoint");
-            out << "{\"ok\":false,\"action\":\"breakpoint_set\",\"error\":\"failed to set breakpoint\","
-                << "\"evidence\":" << json_escape(ev.id) << "}\n";
-            return;
-        }
-
-        std::string condition = json_string_field(action, "condition");
-        std::string condition_evidence;
-        if (!condition.empty()) {
-            auto cond = session.command("-break-condition " + number + " " + condition);
-            auto ev = session.evidence_store().add("GdbCommand", "Breakpoint condition", cond.command, cond.raw_lines, false, cond.record_sequences);
-            condition_evidence = ev.id;
-            if (cond.result_class == "error") {
-                auto error_ev = add_tool_error(session,
-                                               "Breakpoint condition failed",
-                                               "breakpoint_set",
-                                               "GDB rejected the breakpoint condition");
-                out << "{\"ok\":false,\"action\":\"breakpoint_set\",\"breakpoint\":" << json_escape(number)
-                    << ",\"error\":\"failed to set breakpoint condition\","
-                    << "\"condition_evidence\":" << json_escape(condition_evidence)
-                    << ",\"evidence\":" << json_escape(error_ev.id) << "}\n";
-                return;
-            }
-        }
-
-        if (!number.empty()) {
-            ProbeState::ProbeInfo probe;
-            probe.number = number;
-            probe.kind = "breakpoint";
-            probe.location = location;
-            probe.condition = condition;
-            probe.comment = json_string_field(action, "comment");
-            probe.purpose = json_string_field(action, "purpose");
-            probe.on_hit_policy = std::move(on_hit_policy);
-            probe_state.probes_by_number[number] = std::move(probe);
-        }
-
-        out << "{\"ok\":true,\"action\":\"breakpoint_set\",\"breakpoint\":" << json_escape(number);
-        if (!condition_evidence.empty()) {
-            out << ",\"condition_evidence\":" << json_escape(condition_evidence);
-        }
-        out << "}\n";
-        return;
-    }
-    if (action_name == "watchpoint_set") {
-        std::string expression = json_string_field(action, "expression");
-        if (expression.empty()) {
-            write_action_error(session, out, "watchpoint_set", "missing expression");
-            return;
-        }
-        ProbeState::OnHitPolicy on_hit_policy;
-        std::string on_hit_error;
-        if (!parse_on_hit_policy(action, on_hit_policy, on_hit_error)) {
-            auto error_ev = add_tool_error(session,
-                                           "Watchpoint on-hit policy failed",
-                                           "watchpoint_set",
-                                           on_hit_error);
-            out << "{\"ok\":false,\"action\":\"watchpoint_set\","
-                << "\"error\":\"invalid on_hit policy\","
-                << "\"evidence\":" << json_escape(error_ev.id) << "}\n";
-            return;
-        }
-
-        auto result = session.command("-break-watch " + expression);
-        auto ev = session.evidence_store().add("GdbCommand", "Watchpoint set", result.command, result.raw_lines, false, result.record_sequences);
-        std::string number = breakpoint_number_from(result);
-        if (result.result_class == "error" || number.empty()) {
-            auto error_ev = add_tool_error(session,
-                                           "Watchpoint set failed",
-                                           "watchpoint_set",
-                                           number.empty() ? "GDB did not return a watchpoint number" : "GDB rejected the watchpoint");
-            out << "{\"ok\":false,\"action\":\"watchpoint_set\",\"error\":\"failed to set watchpoint\","
-                << "\"command_evidence\":" << json_escape(ev.id)
-                << ",\"evidence\":" << json_escape(error_ev.id) << "}\n";
-            return;
-        }
-
-        std::string condition = json_string_field(action, "condition");
-        std::string condition_evidence;
-        if (!condition.empty()) {
-            auto cond = session.command("-break-condition " + number + " " + condition);
-            auto cond_ev = session.evidence_store().add("GdbCommand", "Watchpoint condition", cond.command, cond.raw_lines, false, cond.record_sequences);
-            condition_evidence = cond_ev.id;
-            if (cond.result_class == "error") {
-                auto error_ev = add_tool_error(session,
-                                               "Watchpoint condition failed",
-                                               "watchpoint_set",
-                                               "GDB rejected the watchpoint condition");
-                out << "{\"ok\":false,\"action\":\"watchpoint_set\",\"watchpoint\":" << json_escape(number)
-                    << ",\"error\":\"failed to set watchpoint condition\","
-                    << "\"condition_evidence\":" << json_escape(condition_evidence)
-                    << ",\"evidence\":" << json_escape(error_ev.id) << "}\n";
-                return;
-            }
-        }
-
-        ProbeState::ProbeInfo probe;
-        probe.number = number;
-        probe.kind = "watchpoint";
-        probe.expression = expression;
-        probe.condition = condition;
-        probe.comment = json_string_field(action, "comment");
-        probe.purpose = json_string_field(action, "purpose");
-        probe.on_hit_policy = std::move(on_hit_policy);
-        probe_state.probes_by_number[number] = std::move(probe);
-        out << "{\"ok\":true,\"action\":\"watchpoint_set\",\"watchpoint\":" << json_escape(number)
-                  << ",\"evidence\":" << json_escape(ev.id);
-        if (!condition_evidence.empty()) {
-            out << ",\"condition_evidence\":" << json_escape(condition_evidence);
-        }
-        out << "}\n";
-        return;
-    }
-    if (action_name == "catchpoint_set") {
-        std::string event = json_string_field(action, "event");
-        if (event.empty()) {
-            auto error_ev = add_tool_error(session,
-                                           "Catchpoint set failed",
-                                           "catchpoint_set",
-                                           "missing event");
-            out << "{\"ok\":false,\"action\":\"catchpoint_set\",\"error\":\"missing event\","
-                << "\"evidence\":" << json_escape(error_ev.id) << "}\n";
-            return;
-        }
-        std::string command;
-        std::string selector;
-        if (event == "throw") {
-            command = "catch throw";
-        } else if (event == "catch") {
-            command = "catch catch";
-        } else if (event == "syscall") {
-            const Json *name_field = json_field(action, "name");
-            const Json *syscall_field = json_field(action, "syscall");
-            if (name_field != nullptr && !name_field->is_null()) {
-                selector = json_selector_field(action, "name");
-            } else if (syscall_field != nullptr && !syscall_field->is_null()) {
-                selector = json_selector_field(action, "syscall");
-            }
-            if ((name_field != nullptr && !name_field->is_null()) ||
-                (syscall_field != nullptr && !syscall_field->is_null())) {
-                if (!valid_syscall_selector(selector)) {
-                    auto error_ev = add_tool_error(session,
-                                                   "Catchpoint set failed",
-                                                   "catchpoint_set",
-                                                   "invalid syscall selector");
-                    out << "{\"ok\":false,\"action\":\"catchpoint_set\","
-                        << "\"error\":\"invalid syscall selector\","
-                        << "\"event\":" << json_escape(event)
-                        << ",\"selector\":" << json_escape(selector)
-                        << ",\"evidence\":" << json_escape(error_ev.id) << "}\n";
-                    return;
-                }
-            }
-            command = selector.empty() ? "catch syscall" : "catch syscall " + selector;
-        } else if (event == "fork") {
-            command = "catch fork";
-        } else if (event == "vfork") {
-            command = "catch vfork";
-        } else if (event == "exec") {
-            command = "catch exec";
-        } else {
-            auto error_ev = add_tool_error(session,
-                                           "Catchpoint set failed",
-                                           "catchpoint_set",
-                                           "unsupported catchpoint event: " + event);
-            out << "{\"ok\":false,\"action\":\"catchpoint_set\",\"error\":\"unsupported catchpoint event\","
-                << "\"event\":" << json_escape(event)
-                << ",\"evidence\":" << json_escape(error_ev.id) << "}\n";
-            return;
-        }
-        ProbeState::OnHitPolicy on_hit_policy;
-        std::string on_hit_error;
-        if (!parse_on_hit_policy(action, on_hit_policy, on_hit_error)) {
-            auto error_ev = add_tool_error(session,
-                                           "Catchpoint on-hit policy failed",
-                                           "catchpoint_set",
-                                           on_hit_error);
-            out << "{\"ok\":false,\"action\":\"catchpoint_set\","
-                << "\"error\":\"invalid on_hit policy\","
-                << "\"evidence\":" << json_escape(error_ev.id) << "}\n";
-            return;
-        }
-
-        auto result = session.command("-interpreter-exec console " + mi_quote(command));
-        auto ev = session.evidence_store().add("GdbCommand", "Catchpoint set", result.command, result.raw_lines, false, result.record_sequences);
-        std::string number = breakpoint_number_from(result);
-        if (result.result_class == "error" || number.empty()) {
-            auto error_ev = add_tool_error(session,
-                                           "Catchpoint set failed",
-                                           "catchpoint_set",
-                                           number.empty() ? "GDB did not return a catchpoint number" : "GDB rejected the catchpoint");
-            out << "{\"ok\":false,\"action\":\"catchpoint_set\",\"error\":\"failed to set catchpoint\","
-                << "\"event\":" << json_escape(event)
-                << ",\"selector\":" << json_escape(selector)
-                << ",\"command_evidence\":" << json_escape(ev.id)
-                << ",\"evidence\":" << json_escape(error_ev.id) << "}\n";
-            return;
-        }
-
-        ProbeState::ProbeInfo probe;
-        probe.number = number;
-        probe.kind = "catchpoint";
-        probe.event = event;
-        probe.selector = selector;
-        probe.location = command;
-        probe.comment = json_string_field(action, "comment");
-        probe.purpose = json_string_field(action, "purpose");
-        probe.on_hit_policy = std::move(on_hit_policy);
-        probe_state.probes_by_number[number] = std::move(probe);
-        out << "{\"ok\":true,\"action\":\"catchpoint_set\",\"catchpoint\":" << json_escape(number)
-            << ",\"event\":" << json_escape(event)
-            << ",\"selector\":" << json_escape(selector)
-            << ",\"evidence\":" << json_escape(ev.id) << "}\n";
-        return;
-    }
-    if (action_name == "probe_list") {
-        auto result = session.command("-break-list");
-        auto ev = session.evidence_store().add("GdbCommand", "Probe list", result.command, result.raw_lines, false, result.record_sequences);
-
-        std::ostringstream evidence_text;
-        evidence_text << "{\n";
-        evidence_text << "  \"probes\": " << probe_array_json(probe_state) << "\n";
-        evidence_text << "}\n";
-        auto metadata_ev = session.evidence_store().add_text("SessionEvent",
-                                                             "Probe metadata snapshot",
-                                                             "probe_list",
-                                                             evidence_text.str());
-        out << "{\"ok\":true,\"action\":\"probe_list\",\"evidence\":" << json_escape(ev.id)
-            << ",\"metadata_evidence\":" << json_escape(metadata_ev.id)
-            << ",\"probes\":" << probe_array_json(probe_state) << "}\n";
-        return;
-    }
-    if (action_name == "probe_delete" || action_name == "probe_enable" || action_name == "probe_disable") {
-        int number = json_int_field(action, "number", -1);
-        if (number < 0) {
-            write_action_error(session, out, action_name, "missing probe number");
-            return;
-        }
-
-        std::string action = "probe_delete";
-        std::string command = "-break-delete ";
-        std::string title = "Probe delete";
-        if (action_name == "probe_enable") {
-            action = "probe_enable";
-            command = "-break-enable ";
-            title = "Probe enable";
-        } else if (action_name == "probe_disable") {
-            action = "probe_disable";
-            command = "-break-disable ";
-            title = "Probe disable";
-        }
-
-        auto result = session.command(command + std::to_string(number));
-        auto ev = session.evidence_store().add("GdbCommand", title, result.command, result.raw_lines, false, result.record_sequences);
-        if (result.result_class == "error" || result.timed_out) {
-            write_action_error(session,
-                               out,
-                               action,
-                               command_error_message(result, "GDB rejected probe operation"),
-                               title + " failed",
-                               {{"command_evidence", ev.id}, {"number", std::to_string(number)}});
-            return;
-        }
-        auto probe_it = probe_state.probes_by_number.find(std::to_string(number));
-        if (probe_it != probe_state.probes_by_number.end()) {
-            if (action_name == "probe_delete") {
-                probe_it->second.deleted = true;
-                probe_it->second.enabled = false;
-            } else if (action_name == "probe_enable") {
-                probe_it->second.enabled = true;
-            } else if (action_name == "probe_disable") {
-                probe_it->second.enabled = false;
-            }
-        }
-        out << "{\"ok\":true,\"action\":" << json_escape(action) << ",\"number\":" << number
-                  << ",\"evidence\":" << json_escape(ev.id) << "}\n";
-        return;
-    }
-    if (action_name == "run") {
-        int default_deadline_ms = outcome != nullptr ? outcome->run_timeout_ms : (task != nullptr ? task->run_timeout_ms : 30000);
-        int deadline_ms = json_int_field(action, "deadline_ms", default_deadline_ms);
-        std::string stdin_path = json_string_field(action, "stdin");
-        CommandResult result;
-        if (outcome != nullptr) {
-            outcome->state = SessionState::Running;
-            outcome->inferior_stdout_offset = 0;
-            outcome->inferior_stderr_offset = 0;
-        }
-
-        if (task != nullptr) {
-            DebugTask run_task = *task;
-            if (!stdin_path.empty()) {
-                fs::path input(stdin_path);
-                run_task.stdin_path = input.is_absolute()
-                                          ? input
-                                          : fs::weakly_canonical(run_task.working_directory / input);
-            }
-            result = run_inferior(session, run_task, std::chrono::milliseconds(deadline_ms));
-        } else if (stdin_path.empty()) {
-            result = session.exec_control("-exec-run", std::chrono::milliseconds(deadline_ms));
-        } else {
-            result = session.exec_control("-interpreter-exec console " +
-                                              mi_quote("run < " + shell_quote_for_report(stdin_path)),
-                                          std::chrono::milliseconds(deadline_ms));
-        }
-        auto ev = session.evidence_store().add("StopEvent", "Run stop", result.command, result.raw_lines, false, result.record_sequences);
-        if (outcome != nullptr) {
-            update_outcome_from_stop(*outcome, result);
-        }
-        if (result.result_class == "error") {
-            write_action_error(session,
-                               out,
-                               "run",
-                               command_error_message(result, "GDB rejected run"),
-                               "Run failed",
-                               {{"command_evidence", ev.id}});
-            return;
-        }
-        if (outcome != nullptr) {
-            collect_stop_followup(session, *outcome, result);
-        }
-        handle_probe_stop(session, task, outcome, probe_state, result, out);
-        out << "{\"ok\":true,\"action\":\"run\",\"stop_reason\":" << json_escape(result.stop_reason)
-                  << ",\"signal\":" << json_escape(result.signal_name)
-                  << ",\"evidence\":" << json_escape(ev.id) << "}\n";
-        return;
-    }
-    if (action_name == "continue") {
-        int deadline_ms = json_int_field(action, "deadline_ms", 30000);
-        if (outcome != nullptr) {
-            outcome->state = SessionState::Running;
-        }
-        auto result = session.exec_control("-exec-continue", std::chrono::milliseconds(deadline_ms));
-        auto ev = session.evidence_store().add("StopEvent", "Continue stop", result.command, result.raw_lines, false, result.record_sequences);
-        if (outcome != nullptr) {
-            update_outcome_from_stop(*outcome, result);
-        }
-        if (result.result_class == "error") {
-            write_action_error(session,
-                               out,
-                               "continue",
-                               command_error_message(result, "GDB rejected continue"),
-                               "Continue failed",
-                               {{"command_evidence", ev.id}});
-            return;
-        }
-        if (outcome != nullptr) {
-            collect_stop_followup(session, *outcome, result);
-        }
-        handle_probe_stop(session, task, outcome, probe_state, result, out);
-        out << "{\"ok\":true,\"action\":\"continue\",\"stop_reason\":" << json_escape(result.stop_reason)
-                  << ",\"signal\":" << json_escape(result.signal_name)
-                  << ",\"evidence\":" << json_escape(ev.id) << "}\n";
-        return;
-    }
-    if (action_name == "raw_mi") {
-        std::string command = json_string_field(action, "command");
-        std::string risk = json_string_field(action, "risk");
-        if (command.empty()) {
-            write_action_error(session, out, "raw_mi", "missing command");
-            return;
-        }
-        if (risk != "advanced") {
-            write_action_error(session, out, "raw_mi", "raw_mi requires risk=advanced");
-            return;
-        }
-        int timeout_ms = json_int_field(action, "timeout_ms", 5000);
-        auto result = session.command(command, std::chrono::milliseconds(timeout_ms));
-        auto ev = session.evidence_store().add("GdbCommand", "Raw MI", result.command, result.raw_lines, false, result.record_sequences);
-        out << "{\"ok\":true,\"action\":\"raw_mi\",\"result_class\":" << json_escape(result.result_class)
-                  << ",\"evidence\":" << json_escape(ev.id) << "}\n";
-        return;
-    }
-    if (action_name == "hypothesis_create") {
-        std::string id = json_string_field(action, "id");
-        if (id.empty()) {
-            id = next_hypothesis_id(probe_state);
-        }
-        std::string title = json_string_field(action, "title");
-        if (title.empty()) {
-            title = "Untitled hypothesis";
-        }
-        std::string description = json_string_field(action, "description");
-        fs::path file = hypothesis_file_for(session, id);
-
-        std::ostringstream md;
-        md << "# " << id << " " << title << "\n\n";
-        md << "Status: EvidenceCollectionStarted\n\n";
-        if (!description.empty()) {
-            md << "## Description\n\n" << description << "\n\n";
-        }
-        write_text_file(file, md.str());
-        ProbeState::HypothesisRecord record;
-        record.id = id;
-        record.title = title;
-        record.description = description;
-        probe_state.hypotheses_by_id[id] = std::move(record);
-        write_hypothesis_index(session, probe_state);
-        out << "{\"ok\":true,\"action\":\"hypothesis_create\",\"id\":" << json_escape(id)
-                  << ",\"file\":" << json_escape(file.lexically_normal().string()) << "}\n";
-        return;
-    }
-    if (action_name == "hypothesis_check") {
-        std::string id = json_string_field(action, "hypothesis");
-        std::string expression = json_string_field(action, "expression");
-        if (id.empty() || expression.empty()) {
-            write_action_error(session, out, "hypothesis_check", "hypothesis_check requires hypothesis and expression");
-            return;
-        }
-
-        std::string description = json_string_field(action, "description");
-        if (description.empty()) {
-            description = expression;
-        }
-        std::string assertion = json_string_field(action, "assertion");
-        if (assertion.empty()) {
-            assertion = "none";
-        }
-        std::string expected = json_string_field(action, "expected");
-
-        auto collected = collect_console_with_result(session, "Hypothesis check", "p " + expression);
-        if (write_console_action_error_if_needed(session,
-                                                 out,
-                                                 "hypothesis_check",
-                                                 "Hypothesis check command failed",
-                                                 collected,
-                                                 {{"hypothesis", id}, {"expression", expression}})) {
-            return;
-        }
-        const auto &ev = collected.evidence;
-        std::string observed = ev.summary;
-        auto assertion_result = evaluate_hypothesis_assertion(assertion, observed, expected);
-        std::string error_evidence_id;
-        if (assertion_result.status == "unknown") {
-            std::ostringstream message;
-            message << "hypothesis_check assertion could not be evaluated";
-            if (!assertion_result.reason.empty()) {
-                message << ": " << assertion_result.reason;
-            }
-            auto error_ev = add_tool_error(session, "Hypothesis check assertion unknown", "hypothesis_check", message.str());
-            error_evidence_id = error_ev.id;
-        }
-        fs::path file = hypothesis_file_for(session, id);
-
-        std::ostringstream md;
-        md << "## Check: " << description << "\n\n";
-        md << "- Check ID: `C" << (probe_state.hypotheses_by_id[id].checks.size() + 1) << "`\n";
-        md << "- Expression: `" << expression << "`\n";
-        md << "- Evidence: `" << ev.id << "`\n";
-        md << "- Assertion: `" << assertion << "`\n";
-        if (!expected.empty()) {
-            md << "- Expected: `" << expected << "`\n";
-        }
-        md << "- Status: `" << assertion_result.status << "`\n";
-        if (!error_evidence_id.empty()) {
-            md << "- Error evidence: `" << error_evidence_id << "`\n";
-        }
-        md << "\n### Observed\n\n";
-        md << "```text\n" << observed << "\n```\n\n";
-        append_text(file, md.str());
-        auto &record = probe_state.hypotheses_by_id[id];
-        if (record.id.empty()) {
-            record.id = id;
-            record.title = id;
-        }
-        ProbeState::HypothesisCheck check;
-        std::ostringstream check_id;
-        check_id << "C" << (record.checks.size() + 1);
-        check.id = check_id.str();
-        check.description = description;
-        check.expression = expression;
-        check.assertion = assertion;
-        check.expected = expected;
-        check.observed = observed;
-        check.status = assertion_result.status;
-        check.evidence_id = ev.id;
-        check.error_evidence_id = error_evidence_id;
-        record.checks.push_back(std::move(check));
-        if (assertion_result.status == "passed") {
-            record.tool_status = "EvidenceSupportsCheck";
-        } else if (assertion_result.status == "failed") {
-            record.tool_status = "EvidenceContradictsCheck";
-        } else {
-            record.tool_status = "EvidenceCheckUnknown";
-        }
-        write_hypothesis_index(session, probe_state);
-
-        out << "{\"ok\":true,\"action\":\"hypothesis_check\",\"hypothesis\":" << json_escape(id)
-                  << ",\"check_id\":" << json_escape(record.checks.back().id)
-                  << ",\"description\":" << json_escape(description)
-                  << ",\"expression\":" << json_escape(expression)
-                  << ",\"assertion\":" << json_escape(assertion)
-                  << ",\"expected\":" << json_escape(expected)
-                  << ",\"observed\":" << json_escape(observed)
-                  << ",\"status\":" << json_escape(assertion_result.status)
-                  << ",\"evidence\":" << json_escape(ev.id)
-                  << ",\"error_evidence\":"
-                  << (error_evidence_id.empty() ? std::string("null") : json_escape(error_evidence_id))
-                  << "}\n";
-        return;
-    }
-    if (action_name == "hypothesis_conclude") {
-        std::string id = json_string_field(action, "hypothesis");
-        std::string conclusion = json_string_field(action, "conclusion");
-        if (conclusion.empty()) {
-            conclusion = "Inconclusive";
-        }
-        std::string inference = json_string_field(action, "inference");
-        if (id.empty()) {
-            write_action_error(session, out, "hypothesis_conclude", "hypothesis_conclude requires hypothesis");
-            return;
-        }
-        fs::path file = hypothesis_file_for(session, id);
-        std::ostringstream md;
-        md << "## Agent Conclusion\n\n";
-        md << "- Conclusion: `" << conclusion << "`\n";
-        if (!inference.empty()) {
-            md << "\n" << inference << "\n";
-        }
-        md << "\n";
-        append_text(file, md.str());
-        auto &record = probe_state.hypotheses_by_id[id];
-        if (record.id.empty()) {
-            record.id = id;
-            record.title = id;
-        }
-        record.agent_conclusion = conclusion;
-        record.agent_inference = inference;
-        write_hypothesis_index(session, probe_state);
-        out << "{\"ok\":true,\"action\":\"hypothesis_conclude\",\"hypothesis\":" << json_escape(id)
-                  << ",\"conclusion\":" << json_escape(conclusion) << "}\n";
-        return;
-    }
-    if (action_name == "save_action") {
-        std::string name = json_string_field(action, "name");
-        std::string failure_policy = normalize_replay_failure_policy(json_string_field(action, "failure_policy"));
-        const Json *saved = json_field(action, "saved_action");
-        std::string saved_action;
-        if (saved != nullptr && saved->is_string()) {
-            saved_action = saved->string_value;
-        } else if (saved != nullptr && saved->is_object()) {
-            saved_action = dump_json(*saved);
-        }
-        if (name.empty() || saved_action.empty()) {
-            write_action_error(session, out, "save_action", "save_action requires name and saved_action");
-            return;
-        }
-
-        fs::path replay_dir = session.assets_dir() / "replay";
-        fs::create_directories(replay_dir);
-        std::string replay_base = slugify(name);
-        fs::path replay_file = replay_dir / (replay_base + ".jsonl");
-        fs::path replay_plan = replay_dir / (replay_base + ".json");
-        std::ofstream replay_out(replay_file, std::ios::app);
-        if (!replay_out) {
-            write_action_error(session, out, "save_action", "failed to write replay file");
-            return;
-        }
-        replay_out << saved_action << '\n';
-        replay_out.close();
-        try {
-            rebuild_replay_plan_from_jsonl(replay_file,
-                                           replay_plan,
-                                           name,
-                                           task,
-                                           session.session_id(),
-                                           failure_policy);
-        } catch (const std::exception &ex) {
-            auto ev = session.evidence_store().add_text("ToolError",
-                                                        "Replay plan write failed",
-                                                        replay_plan.lexically_normal().string(),
-                                                        ex.what());
-            out << "{\"ok\":false,\"action\":\"save_action\",\"error\":\"failed to write replay plan\","
-                << "\"evidence\":" << json_escape(ev.id) << "}\n";
-            return;
-        }
-        out << "{\"ok\":true,\"action\":\"save_action\",\"file\":"
-                  << json_escape(replay_file.lexically_normal().string()) << ",\"plan\":"
-                  << json_escape(replay_plan.lexically_normal().string())
-                  << ",\"failure_policy\":" << json_escape(failure_policy) << "}\n";
-        return;
-    }
-    if (action_name == "replay") {
-        std::string file = json_string_field(action, "file");
-        std::string name = json_string_field(action, "name");
-        bool force = action.bool_or("force", false);
-        const Json *params = action.find("params");
-        if (params != nullptr && params->is_object()) {
-            force = params->bool_or("force", force);
-        }
-        std::string failure_policy_override = json_string_field(action, "failure_policy");
-        fs::path replay_file;
-        if (!file.empty()) {
-            replay_file = file;
-        } else if (!name.empty()) {
-            fs::path replay_dir = session.assets_dir() / "replay";
-            fs::path plan = replay_dir / (slugify(name) + ".json");
-            fs::path jsonl = replay_dir / (slugify(name) + ".jsonl");
-            replay_file = fs::exists(plan) ? plan : jsonl;
-        } else {
-            write_action_error(session, out, "replay", "replay requires file or name");
-            return;
-        }
-        try {
-            replay_action_file(session,
-                               task,
-                               outcome,
-                               probe_state,
-                               replay_file,
-                               out,
-                               force,
-                               failure_policy_override);
-        } catch (const std::exception &ex) {
-            write_action_error(session,
-                               out,
-                               "replay",
-                               ex.what(),
-                               "Replay failed",
-                               {{"file", replay_file.lexically_normal().string()}});
-        }
-        return;
-    }
-    auto ev = add_tool_error(session,
-                             "Unsupported action",
-                             action_name,
-                             "unsupported action");
-    out << "{\"ok\":false,\"action\":" << json_escape(action_name)
-        << ",\"error\":\"unsupported action\","
-        << "\"evidence\":" << json_escape(ev.id) << "}\n";
+static ActionOutput single_output(ActionResult result) {
+    ActionOutput output;
+    output.final = std::move(result);
+    return output;
 }
 
-static ActionResult action_result_from_legacy_output(const std::string &output,
-                                                     ActionKind fallback_kind,
-                                                     const std::string &fallback_action,
-                                                     bool finished) {
-    if (finished) {
-        ActionResult result = ActionResult::success(ActionKind::FinishSession, "finish_session");
-        result.finished = true;
-        return result;
-    }
-    std::istringstream in(output);
-    std::string line;
-    std::vector<Json> responses;
-    bool saw_json = false;
-    while (std::getline(in, line)) {
-        line = trim(line);
-        if (line.empty() || line.front() != '{') {
-            continue;
+static ActionResult make_action_error(GdbSession &session,
+                                      ActionKind kind,
+                                      const std::string &action_name,
+                                      const std::string &message,
+                                      const std::string &title = "Action validation failed",
+                                      const std::map<std::string, std::string> &details = {}) {
+    auto ev = add_action_tool_error(session, title, action_name, message, details);
+    ActionResult result = ActionResult::failure(kind, action_name, message);
+    result.evidence_id = ev.id;
+    for (const auto &[key, value] : details) {
+        if (key == "command_evidence") {
+            result.command_evidence_id = value;
+        } else {
+            action_result_set_string(result, key, value);
         }
-        try {
-            Json parsed = parse_json(line);
-            if (parsed.is_object()) {
-                responses.push_back(std::move(parsed));
-                saw_json = true;
-            }
-        } catch (...) {
-        }
-    }
-    if (!saw_json) {
-        ActionResult result = ActionResult::success(fallback_kind, fallback_action);
-        return result;
-    }
-    Json last = responses.back();
-
-    std::string action_name = last.string_or("action", fallback_action);
-    ActionKind kind = action_kind_from_name(action_name);
-    if (kind == ActionKind::Unknown) {
-        kind = fallback_kind;
-    }
-    bool ok = last.bool_or("ok", false);
-    ActionResult result = ok
-                            ? ActionResult::success(kind, action_name)
-                            : ActionResult::failure(kind, action_name, last.string_or("error"));
-    result.evidence_id = last.string_or("evidence");
-    result.command_evidence_id = last.string_or("command_evidence");
-    result.fields.type = Json::Type::Object;
-    for (const auto &[key, value] : last.object_value) {
-        if (key == "ok" || key == "action" || key == "error" ||
-            key == "evidence" || key == "command_evidence") {
-            continue;
-        }
-        result.fields.object_value[key] = value;
-    }
-    if (responses.size() > 1) {
-        result.prelude_responses.assign(responses.begin(), responses.end() - 1);
     }
     return result;
 }
 
-static ActionResult handle_action_line(GdbSession &session,
+static bool console_action_error_if_needed(GdbSession &session,
+                                           const std::string &action_name,
+                                           ActionKind kind,
+                                           const std::string &title,
+                                           const CollectedConsoleEvidence &collected,
+                                           ActionResult &result,
+                                           const std::map<std::string, std::string> &details = {}) {
+    if (collected.result.result_class != "error" && !collected.result.timed_out) {
+        return false;
+    }
+    std::map<std::string, std::string> error_details = details;
+    error_details["command_evidence"] = collected.evidence.id;
+    result = make_action_error(session,
+                               kind,
+                               action_name,
+                               command_error_message(collected.result, "GDB rejected " + action_name),
+                               title,
+                               error_details);
+    return true;
+}
+
+static bool guard_action_state_result(GdbSession &session,
+                                      const SessionOutcome *outcome,
+                                      const std::string &action_name,
+                                      ActionKind kind,
+                                      ActionResult &result) {
+    if (outcome == nullptr) {
+        return true;
+    }
+    std::string reason;
+    if (action_allowed_in_state(*outcome, action_name, reason)) {
+        return true;
+    }
+    std::ostringstream evidence_text;
+    evidence_text << "{\n";
+    evidence_text << "  \"action\": " << json_escape(action_name) << ",\n";
+    evidence_text << "  \"state\": " << json_escape(std::string(session_state_name(outcome->state))) << ",\n";
+    evidence_text << "  \"reason\": " << json_escape(reason) << "\n";
+    evidence_text << "}\n";
+    auto ev = session.evidence_store().add_text("ToolError", "Action rejected by state guard", action_name, evidence_text.str());
+    result = ActionResult::failure(kind, action_name, reason);
+    result.evidence_id = ev.id;
+    action_result_set_string(result, "state", std::string(session_state_name(outcome->state)));
+    return false;
+}
+
+static ResultObject probe_info_result_object(const ProbeState::ProbeInfo &probe) {
+    ResultObject object;
+    result_object_set_string(object, "number", probe.number);
+    result_object_set_string(object, "kind", probe.kind);
+    result_object_set_string(object, "event", probe.event);
+    result_object_set_string(object, "selector", probe.selector);
+    result_object_set_string(object, "location", probe.location);
+    result_object_set_string(object, "expression", probe.expression);
+    result_object_set_string(object, "condition", probe.condition);
+    result_object_set_string(object, "comment", probe.comment);
+    result_object_set_string(object, "purpose", probe.purpose);
+    result_object_set_bool(object, "enabled", probe.enabled);
+    result_object_set_bool(object, "deleted", probe.deleted);
+    result_object_set_int(object, "hit_count", probe.hit_count);
+    result_object_set_string(object, "last_stop_reason", probe.last_stop_reason);
+    return object;
+}
+
+static ResultArray probe_array_result(const ProbeState &probe_state, bool include_deleted = false) {
+    ResultArray array;
+    for (const auto &[_, probe] : probe_state.probes_by_number) {
+        if (probe.deleted && !include_deleted) {
+            continue;
+        }
+        array.items.push_back(probe_info_result_object(probe));
+    }
+    return array;
+}
+
+static ActionOutput dispatch_action(GdbSession &session,
+                                    const DebugTask *task,
+                                    SessionOutcome *outcome,
+                                    ProbeState &probe_state,
+                                    const ActionRequest &request) {
+    std::string action_name = request.action.empty() ? action_kind_name(request.kind) : request.action;
+    if (action_name.empty()) {
+        return single_output(make_action_error(session, ActionKind::Unknown, "", "missing action"));
+    }
+    ActionResult guard_error;
+    if (!guard_action_state_result(session, outcome, action_name, request.kind, guard_error)) {
+        return single_output(std::move(guard_error));
+    }
+
+    switch (request.kind) {
+        case ActionKind::FinishSession: {
+            const auto &payload = std::get<FinishPayload>(request.payload);
+            if (outcome != nullptr) {
+                if (!payload.agent_inference.empty()) {
+                    outcome->agent_inference = payload.agent_inference;
+                }
+                if (!payload.final_conclusion.empty()) {
+                    outcome->final_agent_conclusion = payload.final_conclusion;
+                }
+            }
+            ActionResult result = ActionResult::success(ActionKind::FinishSession, "finish_session");
+            result.finished = true;
+            return single_output(std::move(result));
+        }
+        case ActionKind::Backtrace:
+        case ActionKind::Locals:
+        case ActionKind::Registers:
+        case ActionKind::Threads:
+        case ActionKind::ArgsInfo: {
+            const auto &payload = std::get<TimeoutPayload>(request.payload);
+            std::string title;
+            std::string command;
+            bool terminal = false;
+            if (request.kind == ActionKind::Backtrace) {
+                title = "Backtrace";
+                command = "bt";
+                terminal = true;
+            } else if (request.kind == ActionKind::Locals) {
+                title = "Local variables";
+                command = "info locals";
+            } else if (request.kind == ActionKind::Registers) {
+                title = "Registers";
+                command = "info registers";
+            } else if (request.kind == ActionKind::Threads) {
+                title = "Threads";
+                command = "info threads";
+            } else {
+                title = "Frame arguments";
+                command = "info args";
+            }
+            auto collected = collect_console_with_result(session,
+                                                         title,
+                                                         command,
+                                                         terminal,
+                                                         std::chrono::milliseconds(payload.timeout_ms));
+            ActionResult error;
+            if (console_action_error_if_needed(session, action_name, request.kind, title + " failed", collected, error)) {
+                return single_output(std::move(error));
+            }
+            ActionResult result = ActionResult::success(request.kind, action_name);
+            result.evidence_id = collected.evidence.id;
+            return single_output(std::move(result));
+        }
+        case ActionKind::FrameSelect: {
+            const auto &payload = std::get<FrameSelectPayload>(request.payload);
+            std::string console_command = "frame " + std::to_string(payload.frame);
+            auto command_result = session.command("-interpreter-exec console " + mi_quote(console_command),
+                                                  std::chrono::milliseconds(payload.timeout_ms));
+            auto ev = session.evidence_store().add("GdbCommand", "Frame select", console_command, command_result.raw_lines, false, command_result.record_sequences);
+            if (command_result.result_class == "error" || command_result.timed_out) {
+                return single_output(make_action_error(session,
+                                                       request.kind,
+                                                       action_name,
+                                                       command_error_message(command_result, "GDB rejected frame_select"),
+                                                       "Frame select failed",
+                                                       {{"command_evidence", ev.id}, {"frame", std::to_string(payload.frame)}}));
+            }
+            ActionResult result = ActionResult::success(request.kind, action_name);
+            result.evidence_id = ev.id;
+            action_result_set_int(result, "frame", payload.frame);
+            return single_output(std::move(result));
+        }
+        case ActionKind::Evaluate: {
+            const auto &payload = std::get<EvaluatePayload>(request.payload);
+            if (payload.expression.empty()) {
+                return single_output(make_action_error(session, request.kind, action_name, "missing expression"));
+            }
+            std::string console_command = "p " + payload.expression;
+            auto command_result = session.command("-interpreter-exec console " + mi_quote(console_command),
+                                                  std::chrono::milliseconds(payload.timeout_ms));
+            auto ev = session.evidence_store().add("GdbCommand", "Evaluate", console_command, command_result.raw_lines, false, command_result.record_sequences);
+            if (command_result.result_class == "error" || command_result.timed_out) {
+                return single_output(make_action_error(session,
+                                                       request.kind,
+                                                       action_name,
+                                                       command_error_message(command_result, "GDB rejected evaluate"),
+                                                       "Evaluate failed",
+                                                       {{"command_evidence", ev.id}, {"expression", payload.expression}}));
+            }
+            ActionResult result = ActionResult::success(request.kind, action_name);
+            result.evidence_id = ev.id;
+            return single_output(std::move(result));
+        }
+#define RETURN_PROBE_SET_ERROR(kind_value, action_value, message_value, title_value) \
+        return single_output(make_action_error(session, kind_value, action_value, message_value, title_value))
+        case ActionKind::BreakpointSet: {
+            const auto &payload = std::get<BreakpointSetPayload>(request.payload);
+            if (payload.location.empty()) {
+                return single_output(make_action_error(session, request.kind, action_name, "missing location"));
+            }
+            if (!payload.on_hit.error.empty()) {
+                RETURN_PROBE_SET_ERROR(request.kind, action_name, "invalid on_hit policy", "Breakpoint on-hit policy failed");
+            }
+            auto insert = session.command("-break-insert " + mi_quote(payload.location));
+            add_command_evidence(session, "GdbCommand", "Breakpoint set", insert);
+            std::string number = breakpoint_number_from(insert);
+            if (insert.result_class == "error" || number.empty()) {
+                RETURN_PROBE_SET_ERROR(request.kind,
+                                       action_name,
+                                       "failed to set breakpoint",
+                                       "Breakpoint set failed");
+            }
+            std::string condition_evidence;
+            if (!payload.condition.empty()) {
+                auto cond = session.command("-break-condition " + number + " " + payload.condition);
+                auto ev = session.evidence_store().add("GdbCommand", "Breakpoint condition", cond.command, cond.raw_lines, false, cond.record_sequences);
+                condition_evidence = ev.id;
+                if (cond.result_class == "error") {
+                    ActionResult error = make_action_error(session,
+                                                           request.kind,
+                                                           action_name,
+                                                           "failed to set breakpoint condition",
+                                                           "Breakpoint condition failed",
+                                                           {{"condition_evidence", condition_evidence}});
+                    action_result_set_string(error, "breakpoint", number);
+                    return single_output(std::move(error));
+                }
+            }
+            ProbeState::ProbeInfo probe;
+            probe.number = number;
+            probe.kind = "breakpoint";
+            probe.location = payload.location;
+            probe.condition = payload.condition;
+            probe.comment = payload.comment;
+            probe.purpose = payload.purpose;
+            probe.on_hit_policy = payload.on_hit;
+            probe_state.probes_by_number[number] = std::move(probe);
+            ActionResult result = ActionResult::success(request.kind, action_name);
+            action_result_set_string(result, "breakpoint", number);
+            if (!condition_evidence.empty()) {
+                action_result_set_string(result, "condition_evidence", condition_evidence);
+            }
+            return single_output(std::move(result));
+        }
+        case ActionKind::WatchpointSet: {
+            const auto &payload = std::get<WatchpointSetPayload>(request.payload);
+            if (payload.expression.empty()) {
+                return single_output(make_action_error(session, request.kind, action_name, "missing expression"));
+            }
+            if (!payload.on_hit.error.empty()) {
+                RETURN_PROBE_SET_ERROR(request.kind, action_name, "invalid on_hit policy", "Watchpoint on-hit policy failed");
+            }
+            auto command_result = session.command("-break-watch " + payload.expression);
+            auto ev = session.evidence_store().add("GdbCommand", "Watchpoint set", command_result.command, command_result.raw_lines, false, command_result.record_sequences);
+            std::string number = breakpoint_number_from(command_result);
+            if (command_result.result_class == "error" || number.empty()) {
+                ActionResult error = make_action_error(session,
+                                                       request.kind,
+                                                       action_name,
+                                                       "failed to set watchpoint",
+                                                       "Watchpoint set failed",
+                                                       {{"command_evidence", ev.id}});
+                return single_output(std::move(error));
+            }
+            std::string condition_evidence;
+            if (!payload.condition.empty()) {
+                auto cond = session.command("-break-condition " + number + " " + payload.condition);
+                auto cond_ev = session.evidence_store().add("GdbCommand", "Watchpoint condition", cond.command, cond.raw_lines, false, cond.record_sequences);
+                condition_evidence = cond_ev.id;
+                if (cond.result_class == "error") {
+                    ActionResult error = make_action_error(session,
+                                                           request.kind,
+                                                           action_name,
+                                                           "failed to set watchpoint condition",
+                                                           "Watchpoint condition failed",
+                                                           {{"condition_evidence", condition_evidence}});
+                    action_result_set_string(error, "watchpoint", number);
+                    return single_output(std::move(error));
+                }
+            }
+            ProbeState::ProbeInfo probe;
+            probe.number = number;
+            probe.kind = "watchpoint";
+            probe.expression = payload.expression;
+            probe.condition = payload.condition;
+            probe.comment = payload.comment;
+            probe.purpose = payload.purpose;
+            probe.on_hit_policy = payload.on_hit;
+            probe_state.probes_by_number[number] = std::move(probe);
+            ActionResult result = ActionResult::success(request.kind, action_name);
+            result.evidence_id = ev.id;
+            action_result_set_string(result, "watchpoint", number);
+            if (!condition_evidence.empty()) {
+                action_result_set_string(result, "condition_evidence", condition_evidence);
+            }
+            return single_output(std::move(result));
+        }
+        case ActionKind::CatchpointSet: {
+            const auto &payload = std::get<CatchpointSetPayload>(request.payload);
+            if (payload.event.empty()) {
+                RETURN_PROBE_SET_ERROR(request.kind, action_name, "missing event", "Catchpoint set failed");
+            }
+            std::string command;
+            if (payload.event == "throw") {
+                command = "catch throw";
+            } else if (payload.event == "catch") {
+                command = "catch catch";
+            } else if (payload.event == "syscall") {
+                if (!payload.selector.empty() && !valid_syscall_selector(payload.selector)) {
+                    ActionResult error = make_action_error(session, request.kind, action_name, "invalid syscall selector", "Catchpoint set failed");
+                    action_result_set_string(error, "event", payload.event);
+                    action_result_set_string(error, "selector", payload.selector);
+                    return single_output(std::move(error));
+                }
+                command = payload.selector.empty() ? "catch syscall" : "catch syscall " + payload.selector;
+            } else if (payload.event == "fork") {
+                command = "catch fork";
+            } else if (payload.event == "vfork") {
+                command = "catch vfork";
+            } else if (payload.event == "exec") {
+                command = "catch exec";
+            } else {
+                ActionResult error = make_action_error(session, request.kind, action_name, "unsupported catchpoint event", "Catchpoint set failed");
+                action_result_set_string(error, "event", payload.event);
+                return single_output(std::move(error));
+            }
+            if (!payload.on_hit.error.empty()) {
+                RETURN_PROBE_SET_ERROR(request.kind, action_name, "invalid on_hit policy", "Catchpoint on-hit policy failed");
+            }
+            auto command_result = session.command("-interpreter-exec console " + mi_quote(command));
+            auto ev = session.evidence_store().add("GdbCommand", "Catchpoint set", command_result.command, command_result.raw_lines, false, command_result.record_sequences);
+            std::string number = breakpoint_number_from(command_result);
+            if (command_result.result_class == "error" || number.empty()) {
+                ActionResult error = make_action_error(session,
+                                                       request.kind,
+                                                       action_name,
+                                                       "failed to set catchpoint",
+                                                       "Catchpoint set failed",
+                                                       {{"command_evidence", ev.id}});
+                action_result_set_string(error, "event", payload.event);
+                action_result_set_string(error, "selector", payload.selector);
+                return single_output(std::move(error));
+            }
+            ProbeState::ProbeInfo probe;
+            probe.number = number;
+            probe.kind = "catchpoint";
+            probe.event = payload.event;
+            probe.selector = payload.selector;
+            probe.location = command;
+            probe.comment = payload.comment;
+            probe.purpose = payload.purpose;
+            probe.on_hit_policy = payload.on_hit;
+            probe_state.probes_by_number[number] = std::move(probe);
+            ActionResult result = ActionResult::success(request.kind, action_name);
+            result.evidence_id = ev.id;
+            action_result_set_string(result, "catchpoint", number);
+            action_result_set_string(result, "event", payload.event);
+            action_result_set_string(result, "selector", payload.selector);
+            return single_output(std::move(result));
+        }
+        case ActionKind::ProbeList: {
+            auto command_result = session.command("-break-list");
+            auto ev = session.evidence_store().add("GdbCommand", "Probe list", command_result.command, command_result.raw_lines, false, command_result.record_sequences);
+            std::ostringstream evidence_text;
+            evidence_text << "{\n";
+            evidence_text << "  \"probes\": " << probe_array_json(probe_state) << "\n";
+            evidence_text << "}\n";
+            auto metadata_ev = session.evidence_store().add_text("SessionEvent", "Probe metadata snapshot", "probe_list", evidence_text.str());
+            ActionResult result = ActionResult::success(request.kind, action_name);
+            result.evidence_id = ev.id;
+            action_result_set_string(result, "metadata_evidence", metadata_ev.id);
+            action_result_set_array(result, "probes", probe_array_result(probe_state));
+            return single_output(std::move(result));
+        }
+        case ActionKind::ProbeDelete:
+        case ActionKind::ProbeEnable:
+        case ActionKind::ProbeDisable: {
+            const auto &payload = std::get<ProbeMutationPayload>(request.payload);
+            if (payload.number < 0) {
+                return single_output(make_action_error(session, request.kind, action_name, "missing probe number"));
+            }
+            std::string command = "-break-delete ";
+            std::string title = "Probe delete";
+            if (request.kind == ActionKind::ProbeEnable) {
+                command = "-break-enable ";
+                title = "Probe enable";
+            } else if (request.kind == ActionKind::ProbeDisable) {
+                command = "-break-disable ";
+                title = "Probe disable";
+            }
+            auto command_result = session.command(command + std::to_string(payload.number));
+            auto ev = session.evidence_store().add("GdbCommand", title, command_result.command, command_result.raw_lines, false, command_result.record_sequences);
+            if (command_result.result_class == "error" || command_result.timed_out) {
+                return single_output(make_action_error(session,
+                                                       request.kind,
+                                                       action_name,
+                                                       command_error_message(command_result, "GDB rejected probe operation"),
+                                                       title + " failed",
+                                                       {{"command_evidence", ev.id}, {"number", std::to_string(payload.number)}}));
+            }
+            auto probe_it = probe_state.probes_by_number.find(std::to_string(payload.number));
+            if (probe_it != probe_state.probes_by_number.end()) {
+                if (request.kind == ActionKind::ProbeDelete) {
+                    probe_it->second.deleted = true;
+                    probe_it->second.enabled = false;
+                } else if (request.kind == ActionKind::ProbeEnable) {
+                    probe_it->second.enabled = true;
+                } else if (request.kind == ActionKind::ProbeDisable) {
+                    probe_it->second.enabled = false;
+                }
+            }
+            ActionResult result = ActionResult::success(request.kind, action_name);
+            result.evidence_id = ev.id;
+            action_result_set_int(result, "number", payload.number);
+            return single_output(std::move(result));
+        }
+        case ActionKind::Run: {
+            const auto &payload = std::get<RunPayload>(request.payload);
+            int default_deadline_ms = outcome != nullptr ? outcome->run_timeout_ms : (task != nullptr ? task->run_timeout_ms : 30000);
+            int deadline_ms = payload.deadline_ms > 0 ? payload.deadline_ms : default_deadline_ms;
+            CommandResult command_result;
+            if (outcome != nullptr) {
+                outcome->state = SessionState::Running;
+                outcome->inferior_stdout_offset = 0;
+                outcome->inferior_stderr_offset = 0;
+            }
+            if (task != nullptr) {
+                DebugTask run_task = *task;
+                if (!payload.stdin_path.empty()) {
+                    fs::path input(payload.stdin_path);
+                    run_task.stdin_path = input.is_absolute()
+                                              ? input
+                                              : fs::weakly_canonical(run_task.working_directory / input);
+                }
+                command_result = run_inferior(session, run_task, std::chrono::milliseconds(deadline_ms));
+            } else if (payload.stdin_path.empty()) {
+                command_result = session.exec_control("-exec-run", std::chrono::milliseconds(deadline_ms));
+            } else {
+                command_result = session.exec_control("-interpreter-exec console " +
+                                                          mi_quote("run < " + shell_quote_for_report(payload.stdin_path)),
+                                                      std::chrono::milliseconds(deadline_ms));
+            }
+            auto ev = session.evidence_store().add("StopEvent", "Run stop", command_result.command, command_result.raw_lines, false, command_result.record_sequences);
+            if (outcome != nullptr) {
+                update_outcome_from_stop(*outcome, command_result);
+            }
+            if (command_result.result_class == "error") {
+                return single_output(make_action_error(session,
+                                                       request.kind,
+                                                       action_name,
+                                                       command_error_message(command_result, "GDB rejected run"),
+                                                       "Run failed",
+                                                       {{"command_evidence", ev.id}}));
+            }
+            if (outcome != nullptr) {
+                collect_stop_followup(session, *outcome, command_result);
+            }
+            ActionOutput output;
+            output.prelude = handle_probe_stop(session, task, outcome, probe_state, command_result);
+            output.final = ActionResult::success(request.kind, action_name);
+            output.final.evidence_id = ev.id;
+            action_result_set_string(output.final, "stop_reason", command_result.stop_reason);
+            action_result_set_string(output.final, "signal", command_result.signal_name);
+            return output;
+        }
+        case ActionKind::Continue: {
+            const auto &payload = std::get<ContinuePayload>(request.payload);
+            if (outcome != nullptr) {
+                outcome->state = SessionState::Running;
+            }
+            auto command_result = session.exec_control("-exec-continue", std::chrono::milliseconds(payload.deadline_ms));
+            auto ev = session.evidence_store().add("StopEvent", "Continue stop", command_result.command, command_result.raw_lines, false, command_result.record_sequences);
+            if (outcome != nullptr) {
+                update_outcome_from_stop(*outcome, command_result);
+            }
+            if (command_result.result_class == "error") {
+                return single_output(make_action_error(session,
+                                                       request.kind,
+                                                       action_name,
+                                                       command_error_message(command_result, "GDB rejected continue"),
+                                                       "Continue failed",
+                                                       {{"command_evidence", ev.id}}));
+            }
+            if (outcome != nullptr) {
+                collect_stop_followup(session, *outcome, command_result);
+            }
+            ActionOutput output;
+            output.prelude = handle_probe_stop(session, task, outcome, probe_state, command_result);
+            output.final = ActionResult::success(request.kind, action_name);
+            output.final.evidence_id = ev.id;
+            action_result_set_string(output.final, "stop_reason", command_result.stop_reason);
+            action_result_set_string(output.final, "signal", command_result.signal_name);
+            return output;
+        }
+        case ActionKind::RawMi: {
+            const auto &payload = std::get<RawMiPayload>(request.payload);
+            if (payload.command.empty()) {
+                return single_output(make_action_error(session, request.kind, action_name, "missing command"));
+            }
+            if (payload.risk != "advanced") {
+                return single_output(make_action_error(session, request.kind, action_name, "raw_mi requires risk=advanced"));
+            }
+            auto command_result = session.command(payload.command, std::chrono::milliseconds(payload.timeout_ms));
+            auto ev = session.evidence_store().add("GdbCommand", "Raw MI", command_result.command, command_result.raw_lines, false, command_result.record_sequences);
+            ActionResult result = ActionResult::success(request.kind, action_name);
+            result.evidence_id = ev.id;
+            action_result_set_string(result, "result_class", command_result.result_class);
+            return single_output(std::move(result));
+        }
+        case ActionKind::HypothesisCreate: {
+            const auto &payload = std::get<HypothesisCreatePayload>(request.payload);
+            std::string id = payload.id.empty() ? next_hypothesis_id(probe_state) : payload.id;
+            std::string title = payload.title.empty() ? "Untitled hypothesis" : payload.title;
+            fs::path file = hypothesis_file_for(session, id);
+            std::ostringstream md;
+            md << "# " << id << " " << title << "\n\n";
+            md << "Status: EvidenceCollectionStarted\n\n";
+            if (!payload.description.empty()) {
+                md << "## Description\n\n" << payload.description << "\n\n";
+            }
+            write_text_file(file, md.str());
+            ProbeState::HypothesisRecord record;
+            record.id = id;
+            record.title = title;
+            record.description = payload.description;
+            probe_state.hypotheses_by_id[id] = std::move(record);
+            write_hypothesis_index(session, probe_state);
+            ActionResult result = ActionResult::success(request.kind, action_name);
+            action_result_set_string(result, "id", id);
+            action_result_set_string(result, "file", file.lexically_normal().string());
+            return single_output(std::move(result));
+        }
+        case ActionKind::HypothesisCheck: {
+            const auto &payload = std::get<HypothesisCheckPayload>(request.payload);
+            if (payload.hypothesis.empty() || payload.expression.empty()) {
+                return single_output(make_action_error(session, request.kind, action_name, "hypothesis_check requires hypothesis and expression"));
+            }
+            std::string description = payload.description.empty() ? payload.expression : payload.description;
+            auto collected = collect_console_with_result(session, "Hypothesis check", "p " + payload.expression);
+            ActionResult error;
+            if (console_action_error_if_needed(session,
+                                               action_name,
+                                               request.kind,
+                                               "Hypothesis check command failed",
+                                               collected,
+                                               error,
+                                               {{"hypothesis", payload.hypothesis}, {"expression", payload.expression}})) {
+                return single_output(std::move(error));
+            }
+            const auto &ev = collected.evidence;
+            std::string observed = ev.summary;
+            auto assertion_result = evaluate_hypothesis_assertion(payload.assertion, observed, payload.expected);
+            std::string error_evidence_id;
+            if (assertion_result.status == "unknown") {
+                std::ostringstream message;
+                message << "hypothesis_check assertion could not be evaluated";
+                if (!assertion_result.reason.empty()) {
+                    message << ": " << assertion_result.reason;
+                }
+                auto error_ev = add_tool_error(session, "Hypothesis check assertion unknown", action_name, message.str());
+                error_evidence_id = error_ev.id;
+            }
+            fs::path file = hypothesis_file_for(session, payload.hypothesis);
+            auto &record = probe_state.hypotheses_by_id[payload.hypothesis];
+            if (record.id.empty()) {
+                record.id = payload.hypothesis;
+                record.title = payload.hypothesis;
+            }
+            std::ostringstream check_id;
+            check_id << "C" << (record.checks.size() + 1);
+            std::ostringstream md;
+            md << "## Check: " << description << "\n\n";
+            md << "- Check ID: `" << check_id.str() << "`\n";
+            md << "- Expression: `" << payload.expression << "`\n";
+            md << "- Evidence: `" << ev.id << "`\n";
+            md << "- Assertion: `" << payload.assertion << "`\n";
+            if (!payload.expected.empty()) {
+                md << "- Expected: `" << payload.expected << "`\n";
+            }
+            md << "- Status: `" << assertion_result.status << "`\n";
+            if (!error_evidence_id.empty()) {
+                md << "- Error evidence: `" << error_evidence_id << "`\n";
+            }
+            md << "\n### Observed\n\n";
+            md << "```text\n" << observed << "\n```\n\n";
+            append_text(file, md.str());
+            ProbeState::HypothesisCheck check;
+            check.id = check_id.str();
+            check.description = description;
+            check.expression = payload.expression;
+            check.assertion = payload.assertion;
+            check.expected = payload.expected;
+            check.observed = observed;
+            check.status = assertion_result.status;
+            check.evidence_id = ev.id;
+            check.error_evidence_id = error_evidence_id;
+            record.checks.push_back(std::move(check));
+            if (assertion_result.status == "passed") {
+                record.tool_status = "EvidenceSupportsCheck";
+            } else if (assertion_result.status == "failed") {
+                record.tool_status = "EvidenceContradictsCheck";
+            } else {
+                record.tool_status = "EvidenceCheckUnknown";
+            }
+            write_hypothesis_index(session, probe_state);
+            ActionResult result = ActionResult::success(request.kind, action_name);
+            result.evidence_id = ev.id;
+            action_result_set_string(result, "hypothesis", payload.hypothesis);
+            action_result_set_string(result, "check_id", record.checks.back().id);
+            action_result_set_string(result, "description", description);
+            action_result_set_string(result, "expression", payload.expression);
+            action_result_set_string(result, "assertion", payload.assertion);
+            action_result_set_string(result, "expected", payload.expected);
+            action_result_set_string(result, "observed", observed);
+            action_result_set_string(result, "status", assertion_result.status);
+            if (error_evidence_id.empty()) {
+                action_result_set_null(result, "error_evidence");
+            } else {
+                action_result_set_string(result, "error_evidence", error_evidence_id);
+            }
+            return single_output(std::move(result));
+        }
+        case ActionKind::HypothesisConclude: {
+            const auto &payload = std::get<HypothesisConcludePayload>(request.payload);
+            if (payload.hypothesis.empty()) {
+                return single_output(make_action_error(session, request.kind, action_name, "hypothesis_conclude requires hypothesis"));
+            }
+            fs::path file = hypothesis_file_for(session, payload.hypothesis);
+            std::ostringstream md;
+            md << "## Agent Conclusion\n\n";
+            md << "- Conclusion: `" << payload.conclusion << "`\n";
+            if (!payload.inference.empty()) {
+                md << "\n" << payload.inference << "\n";
+            }
+            md << "\n";
+            append_text(file, md.str());
+            auto &record = probe_state.hypotheses_by_id[payload.hypothesis];
+            if (record.id.empty()) {
+                record.id = payload.hypothesis;
+                record.title = payload.hypothesis;
+            }
+            record.agent_conclusion = payload.conclusion;
+            record.agent_inference = payload.inference;
+            write_hypothesis_index(session, probe_state);
+            ActionResult result = ActionResult::success(request.kind, action_name);
+            action_result_set_string(result, "hypothesis", payload.hypothesis);
+            action_result_set_string(result, "conclusion", payload.conclusion);
+            return single_output(std::move(result));
+        }
+        case ActionKind::SaveAction: {
+            const auto &payload = std::get<SaveActionPayload>(request.payload);
+            std::string failure_policy = normalize_replay_failure_policy(payload.failure_policy);
+            if (payload.name.empty() || !payload.saved_action) {
+                return single_output(make_action_error(session, request.kind, action_name, "save_action requires name and saved_action"));
+            }
+            fs::path replay_dir = session.assets_dir() / "replay";
+            fs::create_directories(replay_dir);
+            std::string replay_base = slugify(payload.name);
+            fs::path replay_file = replay_dir / (replay_base + ".jsonl");
+            fs::path replay_plan = replay_dir / (replay_base + ".json");
+            std::ofstream replay_out(replay_file, std::ios::app);
+            if (!replay_out) {
+                return single_output(make_action_error(session, request.kind, action_name, "failed to write replay file"));
+            }
+            replay_out << dump_json(action_request_to_json(*payload.saved_action)) << '\n';
+            replay_out.close();
+            try {
+                rebuild_replay_plan_from_jsonl(replay_file,
+                                               replay_plan,
+                                               payload.name,
+                                               task,
+                                               session.session_id(),
+                                               failure_policy);
+            } catch (const std::exception &ex) {
+                auto ev = session.evidence_store().add_text("ToolError",
+                                                            "Replay plan write failed",
+                                                            replay_plan.lexically_normal().string(),
+                                                            ex.what());
+                ActionResult error = ActionResult::failure(request.kind, action_name, "failed to write replay plan");
+                error.evidence_id = ev.id;
+                return single_output(std::move(error));
+            }
+            ActionResult result = ActionResult::success(request.kind, action_name);
+            action_result_set_string(result, "file", replay_file.lexically_normal().string());
+            action_result_set_string(result, "plan", replay_plan.lexically_normal().string());
+            action_result_set_string(result, "failure_policy", failure_policy);
+            return single_output(std::move(result));
+        }
+        case ActionKind::Replay: {
+            const auto &payload = std::get<ReplayPayload>(request.payload);
+            fs::path replay_file;
+            if (!payload.file.empty()) {
+                replay_file = payload.file;
+            } else if (!payload.name.empty()) {
+                fs::path replay_dir = session.assets_dir() / "replay";
+                fs::path plan = replay_dir / (slugify(payload.name) + ".json");
+                fs::path jsonl = replay_dir / (slugify(payload.name) + ".jsonl");
+                replay_file = fs::exists(plan) ? plan : jsonl;
+            } else {
+                return single_output(make_action_error(session, request.kind, action_name, "replay requires file or name"));
+            }
+            try {
+                return replay_action_file(session,
+                                          task,
+                                          outcome,
+                                          probe_state,
+                                          replay_file,
+                                          payload.force,
+                                          payload.failure_policy);
+            } catch (const std::exception &ex) {
+                return single_output(make_action_error(session,
+                                                       request.kind,
+                                                       action_name,
+                                                       ex.what(),
+                                                       "Replay failed",
+                                                       {{"file", replay_file.lexically_normal().string()}}));
+            }
+        }
+        case ActionKind::Unknown:
+            break;
+    }
+#undef RETURN_PROBE_SET_ERROR
+    return single_output(make_action_error(session, request.kind, action_name, "unsupported action", "Unsupported action"));
+}
+
+static ActionOutput handle_action_request(GdbSession &session,
+                                          const DebugTask *task,
+                                          SessionOutcome *outcome,
+                                          ProbeState &probe_state,
+                                          const ActionRequest &request) {
+    return dispatch_action(session, task, outcome, probe_state, request);
+}
+
+static ActionOutput handle_action_json(GdbSession &session,
                                        const DebugTask *task,
                                        SessionOutcome *outcome,
                                        ProbeState &probe_state,
-                                       const std::string &line) {
-    if (trim(line).empty()) {
-        return ActionResult::success(ActionKind::Unknown, "");
+                                       const Json &action) {
+    if (!action.is_object()) {
+        return single_output(make_action_error(session, ActionKind::Unknown, "", "action must be a JSON object"));
     }
-    ActionKind fallback_kind = ActionKind::Unknown;
-    std::string fallback_action;
-    try {
-        Json action = parse_json(line);
-        if (action.is_object()) {
-            ActionRequest request = parse_action_request(action);
-            fallback_kind = request.kind;
-            fallback_action = request.action;
-        }
-    } catch (...) {
+    ActionRequest request = parse_action_request(action);
+    if (request.action.empty()) {
+        return single_output(make_action_error(session, ActionKind::Unknown, "", "missing action"));
     }
-
-    bool finished = false;
-    std::ostringstream out;
-    handle_action_line_legacy(session, task, outcome, probe_state, line, finished, out);
-    return action_result_from_legacy_output(out.str(), fallback_kind, fallback_action, finished);
+    return handle_action_request(session, task, outcome, probe_state, request);
 }
+
 
 struct ReplayStepRunResult {
     int index = 0;
@@ -2170,6 +1839,15 @@ struct ReplayRunResult {
     std::vector<ReplayStepRunResult> steps;
 };
 
+struct ReplayActionStep {
+    int index = 0;
+    std::string step_id;
+    std::string name;
+    bool enabled = true;
+    std::string failure_policy = kReplayPolicyContinue;
+    ActionRequest action;
+};
+
 static std::string replay_step_json_fragment(const ReplayStepRunResult &step) {
     std::ostringstream out;
     out << "{"
@@ -2185,6 +1863,44 @@ static std::string replay_step_json_fragment(const ReplayStepRunResult &step) {
         << "\"skip_reason\":" << json_escape(step.skip_reason)
         << "}";
     return out.str();
+}
+
+static ResultObject replay_step_result_object(const ReplayStepRunResult &step) {
+    ResultObject object;
+    result_object_set_int(object, "index", step.index);
+    result_object_set_string(object, "step_id", step.step_id);
+    result_object_set_string(object, "action_name", step.action_name);
+    result_object_set_string(object, "status", step.status);
+    result_object_set_string(object, "failure_policy", step.failure_policy);
+    result_object_set_string(object, "evidence", step.evidence_id);
+    result_object_set_string(object, "action_evidence", step.action_evidence_id);
+    result_object_set_string(object, "error_evidence", step.error_evidence_id);
+    result_object_set_string(object, "error", step.error);
+    result_object_set_string(object, "skip_reason", step.skip_reason);
+    return object;
+}
+
+static ActionResult replay_result_action(const fs::path &path, const ReplayRunResult &run) {
+    ActionResult result = run.ok
+                              ? ActionResult::success(ActionKind::Replay, "replay")
+                              : ActionResult::failure(ActionKind::Replay, "replay", run.error);
+    action_result_set_string(result, "file", path.lexically_normal().string());
+    action_result_set_string(result, "plan", run.plan_name);
+    action_result_set_string(result, "schema", run.schema);
+    action_result_set_int(result, "schema_version", run.schema_version);
+    action_result_set_bool(result, "force", run.force);
+    action_result_set_bool(result, "task_metadata_match", run.task_metadata_match);
+    action_result_set_string(result, "failure_policy", run.failure_policy);
+    action_result_set_string(result, "warning", run.warning);
+    action_result_set_string(result, "warning_evidence", run.warning_evidence_id);
+    action_result_set_string(result, "error_evidence", run.error_evidence_id);
+    action_result_set_string(result, "run_evidence", run.run_evidence_id);
+    ResultArray steps;
+    for (const auto &step : run.steps) {
+        steps.items.push_back(replay_step_result_object(step));
+    }
+    action_result_set_array(result, "steps", std::move(steps));
+    return result;
 }
 
 static std::string replay_result_json(const fs::path &path, const ReplayRunResult &result) {
@@ -2255,33 +1971,29 @@ static ReplayStepRunResult write_skipped_replay_step(GdbSession &session,
     return result;
 }
 
-static ReplayStepRunResult replay_action_text(GdbSession &session,
+static ReplayStepRunResult replay_action_step(GdbSession &session,
                                               const DebugTask *task,
                                               SessionOutcome *outcome,
                                               ProbeState &probe_state,
                                               const std::string &plan_name,
-                                              const std::string &step_id,
-                                              int index,
-                                              const std::string &line,
-                                              const std::string &failure_policy,
-                                              std::ostream &out) {
+                                              const ReplayActionStep &step,
+                                              std::vector<ActionResult> &prelude) {
     ReplayStepRunResult result;
-    result.index = index;
-    result.step_id = step_id;
-    result.failure_policy = failure_policy;
-    std::string action_name = "unknown";
-    try {
-        Json parsed_action = parse_json(line);
-        if (parsed_action.is_object()) {
-            action_name = parsed_action.string_or("action", replay_action_display_name(parsed_action, index));
-        }
-    } catch (...) {
+    result.index = step.index;
+    result.step_id = step.step_id;
+    result.failure_policy = step.failure_policy;
+    std::string action_name = step.action.action.empty() ? step.name : step.action.action;
+    if (action_name.empty()) {
+        action_name = "unknown";
     }
     result.action_name = action_name;
 
     try {
-        ActionResult action_result = handle_action_line(session, task, outcome, probe_state, line);
-        std::string step_output = action_result_line(action_result);
+        ActionOutput action_output = handle_action_request(session, task, outcome, probe_state, step.action);
+        std::string step_output = action_output_text(action_output);
+        prelude.insert(prelude.end(), action_output.prelude.begin(), action_output.prelude.end());
+        prelude.push_back(action_output.final);
+        const ActionResult &action_result = action_output.final;
         bool failed = !action_result.ok;
         result.status = failed ? "failed" : "success";
         result.error = failed ? action_result.error : "";
@@ -2292,52 +2004,53 @@ static ReplayStepRunResult replay_action_text(GdbSession &session,
             std::ostringstream error_text;
             error_text << "{\n";
             error_text << "  \"plan\": " << json_escape(plan_name) << ",\n";
-            error_text << "  \"step_id\": " << json_escape(step_id) << ",\n";
-            error_text << "  \"index\": " << index << ",\n";
+            error_text << "  \"step_id\": " << json_escape(step.step_id) << ",\n";
+            error_text << "  \"index\": " << step.index << ",\n";
             error_text << "  \"action_name\": " << json_escape(action_name) << ",\n";
-            error_text << "  \"failure_policy\": " << json_escape(failure_policy) << ",\n";
+            error_text << "  \"failure_policy\": " << json_escape(step.failure_policy) << ",\n";
             error_text << "  \"error\": " << json_escape(result.error) << ",\n";
             error_text << "  \"response\": " << json_escape(step_output) << "\n";
             error_text << "}\n";
-            auto ev = session.evidence_store().add_text("ToolError", "Replay step reported failure " + step_id, action_name, error_text.str());
+            auto ev = session.evidence_store().add_text("ToolError", "Replay step reported failure " + step.step_id, action_name, error_text.str());
             result.error_evidence_id = ev.id;
         }
         std::ostringstream evidence_text;
         evidence_text << "{\n";
         evidence_text << "  \"plan\": " << json_escape(plan_name) << ",\n";
-        evidence_text << "  \"step_id\": " << json_escape(step_id) << ",\n";
-        evidence_text << "  \"index\": " << index << ",\n";
+        evidence_text << "  \"step_id\": " << json_escape(step.step_id) << ",\n";
+        evidence_text << "  \"index\": " << step.index << ",\n";
         evidence_text << "  \"action_name\": " << json_escape(action_name) << ",\n";
         evidence_text << "  \"status\": " << json_escape(result.status) << ",\n";
-        evidence_text << "  \"failure_policy\": " << json_escape(failure_policy) << ",\n";
-        evidence_text << "  \"action_json\": " << json_escape(line) << ",\n";
+        evidence_text << "  \"failure_policy\": " << json_escape(step.failure_policy) << ",\n";
+        evidence_text << "  \"action_json\": " << json_escape(dump_json(action_request_to_json(step.action))) << ",\n";
         evidence_text << "  \"action_evidence\": " << json_escape(result.action_evidence_id) << ",\n";
         evidence_text << "  \"error_evidence\": " << json_escape(result.error_evidence_id) << ",\n";
         evidence_text << "  \"error\": " << json_escape(result.error) << ",\n";
         evidence_text << "  \"response\": " << json_escape(step_output) << "\n";
         evidence_text << "}\n";
-        auto ev = session.evidence_store().add_text("ReplayStep", "Replay step " + step_id + " " + result.status, action_name, evidence_text.str());
+        auto ev = session.evidence_store().add_text("ReplayStep", "Replay step " + step.step_id + " " + result.status, action_name, evidence_text.str());
         result.evidence_id = ev.id;
-        out << step_output;
     } catch (const std::exception &ex) {
         result.status = "failed";
         result.error = ex.what();
         std::ostringstream evidence_text;
         evidence_text << "{\n";
         evidence_text << "  \"plan\": " << json_escape(plan_name) << ",\n";
-        evidence_text << "  \"step_id\": " << json_escape(step_id) << ",\n";
-        evidence_text << "  \"index\": " << index << ",\n";
+        evidence_text << "  \"step_id\": " << json_escape(step.step_id) << ",\n";
+        evidence_text << "  \"index\": " << step.index << ",\n";
         evidence_text << "  \"action_name\": " << json_escape(action_name) << ",\n";
         evidence_text << "  \"status\": \"failed\",\n";
-        evidence_text << "  \"failure_policy\": " << json_escape(failure_policy) << ",\n";
-        evidence_text << "  \"action\": " << json_escape(line) << ",\n";
+        evidence_text << "  \"failure_policy\": " << json_escape(step.failure_policy) << ",\n";
+        evidence_text << "  \"action\": " << json_escape(dump_json(action_request_to_json(step.action))) << ",\n";
         evidence_text << "  \"error\": " << json_escape(ex.what()) << "\n";
         evidence_text << "}\n";
-        auto ev = session.evidence_store().add_text("ToolError", "Replay step failed " + step_id, action_name, evidence_text.str());
+        auto ev = session.evidence_store().add_text("ToolError", "Replay step failed " + step.step_id, action_name, evidence_text.str());
         result.evidence_id = ev.id;
         result.error_evidence_id = ev.id;
-        out << "{\"ok\":false,\"action\":\"replay_step\",\"step_id\":" << json_escape(step_id)
-            << ",\"error\":" << json_escape(ex.what()) << ",\"evidence\":" << json_escape(ev.id) << "}\n";
+        ActionResult emitted = ActionResult::failure(ActionKind::Replay, "replay_step", ex.what());
+        emitted.evidence_id = ev.id;
+        action_result_set_string(emitted, "step_id", step.step_id);
+        prelude.push_back(std::move(emitted));
     }
     return result;
 }
@@ -2348,7 +2061,7 @@ static ReplayRunResult replay_json_plan(GdbSession &session,
                                         ProbeState &probe_state,
                                         const fs::path &path,
                                         const Json &plan,
-                                        std::ostream &out,
+                                        std::vector<ActionResult> &prelude,
                                         bool force,
                                         const std::string &failure_policy_override) {
     ReplayRunResult result;
@@ -2477,16 +2190,19 @@ static ReplayRunResult replay_json_plan(GdbSession &session,
             }
             continue;
         }
-        ReplayStepRunResult step_result = replay_action_text(session,
+        ReplayActionStep replay_step;
+        replay_step.index = index;
+        replay_step.step_id = step_id;
+        replay_step.name = action_name;
+        replay_step.failure_policy = step_policy;
+        replay_step.action = parse_action_request(*action);
+        ReplayStepRunResult step_result = replay_action_step(session,
                                                              task,
                                                              outcome,
                                                              probe_state,
                                                              plan_name,
-                                                             step_id,
-                                                             index,
-                                                             dump_json(*action),
-                                                             step_policy,
-                                                             out);
+                                                             replay_step,
+                                                             prelude);
         if (step_result.status == "failed") {
             result.ok = false;
             if (step_policy == kReplayPolicyStop) {
@@ -2499,14 +2215,14 @@ static ReplayRunResult replay_json_plan(GdbSession &session,
     return result;
 }
 
-static void replay_action_file(GdbSession &session,
-                               const DebugTask *task,
-                               SessionOutcome *outcome,
-                               ProbeState &probe_state,
-                               const fs::path &path,
-                               std::ostream &out,
-                               bool force,
-                               const std::string &failure_policy_override) {
+static ActionOutput replay_action_file(GdbSession &session,
+                                       const DebugTask *task,
+                                       SessionOutcome *outcome,
+                                       ProbeState &probe_state,
+                                       const fs::path &path,
+                                       bool force,
+                                       const std::string &failure_policy_override) {
+    ActionOutput output;
     ReplayRunResult result;
     result.plan_name = path.stem().string();
     result.force = force;
@@ -2520,8 +2236,8 @@ static void replay_action_file(GdbSession &session,
     std::string content = trim(content_stream.str());
     if (content.empty()) {
         add_replay_run_evidence(session, path, result);
-        out << replay_result_json(path, result);
-        return;
+        output.final = replay_result_action(path, result);
+        return output;
     }
 
     if (!content.empty() && content.front() == '{') {
@@ -2534,27 +2250,30 @@ static void replay_action_file(GdbSession &session,
                                       probe_state,
                                       path,
                                       plan,
-                                      out,
+                                      output.prelude,
                                       force,
                                       failure_policy_override);
         } else {
             std::string policy = normalize_replay_failure_policy(failure_policy_override);
             result.failure_policy = policy;
-            result.steps.push_back(replay_action_text(session,
+            ReplayActionStep step;
+            step.index = 1;
+            step.step_id = "a1";
+            step.name = replay_action_display_name(plan, 1);
+            step.failure_policy = policy;
+            step.action = parse_action_request(plan);
+            result.steps.push_back(replay_action_step(session,
                                                       task,
                                                       outcome,
                                                       probe_state,
                                                       path.stem().string(),
-                                                      "a1",
-                                                      1,
-                                                      dump_json(plan),
-                                                      policy,
-                                                      out));
+                                                      step,
+                                                      output.prelude));
             result.ok = result.steps.back().status != "failed";
         }
         add_replay_run_evidence(session, path, result);
-        out << replay_result_json(path, result);
-        return;
+        output.final = replay_result_action(path, result);
+        return output;
     }
 
     std::istringstream lines(content);
@@ -2584,16 +2303,23 @@ static void replay_action_file(GdbSession &session,
                                                              stop_reason));
             continue;
         }
-        ReplayStepRunResult step_result = replay_action_text(session,
+        Json action = parse_json(line);
+        if (!action.is_object()) {
+            throw std::runtime_error("replay JSONL action must be an object: " + path.string());
+        }
+        ReplayActionStep step;
+        step.index = index;
+        step.step_id = step_id.str();
+        step.name = replay_action_display_name(action, index);
+        step.failure_policy = plan_policy;
+        step.action = parse_action_request(action);
+        ReplayStepRunResult step_result = replay_action_step(session,
                                                              task,
                                                              outcome,
                                                              probe_state,
                                                              plan_name,
-                                                             step_id.str(),
-                                                             index,
-                                                             line,
-                                                             plan_policy,
-                                                             out);
+                                                             step,
+                                                             output.prelude);
         if (step_result.status == "failed") {
             result.ok = false;
             if (plan_policy == kReplayPolicyStop) {
@@ -2604,7 +2330,8 @@ static void replay_action_file(GdbSession &session,
         result.steps.push_back(std::move(step_result));
     }
     add_replay_run_evidence(session, path, result);
-    out << replay_result_json(path, result);
+    output.final = replay_result_action(path, result);
+    return output;
 }
 
 static int run_check(const DebugTask &task) {
@@ -2994,9 +2721,8 @@ static void start_live_session(LiveSession &live) {
     live.outcome.state = SessionState::Ready;
     collect_environment_info(*live.session, live.task, live.outcome);
 
-    std::ostringstream replay_output;
     if (!live.opts.replay_before_run.empty()) {
-        replay_action_file(*live.session, &live.task, &live.outcome, live.probe_state, live.opts.replay_before_run, replay_output);
+        (void)replay_action_file(*live.session, &live.task, &live.outcome, live.probe_state, live.opts.replay_before_run);
     }
 
     if (live.task.core_dump) {
@@ -3021,7 +2747,7 @@ static void start_live_session(LiveSession &live) {
         live.outcome.run_timed_out = run.timed_out;
         update_outcome_from_stop(live.outcome, run);
         collect_stop_followup(*live.session, live.outcome, run);
-        handle_probe_stop(*live.session, &live.task, &live.outcome, live.probe_state, run, replay_output);
+        (void)handle_probe_stop(*live.session, &live.task, &live.outcome, live.probe_state, run);
     }
 }
 
@@ -3160,13 +2886,13 @@ static std::string handle_daemon_request(const Json &request,
         if (payload == nullptr || !payload->is_object()) {
             return daemon_response(false, "action request missing payload");
         }
-        ActionResult result = handle_action_line(*live.session, &live.task, &live.outcome, live.probe_state, dump_json(*payload));
-        if (result.finished) {
+        ActionOutput output = handle_action_json(*live.session, &live.task, &live.outcome, live.probe_state, *payload);
+        if (output.final.finished) {
             std::string response = finish_live_session_response(session_id, live, "");
             sessions.erase(it);
             return response;
         }
-        return action_result_line(result);
+        return action_output_text(output);
     }
 
     if (op == "finish") {
@@ -3379,7 +3105,7 @@ static int run_serve(const CliOptions &opts, const DebugTask &task) {
         collect_environment_info(session, task, outcome);
 
         if (!opts.replay_before_run.empty()) {
-            replay_action_file(session, &task, &outcome, probe_state, opts.replay_before_run, std::cout);
+            std::cout << action_output_text(replay_action_file(session, &task, &outcome, probe_state, opts.replay_before_run));
         }
 
         if (task.core_dump) {
@@ -3404,7 +3130,9 @@ static int run_serve(const CliOptions &opts, const DebugTask &task) {
             outcome.run_timed_out = run.timed_out;
             update_outcome_from_stop(outcome, run);
             collect_stop_followup(session, outcome, run);
-            handle_probe_stop(session, &task, &outcome, probe_state, run, std::cout);
+            for (const auto &result : handle_probe_stop(session, &task, &outcome, probe_state, run)) {
+                std::cout << action_result_line(result);
+            }
         }
 
         std::cout << "{\"ok\":true,\"session_id\":" << json_escape(opts.session_id)
@@ -3415,10 +3143,17 @@ static int run_serve(const CliOptions &opts, const DebugTask &task) {
         bool finished = false;
         std::string line;
         while (!finished && std::getline(std::cin, line)) {
-            ActionResult result = handle_action_line(session, &task, &outcome, probe_state, line);
-            finished = result.finished;
-            if (!result.action.empty() || !trim(line).empty()) {
-                std::cout << action_result_line(result);
+            ActionOutput output;
+            if (!trim(line).empty()) {
+                try {
+                    output = handle_action_json(session, &task, &outcome, probe_state, parse_json(line));
+                } catch (const std::exception &ex) {
+                    output = single_output(make_action_error(session, ActionKind::Unknown, "", std::string("invalid json: ") + ex.what()));
+                }
+            }
+            finished = output.final.finished;
+            if (!output.final.action.empty() || !trim(line).empty()) {
+                std::cout << action_output_text(output);
             }
         }
 

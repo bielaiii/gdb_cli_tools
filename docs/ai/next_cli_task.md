@@ -1,264 +1,216 @@
-# Next CLI Task: cli.cpp typed action refactor
+# Next CLI Task: remove remaining string/Json internal transports
 
 ## 目标
 
-下一轮集中做 **`src/cli.cpp` 拆分与类型化内部 action 重构**。
+下一轮集中清理当前 action/replay/on-hit 路径中仍残留的 **字符串或 JSON AST 作为内部传输协议** 的实现。
 
-这是行为保持型重构，不新增用户可见功能。目标是把当前 `cli.cpp` 中混在一起的 CLI、
-daemon、session lifecycle、action dispatch、probe/on-hit、replay、hypothesis glue 拆开，
-并把内部 action 流程从“JSON/string/ostream 驱动”收敛为 typed C++ struct / enum 驱动。
+上一轮已经引入 `ActionKind`、`ActionRequest`、`ActionResult`，并让 replay/on-hit 的 success/failure
+判断不再解析 response 文本。但代码里仍有多个内部路径把 action、response 或结构化扩展字段保存为
+`std::string`、`Json` 或 `std::vector<Json>` 后再 parse/dump。下一轮要把这些内部传输改成 typed
+C++ struct / enum / vector，或结构化 KV。这里的目标不是消灭业务字符串，也不是把天然适合 KV 的
+半开放结果/metadata 硬拆成大量 action-specific struct。
 
-核心原则：
+本轮仍是行为保持型重构，不新增用户可见功能，不改变 CLI 命令、action JSON schema、response JSON
+字段、evidence schema、replay plan schema、report schema 或 raw evidence 文件布局。
 
-1. JSON 只作为 CLI/daemon 输入输出边界、replay plan 文件和 evidence/report 审计 artifact 的格式。
-2. 内部模块不要把 JSON 文本、response 字符串或 `ostream` 当作控制流协议。
-3. action 输入在边界解析成 typed request；handler 返回 typed result；最后统一 dump 成现有 JSON response。
-4. 不引入 protobuf，不引入第三方 JSON 库；普通 C++ `struct` / `enum class` 足够。
-5. 外部 CLI 命令、action JSON schema、response JSON 字段、evidence schema、report schema 和 replay plan schema 必须保持兼容。
+## 当前发现的残留问题
 
-## 背景
+### 1. `ActionRequest` / `ActionResult` 仍有 JSON 容器
 
-当前 `src/cli.cpp` 约 3,500 行，主要职责包括：
+当前 `src/cli/action.hpp` 里：
 
-- CLI 参数解析和顶层命令路由。
-- `check` / `serve`。
-- Unix socket daemon 和 client command JSON 构造。
-- live session 启动、initial replay、Run/Core mode 初始化、finish 写 report/assets。
-- `handle_action_line` action dispatch。
-- breakpoint/watchpoint/catchpoint metadata 和 on-hit action。
-- hypothesis 文件/index 写入。
-- replay JSONL / structured plan 执行。
-- response JSON 字符串拼接和 `ostream` 输出。
+- `ActionRequest` 仍保留 `Json on_hit` 和 `Json saved_action`。
+- `ActionResult` 仍保留 `Json fields` 和 `std::vector<Json> prelude_responses`。
+- `action_result_line` 会把 `prelude_responses` 和最终 result dump 成多行 response。
 
-这使后续扩 action、修 failure semantics 或调整 replay/on-hit 行为时很容易误改无关路径。
+这些是“类似字符串的数据结构”：虽然不是 JSON 文本，但仍把内部结构化状态交给通用 JSON AST 承载。
 
-本轮重构的关键不是更换外部协议，而是收紧内部边界：
+下一轮要求：
 
-- 业务字段仍可以是字符串，例如 GDB expression、location、raw MI command、error message、
-  evidence id、debug text 和 human-readable summary。
-- 但序列化 JSON 文本、拼接后的 response 文本、dump 后再 parse 的 action/response，不应作为内部模块协议。
-- replay 和 on-hit 判断 action 是否失败时，应直接看 typed `ActionResult.ok`，不要解析 response 文本里的 `ok:false`。
+- `ActionRequest` 不再持有 raw `Json` payload。
+- `ActionResult` 不再持有 generic `Json fields` / `prelude_responses`。
+- action-specific request 字段用 typed payload 表达。
+- response 的半开放扩展字段可以保留结构化 KV，但 KV value 必须是结构化类型，不能是 JSON 文本或
+  generic `Json` AST。
+- 多行 response 兼容性用 typed `ActionEmission` / `ActionOutput` 之类的结构表达，最后只在 CLI/daemon 边界 dump 成 JSON。
 
-## 任务分类
+### 2. `handle_action_line_legacy` 仍是字符串/ostream 内部协议
 
-### 1. 类型化 action 边界
+当前 `src/cli.cpp` 仍有：
 
-新增内部 action 类型系统。
+- `handle_action_line_legacy(..., const std::string &line, bool &finished, std::ostream &out)`。
+- 外层 `handle_action_line` 先 parse JSON 获取 fallback，再调用 legacy handler。
+- legacy handler 内部仍直接 parse `line`、写 `ostream`、拼 response JSON 字符串。
+- 外层再把 legacy output parse 成 `ActionResult` / prelude responses。
 
-建议结构：
+下一轮要求：
 
-- `ActionKind`
-  - 覆盖当前支持的 action：`backtrace`、`locals`、`registers`、`threads`、`args_info`、
-    `frame_select`、`evaluate`、`breakpoint_set`、`watchpoint_set`、`catchpoint_set`、
-    `probe_list`、`probe_enable`、`probe_disable`、`probe_delete`、`run`、`continue`、
-    `save_action`、`replay`、`hypothesis_create`、`hypothesis_check`、`hypothesis_conclude`、
-    `raw_mi`、`finish_session`。
-- `ActionRequest`
-  - 包含 `ActionKind kind`。
-  - 包含各 action 的 typed payload。可使用 `std::variant`，也可以先用一个聚合 struct 加 optional payload，
-    但不要把 raw `Json` 作为 handler 的主要输入。
-- `ActionResult`
-  - 至少包含 `bool ok`、`ActionKind kind`、`bool finished`、`std::string error`、
-    `std::string evidence_id`、`std::string command_evidence_id`。
-  - 需要表达 action-specific 字段时，用 typed result payload 或一个结构化 fields 容器。
-  - 允许最终序列化时转换为 `Json`，但 handler 内部不应拼接 response JSON 字符串。
+- 删除 `handle_action_line_legacy`。
+- 新增真正的 `dispatch_action(ActionContext&, const ActionRequest&) -> ActionResult`。
+- 每个 action handler 接收 typed request payload，返回 typed result。
+- handler 内部不写 `ostream`，不拼完整 JSON response，不把 response 文本交回上层。
+- `serve` / daemon action 只在最外层输出 `ActionOutput` dump 后的 JSON 行。
 
-要求：
+### 3. On-hit policy 仍用 JSON 文本保存 action
 
-- `Json -> ActionRequest` 只发生在 action 输入边界。
-- `ActionResult -> Json -> dump_json` 只发生在 CLI/daemon 输出边界。
-- handler 不接收 raw JSON，不直接写 `ostream`，不返回拼接好的 response 文本。
+当前 `ProbeState::OnHitPolicy` 中：
 
-### 2. Action parser / dispatcher
+- `std::vector<std::string> actions` 保存 `dump_json(item)` 后的 action JSON。
+- `parse_on_hit_action` 把 `Json item` dump 成字符串保存。
+- `action_name_from_text` 通过 `parse_json(action_text)` 取 action 名。
+- `add_timeout_to_on_hit_action` 通过 parse/dump 修改 timeout/deadline。
+- `run_on_hit_actions` 把 `action_text` 传回 `handle_action_line`。
+- `continue_after_hit` 通过 `ostringstream` 构造 `{"action":"continue",...}`。
 
-抽出 action parser 和 dispatcher。
+下一轮要求：
 
-要求：
+- `OnHitPolicy::actions` 改为 `std::vector<ActionRequest>` 或更窄的 `std::vector<OnHitActionRequest>`。
+- on-hit parsing 边界只在 action JSON 输入处发生一次。
+- timeout/deadline 注入通过 typed payload 修改，不允许 parse/dump action JSON。
+- `continue_after_hit` 构造 typed continue request，不允许构造 JSON 字符串。
+- `OnHitAction` evidence 中仍可 dump action JSON 作为审计 artifact，但必须从 typed request 在 artifact 边界生成。
 
-- `parse_action_request(const Json&) -> ActionRequest`
-  - 负责字段读取、默认值和 validation。
-  - 对缺少必需字段、非法 on-hit policy、非法 catchpoint selector、`raw_mi` 缺少
-    `risk:"advanced"` 等情况生成稳定 typed validation failure。
-- `dispatch_action(ActionContext&, const ActionRequest&) -> ActionResult`
-  - 负责 state guard 和分发。
-  - action handler 只处理 typed payload。
-- `finish_session` / `finish` 通过 `ActionResult.finished = true` 表达结束请求。
+### 4. Replay runtime 仍以 action JSON 字符串传 step
 
-注意：
+当前 replay 路径中：
 
-- 当前 response 字段名和错误语义必须保持兼容。
-- validation failure 仍要写 `ToolError` evidence，并在 response 中返回 `evidence`。
-- GDB command failure 仍要通过 `command_evidence` 关联原始 command evidence。
+- `load_replay_jsonl_actions` 返回 `std::vector<std::string>`。
+- `write_replay_plan` 接收 `std::vector<std::string> actions`，内部逐条 `parse_json(actions[i])`。
+- `replay_action_text(..., const std::string &line, ...)` 仍以 action JSON 文本作为执行输入。
+- legacy single-action replay 仍通过 `dump_json(plan)` 传给 replay execution。
 
-### 3. Probe / on-hit runtime
+下一轮要求：
 
-从 `cli.cpp` 中抽出 probe runtime。
+- 引入 typed replay runtime step，例如 `ReplayActionStep`：
+  - `step_id`
+  - `name`
+  - `enabled`
+  - `failure_policy`
+  - `ActionRequest action`
+  - 可选 `Json original_action_for_artifact` 或等价审计边界数据
+- JSONL / structured replay plan 文件读取后立即 parse 成 typed replay step。
+- replay 执行层只接收 typed step，不接收 action JSON string。
+- replay plan 写出仍是 JSON 文件格式，但写文件时从 typed step dump artifact JSON，不把 JSON string 作为内部状态。
+- `write_replay_plan` 不再以 `std::vector<std::string>` 作为内部 API；如果必须保留兼容入口，只能作为边界 adapter，并立即转换为 typed steps。
 
-覆盖：
+### 5. Action response 多行输出仍通过 JSON AST 传递
 
-- `ProbeState`。
-- on-hit policy parsing 和 validation。
-- breakpoint/watchpoint/catchpoint metadata 管理。
-- probe hit attribution。
-- `BreakpointHit` / `WatchpointHit` / `CatchpointHit` evidence 写入。
-- `OnHitAction` wrapper evidence 写入。
-- finish-time `assets/probes.json` 写出。
+当前为兼容 on-hit/replay 子 action 多行输出，`ActionResult` 使用 `std::vector<Json> prelude_responses`。
 
-要求：
+下一轮要求：
 
-- 运行期仍以内存 `ProbeState` 为权威状态。
-- `assets/probes.json` 仍只在 finish/report 阶段写出，不作为 live GDB 恢复文件。
-- on-hit action 必须走 typed `ActionRequest` / `ActionResult`。
-- on-hit success/failure 直接看 `ActionResult.ok`。
+- 引入 typed output container，例如：
+  - `ActionOutput { std::vector<ActionResult> prelude; ActionResult final; }`
+  - 或 `ActionEmission { ActionResult result; std::vector<ActionResult> child_results; }`
+- 子 action response 在内部仍是 typed result，不是 `Json`。
+- 最终多行 JSON 只在 CLI/daemon boundary dump。
+- `prelude_responses` 删除。
+
+## 允许保留的字符串
+
+不要把“业务值是字符串”和“内部协议是字符串”混在一起。以下字符串可以保留：
+
+- GDB expression、location、raw MI command、catchpoint selector。
+- 文件路径、session id、evidence id、hypothesis id/title/description。
+- error message、debug text、human-readable summary、report Markdown。
+- GDB/MI raw lines、inferior stdout/stderr、evidence raw/summary/view 内容。
+- 外部协议和 artifact 格式：CLI/daemon JSON、replay plan/JSONL 文件、evidence payload、
+  session files、report。
+
+本轮要移除的是：
+
+- action JSON 文本作为内部 action 请求。
+- response JSON 文本作为内部 action 结果。
+- generic `Json` AST 作为内部 request/result 传输字段；天然半开放 response metadata 可以使用结构化 KV。
+- `std::vector<std::string>` 保存待执行 action。
+- parse/dump JSON 只为了在内部模块间传递 action 或 result。
+
+## 实现要求
+
+### 1. 类型化 ActionRequest payload
+
+- 为各 action 增加明确 payload struct。
+- `ActionRequest` 用 `std::variant` 或等价 typed union 持有 payload。
+- 不再用一个大 struct 加所有 action 的通用字段作为主要模型。
+- `parse_action_request(const Json&)` 是唯一 action JSON 输入 adapter。
+- 旧 action JSON schema 保持兼容。
+
+### 2. 结构化 ActionResult payload
+
+- 对固定语义字段使用 `ActionResult` 的明确成员，例如 `ok`、`action`、`error`、`evidence`。
+- 对天然半开放的 response 扩展字段，使用结构化 KV，例如 `ResultField` / `ResultObject` / `ResultArray`。
+- 删除 `Json fields`。
+- 删除 `std::vector<Json> prelude_responses`。
+- `ActionResult -> Json` 的转换集中在输出 adapter。
+- response 字段名和 smoke 断言必须保持兼容。
+
+### 3. 删除 legacy string handler
+
+- 删除 `handle_action_line_legacy`。
+- 删除 handler 内部直接写 response JSON 的路径。
+- `handle_action_line` 可以保留名字，但签名应是 typed boundary：
+  - 边界：`handle_action_json(..., const Json&) -> ActionOutput`
+  - 内部：`dispatch_action(ActionContext&, const ActionRequest&) -> ActionOutput`
+- 不允许 action handler 接收 `std::string line` 作为 action 输入。
+
+### 4. On-hit typed actions
+
+- `OnHitPolicy::actions` 改成 typed request vector。
+- `parse_on_hit_policy` 解析 JSON 后立即产出 typed on-hit action。
 - `raw_mi` 继续禁止作为 on-hit action。
-- 现有 evidence kind、字段和 session summary 计数语义保持兼容。
+- timeout/deadline 注入通过 typed payload 完成。
+- wrapper evidence 中的 action/response JSON 只能在 evidence 写入边界生成。
 
-### 4. Replay runtime
+### 5. Replay typed steps
 
-从 `cli.cpp` 中抽出 replay runtime。
+- 引入 `ReplayActionStep` / `ReplayActionPlan` runtime structs。
+- replay JSONL 和 replay plan 读取后立即转换为 typed runtime plan。
+- replay execution 不接收 action JSON string。
+- replay failure policy、skipped step、warning/error evidence 语义保持不变。
+- replay artifact 文件仍保持 `gdb-agent-replay-plan-v1` schema。
 
-要求：
+### 6. JSON builder 边界
 
-- `src/replay/replay_plan.*` 继续负责 replay plan schema、fingerprint 和 validation。
-- replay plan / JSONL 文件仍是 JSON 持久化格式。
-- load replay step 时，把 action JSON parse 成 `ActionRequest`。
-- 执行 replay step 时调用 typed dispatcher，得到 `ActionResult`。
-- step success/failure 直接使用 `ActionResult.ok`，不要从 response 文本反解析。
-- `continue_on_error` / `stop_on_error` / skipped step 行为保持不变。
-- `ReplayStep` / `ReplayRun` / `ReplayWarning` / replay `ToolError` evidence 字段语义保持兼容。
-
-注意：
-
-- replay response 仍要输出当前兼容的 JSON 字段，例如 `steps`、`run_evidence`、`error_evidence`、
-  `warning_evidence`、`task_metadata_match`。
-- 允许 replay evidence 中保留 action 的 JSON 表示作为审计 artifact，但这必须来自 typed request 的边界/审计 dump，
-  不能作为内部控制流。
-
-### 5. Session runtime
-
-抽出 live session 生命周期，消除 `serve` 和 daemon `create/finish` 的重复逻辑。
-
-覆盖：
-
-- validate task。
-- 创建 assets。
-- 创建和初始化 `GdbSession`。
-- 设置 session id。
-- 设置 inferior stdout/stderr assets path。
-- collect environment info。
-- optional `--replay-before-run`。
-- Run Mode initial run。
-- Core Dump Mode load core 和静态取证。
-- stop follow-up collection。
-- finish 时 flush inferior output、写 probe snapshot、写 session files、写 report、shutdown。
-
-要求：
-
-- `serve` 和 daemon flow 复用同一套 session runtime。
-- `finish` 表示定位流程完成；`close` 仍只关闭 session。
-- `session_snapshot.json` / `session_summary.json` 语义不变。
-- Core Dump Mode state guard 语义不变。
-
-### 6. Daemon / client split
-
-从 `cli.cpp` 中抽出 daemon 和 client command glue。
-
-覆盖：
-
-- Unix socket listen/connect/read/write。
-- daemon request handling。
-- daemon session map。
-- client subcommand request construction：`create`、`action`、`save-action`、`replay`、`finish`、
-  `close`、`status`、`list`、`shutdown`。
-
-要求：
-
-- 外部 CLI 用法完全兼容。
-- daemon action response 仍是单行 JSON。
-- client 仍支持 inline JSON 或 JSON file。
-- `src/cli.cpp` 最终只保留顶层 `run_cli` 路由、`check` / `serve` / daemon/client 调用 glue 和少量 shared CLI parsing。
-
-### 7. JSON / string 使用边界
-
-本轮必须明确代码层面的边界。
-
-允许：
-
-- CLI/daemon 输入输出 JSON。
-- replay plan / JSONL 作为持久化文件格式。
-- evidence payload、session files、report artifacts 使用 JSON/Markdown/text。
-- 业务值使用字符串，例如 expression、location、GDB command、error、evidence id、hypothesis title、
-  debug text、summary。
-
-禁止：
-
-- handler 通过拼接 JSON 字符串返回 response。
-- handler 直接写 `ostream`。
-- replay/on-hit 通过解析 response 文本判断 action 成功失败。
-- 模块间把 dump 后的 action/response JSON 文本当作主要内部协议。
-- 引入 protobuf 或大型第三方序列化依赖。
-
-## 建议文件组织
-
-可以按实际实现微调，但建议不要把新代码继续堆回 `src/cli.cpp`。
-
-建议新增：
-
-- `src/cli/action.hpp`
-- `src/cli/action.cpp`
-- `src/cli/session_runtime.hpp`
-- `src/cli/session_runtime.cpp`
-- `src/cli/daemon.hpp`
-- `src/cli/daemon.cpp`
-- `src/workflow/probe_runtime.hpp`
-- `src/workflow/probe_runtime.cpp`
-- `src/replay/replay_runtime.hpp`
-- `src/replay/replay_runtime.cpp`
-
-也可以新增小型 helper：
-
-- `src/cli/json_response.hpp`
-- `src/cli/json_response.cpp`
-
-要求：
-
-- `src/cli.hpp` 继续只暴露 `int run_cli(int argc, char **argv);`。
-- 不把内部 runtime 类型暴露成项目公共 API。
-- CMake 中只把新增 `.cpp` 加到 `gdb-agent` target；除非新增单元测试需要，否则不要扩大测试 target 依赖。
+- 保留 JSON dump helper，但只能用于：
+  - CLI/daemon response 输出。
+  - replay plan/session/evidence/report artifact 写入。
+  - client request 构造，因为这是 daemon wire boundary。
+- 禁止在内部 action/probe/replay/session runtime API 中用 `Json` 或 JSON string 表示 request/result。
 
 ## 可写范围
 
 允许修改：
 
+- `src/cli/action.hpp`
+- `src/cli/action.cpp`
 - `src/cli.cpp`
-- `src/cli.hpp`，仅当确有必要；原则上保持只暴露 `run_cli`
-- `CMakeLists.txt`
-- 新增 `src/cli/*.hpp`
-- 新增 `src/cli/*.cpp`
-- 新增或修改 `src/workflow/probe_runtime.*`
-- 新增或修改 `src/replay/replay_runtime.*`
+- `src/replay/replay_plan.hpp`
+- `src/replay/replay_plan.cpp`
+- `CMakeLists.txt`，仅当需要新增 runtime 文件。
+- 新增 `src/cli/*.hpp` / `src/cli/*.cpp`
+- 新增 `src/replay/*.hpp` / `src/replay/*.cpp`
+- 新增或修改 `src/workflow/probe_runtime.*`，如果拆 on-hit/probe runtime 时需要。
 - `docs/ai/progress.md`
 - `docs/ai/handoff.md`
-- `docs/ai/decision.md`，仅当实现过程中需要记录项目级决策；当前已知决策可记录为：
-  内部 action 流程使用 typed structs，JSON/string 只作为边界格式
+- `docs/ai/decision.md`，仅当新增或改变项目级决策。
 
 原则上不要修改：
 
-- action JSON schema 文档，除非发现现有文档与实际行为不一致。
-- evidence model 文档，除非 evidence 字段语义意外需要说明。
-- report 输出内容。
-- replay plan schema。
-- task format。
+- `docs/agent_actions.md` / `.en.md`，除非发现文档和实际行为不一致。
+- `docs/evidence_model.md` / `.en.md`，除非 evidence 字段语义发生变化。
+- `docs/task_format.md` / `.en.md`。
+- report 内容。
 - sanitizer、MI parser、hypothesis assertion 行为。
 
 禁止：
 
 - 修改外部 CLI 命令语法。
-- 修改用户可见 action schema。
-- 修改 evidence raw 文件布局。
+- 修改用户可见 action JSON schema。
+- 修改 response JSON 字段语义。
 - 修改 replay plan schema。
+- 修改 evidence raw 文件布局。
 - 引入 protobuf、IDL/codegen 或第三方 JSON 库。
-- 顺手做 unrelated refactor 或全仓格式化。
+- 为了“无字符串”删除业务字符串字段，例如 expression、location、error、evidence id。
 
 ## 验证
 
@@ -278,36 +230,23 @@ git diff --check
 
 重点确认：
 
-- daemon `action` 仍返回单行 JSON。
-- `finish_session` 在 `serve` 和 daemon flow 下仍正确结束并写 report/assets。
+- daemon `action` 仍返回兼容的单行或多行 JSON response。
+- on-hit action 的子 action JSON 行仍按现有 smoke 预期出现。
 - replay `continue_on_error` / `stop_on_error` / skipped step 行为不变。
-- on-hit action 成功失败判断不再依赖文本 response。
-- validation failure、state guard failure、GDB command failure 仍写 `ToolError` evidence。
-- report、session summary、snapshot、evidence index、probe snapshot 和 hypothesis index 引用保持一致。
-
-如果当前环境缺少 GDB 或 live smoke 被平台跳过，必须在 `docs/ai/handoff.md` 和最终回复中说明：
-
-- 已运行哪些测试。
-- 哪些 live smoke 未实际运行。
-- 原因是环境限制、GDB 版本差异，还是实现遗留。
+- save-action 写出的 JSONL 和 structured replay plan 仍与现有 schema 兼容。
+- `ReplayStep` / `ReplayRun` / `OnHitAction` evidence 字段语义不变。
+- ToolError、command_evidence、probe hit、hypothesis index、session summary、report/assets 引用保持兼容。
 
 ## 完成标准
 
 本轮完成时应满足：
 
-- `src/cli.cpp` 不再承担全部 action/probe/replay/daemon/session runtime 职责。
-- action handler 内部不直接写 `ostream`。
-- action handler 不返回拼接 JSON response 字符串。
-- action handler 主要接收 typed request，返回 typed result。
-- replay/on-hit 不再解析 response 文本判断成功失败。
-- 外部 CLI/action/response/evidence/report/replay 行为与现有 smoke 兼容。
-- `docs/ai/progress.md` 记录本轮实际完成内容。
-- `docs/ai/handoff.md` 覆写为本轮交接，包含验证结果和遗留限制。
-- 本轮相关文件被单独 staged、commit，并 push 到当前分支 upstream；如果 commit/push 失败，
-  按 AGENTS.md 要求记录原因。
-
-## 当前轮次限制
-
-如果本文件只是由 planning/documentation 步骤更新，则本步骤只允许修改
-`docs/ai/next_cli_task.md`，不修改源码、不运行 build/test、不更新 progress/handoff、不 commit/push。
-真正执行上述重构时，必须由后续“开始新一轮任务流”或等价的明确执行指令触发。
+- `ActionRequest` 不再持有 raw `Json` payload。
+- `ActionResult` 不再持有 `Json fields` 或 `std::vector<Json> prelude_responses`。
+- 删除 `handle_action_line_legacy`。
+- on-hit policy 不再用 `std::vector<std::string>` 保存 action JSON。
+- on-hit 执行不再 parse/dump action JSON 来修改 timeout/deadline。
+- replay runtime 不再以 `std::string line` / action JSON string 作为执行输入。
+- replay plan writer 的内部 API 不再接收 `std::vector<std::string>` action JSON。
+- JSON/string 只出现在明确的外部边界、artifact 写入或业务字符串字段中。
+- 外部行为与现有 CTest/smoke 完全兼容。

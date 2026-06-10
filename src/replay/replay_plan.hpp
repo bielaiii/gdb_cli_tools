@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../cli/action.hpp"
 #include "../common/json.hpp"
 #include "../task/debug_task.hpp"
 
@@ -33,7 +34,7 @@ std::string replay_action_display_name(const Json &action, int index);
 
 void write_replay_plan(const std::filesystem::path &path,
                        const std::string &name,
-                       const std::vector<std::string> &actions,
+                       const std::vector<ActionRequest> &actions,
                        const DebugTask *task,
                        const std::string &source_session_id,
                        const std::string &failure_policy = kReplayPolicyContinue,

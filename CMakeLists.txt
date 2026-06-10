@@ -93,6 +93,7 @@ target_compile_options(type_sanitizer_tests PRIVATE
 
 add_executable(replay_plan_tests
     tests/replay_plan_tests.cpp
+    src/cli/action.cpp
     src/common/json.cpp
     src/common/string_utils.cpp
     src/replay/replay_plan.cpp

@@ -170,7 +170,7 @@ std::string replay_action_display_name(const Json &action, int index) {
 
 void write_replay_plan(const fs::path &path,
                        const std::string &name,
-                       const std::vector<std::string> &actions,
+                       const std::vector<ActionRequest> &actions,
                        const DebugTask *task,
                        const std::string &source_session_id,
                        const std::string &failure_policy,
@@ -189,7 +189,7 @@ void write_replay_plan(const fs::path &path,
     plan << "  \"task\": " << (task == nullptr ? std::string("null") : replay_task_metadata_json(*task)) << ",\n";
     plan << "  \"actions\": [\n";
     for (size_t i = 0; i < actions.size(); ++i) {
-        Json action = parse_json(actions[i]);
+        Json action = action_request_to_json(actions[i]);
         int index = static_cast<int>(i + 1);
         std::ostringstream id;
         id << 'a' << index;

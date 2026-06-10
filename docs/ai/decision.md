@@ -180,9 +180,14 @@ enable/disable/delete 在 core mode 下会被 state guard 拒绝，并记录 `To
 
 内部 action 流程应使用普通 C++ `struct` 和 `enum class` 表达请求、payload、结果和状态。
 CLI/daemon 输入边界可以把 JSON parse 成 typed `ActionRequest`；handler 只接收类型化
-request，并返回 typed `ActionResult`；CLI/daemon 输出边界再把 typed result dump 成现有 JSON
-response。handler 不应直接写 `ostream`，不应返回拼接好的 JSON response 字符串，也不应把
-response 文本作为 replay、on-hit 或其他内部控制流协议。
+request，并返回 typed `ActionOutput` / `ActionResult`；CLI/daemon 输出边界再把 typed result
+dump 成现有 JSON response。handler 不应直接写 `ostream`，不应返回拼接好的 JSON response
+字符串，也不应把 response 文本作为 replay、on-hit 或其他内部控制流协议。
+
+请求侧已知 action payload 应使用 action-specific typed struct。结果侧天然半开放的扩展字段
+不需要硬拆成大量 action-specific result struct，可以保留 `ResultField` / `ResultObject` /
+`ResultArray` 这样的结构化 KV；但 KV value 必须是结构化类型，不能把 JSON 文本或 generic
+`Json` AST 当作内部结果协议。
 
 JSON 和文本仍然是外部接口与审计 artifact 的格式：CLI/daemon 输入输出、replay plan/JSONL、
 evidence payload、session files、report 和 human-readable debug/summary 可以继续使用 JSON、
@@ -198,5 +203,6 @@ text。这里禁止的是把序列化后的 action/response 文本当成内部�
 
 - typed struct 能降低 handler 手写 JSON、字段遗漏、转义错误和 response 文本反解析带来的风险。
 - replay 和 on-hit 可以直接依赖 `ActionResult.ok` 等结构化状态，而不是解析 `ok:false` 文本。
+- 结构化 KV 保留了 action response metadata 的可扩展性，同时避免内部依赖 serialized JSON。
 - 保持 JSON 作为外部边界格式可以兼容现有 CLI、daemon、smoke、report、evidence 和 replay plan。
 - protobuf 会引入依赖、生成代码、CMake 集成和 schema 维护成本；对当前内部重构收益不足。
