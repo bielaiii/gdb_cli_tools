@@ -660,9 +660,33 @@ optional/variant/tuple/pair 和工作目录路径归一化。`raw_mi` 已作为�
 - 同步更新 D012，明确请求侧已知 payload 使用 typed struct；结果侧天然半开放 metadata 可以保留
   结构化 KV，但不能用 JSON 文本或 generic `Json` AST 当内部协议。
 
+## 2026-06-10 本轮更新（MI summary live fixture）
+
+- 将 `docs/ai/next_cli_task.md` 更新为真实 Linux + GDB MI summary hardening 任务。
+- 新增 `examples/mi_summary_fixture.cpp` 和 CMake target `mi_summary_fixture`：
+  - fixture 先用 `SIGTRAP` 提供 create 后的稳定初始停点。
+  - 启动 worker thread，便于真实 `info threads` 覆盖当前线程和普通线程。
+  - 提供 noinline 调用链 `mi_summary_entry` -> `mi_summary_middle` -> `mi_summary_leaf` ->
+    `mi_summary_observe_here`，便于 backtrace summary 校准。
+  - 在用户函数停点暴露 STL/template 局部和参数，用于验证 summary 不回退到长模板噪声。
+- 新增 `scripts/smoke_mi_summary_live.sh` 和 CTest `mi_summary_live_flow`：
+  - Linux + GDB 下真实覆盖 daemon create、breakpoint_set、continue、backtrace、threads、
+    locals、frame_select 和 raw_mi。
+  - 断言 backtrace summary 包含稳定函数调用链和 `examples/mi_summary_fixture.cpp` 相对路径，
+    且不包含仓库工作目录绝对路径。
+  - 断言 threads summary 保留当前线程标记、普通线程、LWP/thread identity 和 stopped frame。
+  - 断言 raw_mi result summary 包含 `result:done` 和 `value=`，并检查 evidence Markdown view
+    中的 Raw MI Audit 表含 `result` / `stream` / `async` 等真实 record kind。
+  - 断言真实 GDB `ptype` summary 中 `std::vector<std::string>` 和 `std::map<std::string, int>`
+    保持低噪声，不出现 `std::__cxx11::basic_string<char, std::char_traits<char>` 或 `> >` 回归。
+- 本轮没有改变 summary/sanitizer 行为实现；新增真实 fixture 后现有 summary 逻辑已经通过该
+  Linux + GDB live 回归。
+- 本轮未新增项目级 decision；不改变 action schema、response schema、evidence raw 文件布局、
+  report schema 或 replay plan schema。
+
 ## 建议的下一步
 
-1. 用更多真实 Linux GDB raw 输出继续校准 MI parser 和 backtrace/thread summary。
+1. 继续收集不同 GDB 版本和真实项目 core 的 raw 输出，扩展 MI summary fixture 覆盖面。
 2. 视目标环境稳定性，为 `vfork` 增加真实 hit smoke，或记录不同 GDB/target 组合的 catchpoint
    capability 差异。
 3. 按真实调试需求继续扩展 hypothesis assertion，例如 float、changed 或跨 check 历史比较。
