@@ -10,6 +10,7 @@ add_executable(gdb-agent
     src/main.cpp
     src/cli.cpp
     src/cli/action.cpp
+    src/cli/action_dispatch.cpp
     src/common/json.cpp
     src/common/string_utils.cpp
     src/evidence/evidence_store.cpp

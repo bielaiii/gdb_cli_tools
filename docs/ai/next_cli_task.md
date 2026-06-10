@@ -1,124 +1,146 @@
-# Next CLI Task: MI summary hardening with real Linux GDB fixtures
+# Next CLI Task: extract ActionContext and split action dispatch
 
 ## 目标
 
-下一轮任务聚焦强化 **MI summary / backtrace / threads / raw MI audit** 在真实
-Linux + GDB 输出下的稳定性。
+下一轮做一次 **行为保持型架构重构**：从 `src/cli.cpp` 中抽出 action 执行上下文和 action
+dispatch 边界，为后续拆分 probe runtime、replay runtime、hypothesis store 和 daemon server
+打基础。
 
-本轮不是新增 action，也不是改变外部 schema；目标是用真实 GDB session 产生的
-evidence 作为 fixture，补强 summary 解析、降噪和回归覆盖。
+本轮不新增功能、不改变用户可见行为、不改变任何外部 JSON schema。所有 CLI/daemon command、
+action request、action response、evidence、report、replay plan 和 smoke 断言都必须保持兼容。
 
 ## 当前背景
 
-当前已有：
+当前已经完成 D012：内部 action 流程使用 typed structs，JSON/string 只作为边界格式。
+`ActionRequest` / `ActionOutput` 已经存在，on-hit 和 replay runtime 也不再通过 response 文本反解析。
 
-- `tests/mi_summary_tests.cpp`：手写 raw MI / console stream 样例。
-- `scripts/smoke_type_sanitizer.sh`：真实 GDB 下验证 C++ type sanitizer。
-- `scripts/smoke_capability_matrix.sh`：覆盖 probe、replay、hypothesis、thread crash 等能力。
+但 `src/cli.cpp` 仍然承担过多职责：
 
-仍缺少一个专门面向真实 GDB 输出的 summary smoke，用来稳定约束：
+- CLI / daemon command routing。
+- action dispatch 和 action handler。
+- action state guard 和 error evidence 写入。
+- probe store / on-hit runtime glue。
+- replay runtime glue。
+- hypothesis markdown/index glue。
+- finish/report/session artifact orchestration。
 
-- `backtrace` summary 的线程边界、frame 提取、source path 相对化和 truncation。
-- `threads` summary 的当前线程、普通线程、LWP/thread id 和 stopped frame。
-- `raw_mi` / `GdbCommand` evidence 的 raw audit metadata。
-- 真实 GDB 输出下 sanitizer 不回退到长模板噪声。
+本轮只做第一步：抽出 `ActionContext`，并把 action dispatch 从 `src/cli.cpp` 拆到独立模块。
+不要顺手拆 probe/replay/hypothesis/daemon；那些是后续任务。
 
 ## 实现范围
 
 允许修改：
 
-- `examples/mi_summary_fixture.cpp`，新增专用 fixture。
-- `scripts/smoke_mi_summary_live.sh`，新增 live smoke。
-- `CMakeLists.txt`，新增 fixture target 和 CTest。
-- `src/gdb/mi_utils.cpp` / `.hpp`，仅当真实输出暴露 MI parser 或 summary edge case。
-- `src/evidence/evidence_store.cpp` / `.hpp`，仅当真实输出暴露 evidence summary edge case。
-- `tests/mi_summary_tests.cpp`，为修复过的 edge case 增加最小单元测试。
-- `docs/evidence_model.md` / `.en.md` 和 `docs/known_limitations.md`，仅当 summary 行为或限制说明变化。
+- `src/cli/action.hpp`
+- `src/cli/action.cpp`
+- `src/cli.cpp`
+- 新增 `src/cli/action_context.hpp` / `.cpp`，如果需要。
+- 新增 `src/cli/action_dispatch.hpp` / `.cpp`，用于承载 action dispatch 和直接相关 helper。
+- `CMakeLists.txt`，仅用于接入新增 `.cpp`。
+- `tests/replay_plan_tests.cpp`，仅当新增链接单元导致测试 target 需要补源文件。
 - `docs/ai/progress.md`
 - `docs/ai/handoff.md`
-- `docs/ai/decision.md`，仅当新增或改变项目级决策。
+- `docs/ai/decision.md`，仅当新增或改变项目级决策；本轮默认不需要。
 
 原则上不要修改：
 
-- `docs/agent_actions.md` / `.en.md`，除非发现 action 输出语义文档和实际行为不一致。
-- `docs/task_format.md` / `.en.md`。
-- replay、probe、hypothesis、report 的用户可见行为。
+- `docs/agent_actions.md` / `.en.md`
+- `docs/evidence_model.md` / `.en.md`
+- `docs/task_format.md` / `.en.md`
+- `docs/known_limitations.md`
+- report 内容。
+- replay plan schema。
+- evidence schema 或 raw evidence 文件布局。
+- GDB/MI parser、type sanitizer、hypothesis assertion 行为。
 
 禁止：
 
-- 新增用户可见 action。
+- 新增或删除用户可见 action。
 - 修改 CLI 命令语法。
 - 修改 action JSON schema。
-- 修改 response JSON 字段语义。
+- 修改 response JSON 字段名、字段含义或多行输出顺序。
 - 修改 replay plan schema。
+- 修改 report schema。
 - 修改 evidence raw 文件布局。
-- 把 summary 当作 raw evidence 的替代品。
-- 引入第三方 demangler、protobuf、IDL/codegen 或新 JSON 库。
-- 做 unrelated refactor；`src/cli.cpp` 拆分、EvidenceStore index 写入策略优化、
-  hypothesis assertion 扩展都不属于本轮任务。
+- 引入 protobuf、IDL/codegen、第三方 JSON 库或大范围格式化。
+- 做 unrelated cleanup，例如拆 daemon、重写 probe runtime、改 EvidenceStore index 写入策略。
 
 ## 具体要求
 
-### 1. 新增真实 GDB summary fixture
+### 1. 引入 ActionContext
 
-新增 `examples/mi_summary_fixture.cpp`。
+新增一个小的上下文类型，集中 action handler 当前需要的 runtime 依赖。建议形态：
 
-fixture 至少包含：
+```cpp
+struct ActionContext {
+    GdbSession &session;
+    const DebugTask *task = nullptr;
+    SessionOutcome *outcome = nullptr;
+    ProbeState &probe_state;
+};
+```
 
-- 稳定的 noinline 调用链，便于 `backtrace` summary 断言函数名。
-- 至少一个 worker thread，便于 `threads` summary 断言当前线程与普通线程。
-- 一个稳定停点，便于 action 在用户函数 frame 上执行。
-- 至少一个 STL/template 局部或参数，便于验证 summary 不回退成长模板噪声。
-- 工作目录内的源码路径，便于验证 path sanitizer 相对化。
+具体字段名可按现有代码风格调整，但必须满足：
 
-建议流程：
+- `dispatch_action` 不再接收一长串 `GdbSession&`、`DebugTask*`、`SessionOutcome*`、
+  `ProbeState&` 参数。
+- handler 内部仍通过 typed `ActionRequest` / payload 工作，不退回 JSON/string transport。
+- 不引入全局 mutable state。
+- 不改变 session ownership；`ActionContext` 只借用现有对象。
 
-1. 程序启动后先 `raise(SIGTRAP)`，让 daemon `create` 后停住。
-2. smoke 设置 breakpoint 到 fixture 的稳定 noinline 函数。
-3. `continue` 到 breakpoint。
-4. 在该停点执行 `backtrace`、`threads`、`locals`、`frame_select` 和 `raw_mi`。
+### 2. 拆出 action dispatch 模块
 
-### 2. 新增 live smoke
+新增 `src/cli/action_dispatch.hpp` / `.cpp`，把 action dispatch 的公开入口移出
+`src/cli.cpp`。
 
-新增 `scripts/smoke_mi_summary_live.sh`。
+目标入口建议为：
 
-脚本行为：
+```cpp
+ActionOutput dispatch_action(ActionContext &context, const ActionRequest &request);
+```
 
-- 非 Linux、缺少 `gdb` 或缺少 `python3` 时按现有 smoke 风格 skip。
-- 启动 daemon，创建 session，执行 fixture flow。
-- 从 action response 中读取 evidence id，再从 `assets/evidence/index.json` 找到
-  `summary_file`、`view_file` 和 `raw_file`。
-- 校验所有 evidence artifact 文件存在。
-- 校验 report 中引用的 evidence id 都存在于 index。
+迁移内容：
 
-必须断言的 summary 信号：
+- `dispatch_action` switch。
+- 与 action dispatch 直接相关、且迁移后不会扩大职责的 helper。
+- action state guard result 生成。
+- action validation error 到 `ToolError` evidence 的转换 helper。
 
-- `backtrace` summary 包含 fixture 调用链中的稳定函数名。
-- `backtrace` summary 包含相对路径，例如 `examples/mi_summary_fixture.cpp`，不能依赖工作目录绝对路径。
-- `threads` summary 包含当前线程标记和至少一个普通线程。
-- `threads` summary 保留 LWP/thread id 或等价 GDB thread identity 信号。
-- `raw_mi` result summary 包含 `result:done` 和关键 payload，例如 `value=` 或 `threads=`。
-- 对应 evidence Markdown view 包含 `Raw MI Audit` 表，并至少出现 `result`、`stream`、
-  `async`、`prompt` 中真实输出具备的 record kind。
+保留在 `src/cli.cpp`：
 
-噪声回归断言：
+- CLI main command parsing。
+- daemon socket/request handling。
+- session registry / create / status / finish / close / shutdown orchestration。
+- report finish 调用。
+- 文件级 top-level flow glue。
 
-- summary 不应包含仓库工作目录的绝对路径。
-- summary 不应包含明显未降噪的 `std::__cxx11::basic_string<char, std::char_traits<char>`。
-- summary 不应包含 `> >` 模板 closing spacing 噪声。
+不要在本轮拆：
 
-### 3. 按真实输出修 summary 实现
+- probe runtime/on-hit 执行到独立模块。
+- replay runtime 到独立模块。
+- hypothesis store 到独立模块。
+- daemon server 到独立模块。
 
-如果 smoke 暴露真实输出 edge case，允许小范围修复：
+如果某些 helper 同时被 `src/cli.cpp` 和 `action_dispatch.cpp` 使用，可以先放在最小可见范围的
+header 或保留在原文件并用窄接口调用；不要为了“完美拆分”做大范围移动。
 
-- MI record classification。
-- MI payload field extraction。
-- backtrace frame line simplification。
-- thread list line simplification。
-- working-directory path normalization。
-- 常见 STL/type sanitizer 降噪。
+### 3. 保持外部行为完全兼容
 
-每个修复必须在 `tests/mi_summary_tests.cpp` 或 `tests/type_sanitizer_tests.cpp` 中补最小单元测试。
+必须保持：
+
+- CLI/daemon 输出 JSON 字段和顺序尽量不变。
+- on-hit 子 action response 和主 action response 的多行输出顺序不变。
+- replay `continue_on_error` / `stop_on_error` / skipped step 行为不变。
+- `ToolError`、`command_evidence`、probe hit、hypothesis index、session summary、report/assets
+  引用保持兼容。
+- `raw_mi` 仍必须显式 `risk:"advanced"`。
+- Core Dump Mode state guard 行为不变。
+
+### 4. 保持测试和构建边界清晰
+
+- 新增 `.cpp` 后更新 `CMakeLists.txt` 的 `gdb-agent` target。
+- 如果 `replay_plan_tests` 或其他 test target 因链接依赖需要新增源文件，最小补齐。
+- 不新增 live smoke；本轮是行为保持型重构，现有 CTest 已覆盖足够。
 
 ## 验证
 
@@ -127,29 +149,33 @@ fixture 至少包含：
 ```bash
 cmake --build build
 ./build/gdb-agent check examples/segfault_task.md
+./build/task_parser_tests
+./build/replay_plan_tests
+./build/hypothesis_assertion_tests
 ./build/mi_summary_tests
 ./build/type_sanitizer_tests
-./build/task_parser_tests
 ctest --test-dir build --output-on-failure
 git diff --check
 ```
 
 重点确认：
 
-- 新增 `mi_summary_live_flow` 在 Linux + GDB 环境实际运行，不应只 skip。
-- 现有 `capability_matrix_flow`、`core_dump_mode`、`type_sanitizer_flow` 不回归。
-- raw evidence、raw SHA-256、evidence id、evidence index、report 引用和
-  `session_summary.json` count 保持兼容。
-- 用户可见 action JSON、response JSON、replay plan、report schema 和 raw evidence 文件布局不变。
+- `ctest` 仍全部通过。
+- `daemon_action_flow`、`capability_matrix_flow`、`catchpoint_matrix_flow`、
+  `mi_summary_live_flow` 等 live smoke 的输出兼容。
+- on-hit/replay 多行 response 顺序不变。
+- Core Dump Mode guard 行为不变。
+- 没有引入新的用户可见字段或删除旧字段。
 
 ## 完成标准
 
 本轮完成时应满足：
 
-- 新增 `mi_summary_fixture` target。
-- 新增 `scripts/smoke_mi_summary_live.sh`。
-- 新增 CTest `mi_summary_live_flow`。
-- live smoke 能真实覆盖 backtrace、threads、locals/frame_select、raw_mi 和 raw audit metadata。
-- 若修改 summary/sanitizer 行为，相关单元测试和文档已同步。
+- 存在明确的 `ActionContext` 类型。
+- `dispatch_action` 公开入口已从 `src/cli.cpp` 移到独立 action dispatch 模块。
+- `src/cli.cpp` 不再直接承载完整 action dispatch switch。
+- action runtime 仍使用 typed `ActionRequest` / `ActionOutput`，没有回退到内部 JSON/string 协议。
+- 外部行为与现有 CTest/smoke 完全兼容。
 - `docs/ai/progress.md` 和 `docs/ai/handoff.md` 已记录本轮实际完成内容和验证结果。
+- 如无新增项目级决策，不更新 `docs/ai/decision.md`。
 - 本轮相关改动已按仓库约定 commit 并 push。

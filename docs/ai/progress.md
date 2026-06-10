@@ -684,11 +684,34 @@ optional/variant/tuple/pair 和工作目录路径归一化。`raw_mi` 已作为�
 - 本轮未新增项目级 decision；不改变 action schema、response schema、evidence raw 文件布局、
   report schema 或 replay plan schema。
 
+## 2026-06-10 本轮更新（ActionContext / action dispatch split）
+
+- 执行 `docs/ai/next_cli_task.md` 中的行为保持型架构重构任务：抽出 action runtime context，并将
+  action dispatch 从 `src/cli.cpp` 拆到独立模块。
+- 新增 `src/cli/action_context.hpp`：
+  - 将运行期 `ProbeState` 从 `src/cli.cpp` 移到共享 header。
+  - 新增 `ActionContext`，集中借用 `GdbSession`、`DebugTask`、`SessionOutcome` 和 `ProbeState`。
+- 新增 `src/cli/action_dispatch.hpp` / `src/cli/action_dispatch.cpp`：
+  - 公开 `dispatch_action(ActionContext&, const ActionRequest&)`。
+  - 公开 `handle_action_request` / `handle_action_json` typed boundary。
+  - 将原 `src/cli.cpp` 中的 action dispatch switch 迁移到新模块。
+  - 同步迁移 action dispatch 直接依赖的 on-hit/replay/hypothesis/probe helper，避免
+    `src/cli.cpp` 继续承载完整 action runtime。
+- `src/cli.cpp` 现在保留 CLI/daemon/session/report 顶层 orchestration；创建 action 时构造
+  `ActionContext` 再调用 action dispatch 模块。
+- 更新 `CMakeLists.txt`，将 `src/cli/action_dispatch.cpp` 接入 `gdb-agent` target。
+- 保持外部行为兼容：未改变 CLI 命令、action JSON schema、response JSON 字段、evidence schema、
+  replay plan schema、report schema 或 raw evidence 文件布局。
+- 本轮未新增项目级 decision；属于 D012 typed action boundary 下的物理模块拆分。
+
 ## 建议的下一步
 
-1. 继续收集不同 GDB 版本和真实项目 core 的 raw 输出，扩展 MI summary fixture 覆盖面。
-2. 视目标环境稳定性，为 `vfork` 增加真实 hit smoke，或记录不同 GDB/target 组合的 catchpoint
+1. 继续渐进拆分 `src/cli/action_dispatch.cpp` 中的 probe/on-hit runtime，形成独立
+   `probe_runtime` 模块。
+2. 拆分 replay execution 到独立 `replay_runtime` 模块，保留 `replay_plan` 专注 artifact schema。
+3. 继续收集不同 GDB 版本和真实项目 core 的 raw 输出，扩展 MI summary fixture 覆盖面。
+4. 视目标环境稳定性，为 `vfork` 增加真实 hit smoke，或记录不同 GDB/target 组合的 catchpoint
    capability 差异。
-3. 按真实调试需求继续扩展 hypothesis assertion，例如 float、changed 或跨 check 历史比较。
-4. 增加更多真实项目 core/replay/probe fixture，覆盖 core dump 兼容性、失败策略、
+5. 按真实调试需求继续扩展 hypothesis assertion，例如 float、changed 或跨 check 历史比较。
+6. 增加更多真实项目 core/replay/probe fixture，覆盖 core dump 兼容性、失败策略、
    watchpoint/catchpoint on-hit 和跨 assets 目录报告展示。
