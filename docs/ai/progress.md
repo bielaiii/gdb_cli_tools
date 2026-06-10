@@ -609,6 +609,31 @@ optional/variant/tuple/pair 和工作目录路径归一化。`raw_mi` 已作为�
   - `smoke_type_sanitizer.sh` 增加默认策略噪声的负向断言。
 - 本轮未新增项目级 decision；不改变 action schema、evidence schema 或 raw evidence 保存原则。
 
+## 2026-06-10 本轮更新（typed action boundary）
+
+- 新增 `src/cli/action.hpp` / `src/cli/action.cpp`，引入内部 `ActionKind`、
+  `ActionRequest` 和 `ActionResult`：
+  - `ActionRequest` 在 action 输入边界从 JSON 中解析 action 名、常用 payload、timeout、
+    replay/on-hit 相关字段等 typed 字段。
+  - `ActionResult` 统一承载 action 执行结果、`ok`、`finished`、error、evidence id、
+    command evidence id、结构化扩展字段和多行 prelude response。
+  - action response 的最终 JSON dump 集中到 `action_result_to_json` /
+    `action_result_line`，外部 CLI/daemon 输出字段保持兼容。
+- `handle_action_line` 现在对外返回 `ActionResult`，调用方不再直接把 `ostream` 传入 action
+  handler 边界；`serve` 和 daemon action 边界统一通过 `action_result_line` 输出 JSON。
+- replay step 执行改为直接消费 `ActionResult.ok`、`ActionResult.error` 和 evidence 字段判断成功/
+  失败，不再通过解析 response 文本中的 `ok:false` 控制 replay failure policy。
+- on-hit action 执行改为直接消费 `ActionResult.ok`、`ActionResult.error` 和 evidence 字段判断成功/
+  失败，不再通过解析 response 文本控制 on-hit `continue_on_error` / `stop_on_error`。
+- 为保持既有 smoke 和外部输出兼容，`ActionResult` 保留结构化 `prelude_responses`，用于在
+  on-hit/replay 等场景按原顺序输出子 action JSON 行，再输出主 action JSON 行。
+- 新增项目级决策 D012，明确内部 action 流程使用 typed structs，JSON/string 只作为 CLI/daemon
+  边界、replay plan 和 evidence/report artifact 格式；不引入 protobuf。
+- 本轮未改变用户可见 action schema、response 字段语义、evidence schema、replay plan schema、
+  report schema 或 raw evidence 文件布局。
+- 说明：本轮完成了 typed action boundary 和 replay/on-hit 去 response 文本反解析；更深层的
+  probe runtime、session runtime、daemon/client 物理拆分仍可在后续小步重构中继续推进。
+
 ## 建议的下一步
 
 1. 用更多真实 Linux GDB raw 输出继续校准 MI parser 和 backtrace/thread summary。

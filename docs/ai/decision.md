@@ -173,3 +173,30 @@ enable/disable/delete 在 core mode 下会被 state guard 拒绝，并记录 `To
 - core dump 不是 live inferior，不能可靠继续运行或设置未来命中用的 probe。
 - 明确拒绝动态 action 比把 GDB 错误伪装成普通 action result 更利于 Agent 判断下一步。
 - Core Dump Mode 的 MVP 价值在于稳定离线取证，而不是模拟 live session。
+
+## D012: 内部 action 流程使用 typed structs，JSON/string 只作为边界格式
+
+状态：Accepted
+
+内部 action 流程应使用普通 C++ `struct` 和 `enum class` 表达请求、payload、结果和状态。
+CLI/daemon 输入边界可以把 JSON parse 成 typed `ActionRequest`；handler 只接收类型化
+request，并返回 typed `ActionResult`；CLI/daemon 输出边界再把 typed result dump 成现有 JSON
+response。handler 不应直接写 `ostream`，不应返回拼接好的 JSON response 字符串，也不应把
+response 文本作为 replay、on-hit 或其他内部控制流协议。
+
+JSON 和文本仍然是外部接口与审计 artifact 的格式：CLI/daemon 输入输出、replay plan/JSONL、
+evidence payload、session files、report 和 human-readable debug/summary 可以继续使用 JSON、
+Markdown 或普通文本。业务本身需要字符串的字段也继续使用 `std::string`，例如 GDB
+expression、location、raw MI command、error message、evidence id、hypothesis title 和 debug
+text。这里禁止的是把序列化后的 action/response 文本当成内部模块协议，而不是禁止业务字符串。
+
+暂不引入 protobuf、IDL/codegen 或第三方序列化库。当前外部协议已经是 JSON，本项目现阶段需要解决
+的是内部 action handler、replay 和 on-hit 逻辑对 JSON/string/ostream 的耦合，而不是跨语言二进制
+协议或复杂 schema evolution。
+
+原因：
+
+- typed struct 能降低 handler 手写 JSON、字段遗漏、转义错误和 response 文本反解析带来的风险。
+- replay 和 on-hit 可以直接依赖 `ActionResult.ok` 等结构化状态，而不是解析 `ok:false` 文本。
+- 保持 JSON 作为外部边界格式可以兼容现有 CLI、daemon、smoke、report、evidence 和 replay plan。
+- protobuf 会引入依赖、生成代码、CMake 集成和 schema 维护成本；对当前内部重构收益不足。

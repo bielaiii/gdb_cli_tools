@@ -1,5 +1,6 @@
 #include "cli.hpp"
 
+#include "cli/action.hpp"
 #include "common/string_utils.hpp"
 #include "common/json.hpp"
 #include "gdb/gdb_session.hpp"
@@ -14,7 +15,6 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
-#include <optional>
 #include <stdexcept>
 #include <sstream>
 #include <string>
@@ -163,13 +163,11 @@ static CliOptions parse_cli(int argc, char **argv) {
     return opts;
 }
 
-static void handle_action_line(GdbSession &session,
-                               const DebugTask *task,
-                               SessionOutcome *outcome,
-                               ProbeState &probe_state,
-                               const std::string &line,
-                               bool &finished,
-                               std::ostream &out);
+static ActionResult handle_action_line(GdbSession &session,
+                                       const DebugTask *task,
+                                       SessionOutcome *outcome,
+                                       ProbeState &probe_state,
+                                       const std::string &line);
 static void replay_action_file(GdbSession &session,
                                const DebugTask *task,
                                SessionOutcome *outcome,
@@ -908,49 +906,6 @@ static std::vector<std::string> evidence_ids_since(const GdbSession &session, si
     return ids;
 }
 
-static bool on_hit_response_failed(const std::string &response_text,
-                                   std::string &error,
-                                   std::string &evidence_id) {
-    std::istringstream in(response_text);
-    std::string line;
-    bool saw_json = false;
-    while (std::getline(in, line)) {
-        line = trim(line);
-        if (line.empty() || line.front() != '{') {
-            continue;
-        }
-        Json response;
-        try {
-            response = parse_json(line);
-        } catch (const std::exception &ex) {
-            error = std::string("on_hit action returned invalid JSON: ") + ex.what();
-            return true;
-        }
-        if (!response.is_object()) {
-            continue;
-        }
-        saw_json = true;
-        std::string response_evidence = response.string_or("evidence");
-        if (!response_evidence.empty()) {
-            evidence_id = response_evidence;
-        }
-        std::string response_error_evidence = response.string_or("error_evidence");
-        if (!response_error_evidence.empty()) {
-            evidence_id = response_error_evidence;
-        }
-        const Json *ok = response.find("ok");
-        if (ok != nullptr && ok->is_bool() && !ok->bool_value) {
-            error = response.string_or("error", "on_hit action returned ok:false");
-            return true;
-        }
-    }
-    if (!saw_json && !trim(response_text).empty()) {
-        error = "on_hit action did not return JSON status";
-        return true;
-    }
-    return false;
-}
-
 static std::string on_hit_action_result_json(const ProbeState::OnHitActionResult &result) {
     std::ostringstream out;
     out << "{";
@@ -1104,14 +1059,13 @@ static std::vector<ProbeState::OnHitActionResult> run_on_hit_actions(
         std::string action_text = policy.actions[i];
         add_timeout_to_on_hit_action(action_text, policy.timeout_ms);
         size_t evidence_start = session.evidence_store().all().size();
-        bool ignored_finish = false;
-        std::ostringstream response;
-        handle_action_line(session, task, outcome, probe_state, action_text, ignored_finish, response);
+        ActionResult action_result = handle_action_line(session, task, outcome, probe_state, action_text);
+        std::string response_text = action_result_line(action_result);
         result.action_evidence_ids = evidence_ids_since(session, evidence_start);
-        std::string error_evidence;
-        if (on_hit_response_failed(response.str(), result.error, error_evidence)) {
+        if (!action_result.ok) {
             result.status = "failed";
-            result.error_evidence_id = error_evidence;
+            result.error = action_result.error.empty() ? "on_hit action returned ok:false" : action_result.error;
+            result.error_evidence_id = action_result.evidence_id;
             if (result.error_evidence_id.empty() && !result.action_evidence_ids.empty()) {
                 result.error_evidence_id = result.action_evidence_ids.back();
             }
@@ -1121,8 +1075,8 @@ static std::vector<ProbeState::OnHitActionResult> run_on_hit_actions(
         } else {
             result.status = "success";
         }
-        out << response.str();
-        result = add_on_hit_wrapper_evidence(session, hit, policy, std::move(result), action_text, response.str());
+        out << response_text;
+        result = add_on_hit_wrapper_evidence(session, hit, policy, std::move(result), action_text, response_text);
         results.push_back(std::move(result));
     }
 
@@ -1134,22 +1088,21 @@ static std::vector<ProbeState::OnHitActionResult> run_on_hit_actions(
         std::ostringstream action_text;
         action_text << "{\"action\":\"continue\",\"deadline_ms\":" << policy.timeout_ms << "}";
         size_t evidence_start = session.evidence_store().all().size();
-        bool ignored_finish = false;
-        std::ostringstream response;
-        handle_action_line(session, task, outcome, probe_state, action_text.str(), ignored_finish, response);
+        ActionResult action_result = handle_action_line(session, task, outcome, probe_state, action_text.str());
+        std::string response_text = action_result_line(action_result);
         result.action_evidence_ids = evidence_ids_since(session, evidence_start);
-        std::string error_evidence;
-        if (on_hit_response_failed(response.str(), result.error, error_evidence)) {
+        if (!action_result.ok) {
             result.status = "failed";
-            result.error_evidence_id = error_evidence;
+            result.error = action_result.error.empty() ? "continue_after_hit returned ok:false" : action_result.error;
+            result.error_evidence_id = action_result.evidence_id;
             if (result.error_evidence_id.empty() && !result.action_evidence_ids.empty()) {
                 result.error_evidence_id = result.action_evidence_ids.back();
             }
         } else {
             result.status = "success";
         }
-        out << response.str();
-        result = add_on_hit_wrapper_evidence(session, hit, policy, std::move(result), action_text.str(), response.str());
+        out << response_text;
+        result = add_on_hit_wrapper_evidence(session, hit, policy, std::move(result), action_text.str(), response_text);
         results.push_back(std::move(result));
     }
 
@@ -1323,13 +1276,13 @@ static void append_text(const fs::path &path, const std::string &text) {
     out << text;
 }
 
-static void handle_action_line(GdbSession &session,
-                               const DebugTask *task,
-                               SessionOutcome *outcome,
-                               ProbeState &probe_state,
-                               const std::string &line,
-                               bool &finished,
-                               std::ostream &out) {
+static void handle_action_line_legacy(GdbSession &session,
+                                      const DebugTask *task,
+                                      SessionOutcome *outcome,
+                                      ProbeState &probe_state,
+                                      const std::string &line,
+                                      bool &finished,
+                                      std::ostream &out) {
     if (trim(line).empty()) {
         return;
     }
@@ -2104,6 +2057,90 @@ static void handle_action_line(GdbSession &session,
         << "\"evidence\":" << json_escape(ev.id) << "}\n";
 }
 
+static ActionResult action_result_from_legacy_output(const std::string &output,
+                                                     ActionKind fallback_kind,
+                                                     const std::string &fallback_action,
+                                                     bool finished) {
+    if (finished) {
+        ActionResult result = ActionResult::success(ActionKind::FinishSession, "finish_session");
+        result.finished = true;
+        return result;
+    }
+    std::istringstream in(output);
+    std::string line;
+    std::vector<Json> responses;
+    bool saw_json = false;
+    while (std::getline(in, line)) {
+        line = trim(line);
+        if (line.empty() || line.front() != '{') {
+            continue;
+        }
+        try {
+            Json parsed = parse_json(line);
+            if (parsed.is_object()) {
+                responses.push_back(std::move(parsed));
+                saw_json = true;
+            }
+        } catch (...) {
+        }
+    }
+    if (!saw_json) {
+        ActionResult result = ActionResult::success(fallback_kind, fallback_action);
+        return result;
+    }
+    Json last = responses.back();
+
+    std::string action_name = last.string_or("action", fallback_action);
+    ActionKind kind = action_kind_from_name(action_name);
+    if (kind == ActionKind::Unknown) {
+        kind = fallback_kind;
+    }
+    bool ok = last.bool_or("ok", false);
+    ActionResult result = ok
+                            ? ActionResult::success(kind, action_name)
+                            : ActionResult::failure(kind, action_name, last.string_or("error"));
+    result.evidence_id = last.string_or("evidence");
+    result.command_evidence_id = last.string_or("command_evidence");
+    result.fields.type = Json::Type::Object;
+    for (const auto &[key, value] : last.object_value) {
+        if (key == "ok" || key == "action" || key == "error" ||
+            key == "evidence" || key == "command_evidence") {
+            continue;
+        }
+        result.fields.object_value[key] = value;
+    }
+    if (responses.size() > 1) {
+        result.prelude_responses.assign(responses.begin(), responses.end() - 1);
+    }
+    return result;
+}
+
+static ActionResult handle_action_line(GdbSession &session,
+                                       const DebugTask *task,
+                                       SessionOutcome *outcome,
+                                       ProbeState &probe_state,
+                                       const std::string &line) {
+    if (trim(line).empty()) {
+        return ActionResult::success(ActionKind::Unknown, "");
+    }
+    ActionKind fallback_kind = ActionKind::Unknown;
+    std::string fallback_action;
+    try {
+        Json action = parse_json(line);
+        if (action.is_object()) {
+            ActionRequest request = parse_action_request(action);
+            fallback_kind = request.kind;
+            fallback_action = request.action;
+        }
+    } catch (...) {
+    }
+
+    bool finished = false;
+    std::ostringstream out;
+    handle_action_line_legacy(session, task, outcome, probe_state, line, finished, out);
+    return action_result_from_legacy_output(out.str(), fallback_kind, fallback_action, finished);
+}
+
 struct ReplayStepRunResult {
     int index = 0;
     std::string step_id;
@@ -2132,58 +2169,6 @@ struct ReplayRunResult {
     std::string run_evidence_id;
     std::vector<ReplayStepRunResult> steps;
 };
-
-static std::string response_evidence_id(const Json &response) {
-    std::string evidence = response.string_or("evidence");
-    if (!evidence.empty()) {
-        return evidence;
-    }
-    const Json *steps = response.find("steps");
-    if (steps != nullptr && steps->is_array() && !steps->array_value.empty()) {
-        const Json &last = steps->array_value.back();
-        if (last.is_object()) {
-            evidence = last.string_or("evidence");
-            if (!evidence.empty()) {
-                return evidence;
-            }
-            return last.string_or("error_evidence");
-        }
-    }
-    return {};
-}
-
-static bool response_failed(const std::string &response_text,
-                            std::string &error,
-                            std::string &evidence_id) {
-    std::istringstream in(response_text);
-    std::string line;
-    bool saw_json = false;
-    while (std::getline(in, line)) {
-        line = trim(line);
-        if (line.empty() || line.front() != '{') {
-            continue;
-        }
-        Json response = parse_json(line);
-        if (!response.is_object()) {
-            continue;
-        }
-        saw_json = true;
-        std::string response_evidence = response_evidence_id(response);
-        if (!response_evidence.empty()) {
-            evidence_id = response_evidence;
-        }
-        const Json *ok = response.find("ok");
-        if (ok != nullptr && ok->is_bool() && !ok->bool_value) {
-            error = response.string_or("error", "replayed action returned ok:false");
-            return true;
-        }
-    }
-    if (!saw_json && !trim(response_text).empty()) {
-        error = "replayed action did not return JSON status";
-        return true;
-    }
-    return false;
-}
 
 static std::string replay_step_json_fragment(const ReplayStepRunResult &step) {
     std::ostringstream out;
@@ -2294,17 +2279,15 @@ static ReplayStepRunResult replay_action_text(GdbSession &session,
     }
     result.action_name = action_name;
 
-    bool ignored_finish = false;
-    std::ostringstream step_output;
     try {
-        handle_action_line(session, task, outcome, probe_state, line, ignored_finish, step_output);
-        ignored_finish = false;
-        std::string error;
-        std::string child_evidence;
-        bool failed = response_failed(step_output.str(), error, child_evidence);
+        ActionResult action_result = handle_action_line(session, task, outcome, probe_state, line);
+        std::string step_output = action_result_line(action_result);
+        bool failed = !action_result.ok;
         result.status = failed ? "failed" : "success";
-        result.error = failed ? error : "";
-        result.action_evidence_id = child_evidence;
+        result.error = failed ? action_result.error : "";
+        result.action_evidence_id = action_result.evidence_id.empty()
+                                      ? action_result.command_evidence_id
+                                      : action_result.evidence_id;
         if (failed && result.error_evidence_id.empty()) {
             std::ostringstream error_text;
             error_text << "{\n";
@@ -2314,7 +2297,7 @@ static ReplayStepRunResult replay_action_text(GdbSession &session,
             error_text << "  \"action_name\": " << json_escape(action_name) << ",\n";
             error_text << "  \"failure_policy\": " << json_escape(failure_policy) << ",\n";
             error_text << "  \"error\": " << json_escape(result.error) << ",\n";
-            error_text << "  \"response\": " << json_escape(step_output.str()) << "\n";
+            error_text << "  \"response\": " << json_escape(step_output) << "\n";
             error_text << "}\n";
             auto ev = session.evidence_store().add_text("ToolError", "Replay step reported failure " + step_id, action_name, error_text.str());
             result.error_evidence_id = ev.id;
@@ -2331,11 +2314,11 @@ static ReplayStepRunResult replay_action_text(GdbSession &session,
         evidence_text << "  \"action_evidence\": " << json_escape(result.action_evidence_id) << ",\n";
         evidence_text << "  \"error_evidence\": " << json_escape(result.error_evidence_id) << ",\n";
         evidence_text << "  \"error\": " << json_escape(result.error) << ",\n";
-        evidence_text << "  \"response\": " << json_escape(step_output.str()) << "\n";
+        evidence_text << "  \"response\": " << json_escape(step_output) << "\n";
         evidence_text << "}\n";
         auto ev = session.evidence_store().add_text("ReplayStep", "Replay step " + step_id + " " + result.status, action_name, evidence_text.str());
         result.evidence_id = ev.id;
-        out << step_output.str();
+        out << step_output;
     } catch (const std::exception &ex) {
         result.status = "failed";
         result.error = ex.what();
@@ -3177,15 +3160,13 @@ static std::string handle_daemon_request(const Json &request,
         if (payload == nullptr || !payload->is_object()) {
             return daemon_response(false, "action request missing payload");
         }
-        bool finished = false;
-        std::ostringstream out;
-        handle_action_line(*live.session, &live.task, &live.outcome, live.probe_state, dump_json(*payload), finished, out);
-        if (finished) {
+        ActionResult result = handle_action_line(*live.session, &live.task, &live.outcome, live.probe_state, dump_json(*payload));
+        if (result.finished) {
             std::string response = finish_live_session_response(session_id, live, "");
             sessions.erase(it);
             return response;
         }
-        return out.str();
+        return action_result_line(result);
     }
 
     if (op == "finish") {
@@ -3434,7 +3415,11 @@ static int run_serve(const CliOptions &opts, const DebugTask &task) {
         bool finished = false;
         std::string line;
         while (!finished && std::getline(std::cin, line)) {
-            handle_action_line(session, &task, &outcome, probe_state, line, finished, std::cout);
+            ActionResult result = handle_action_line(session, &task, &outcome, probe_state, line);
+            finished = result.finished;
+            if (!result.action.empty() || !trim(line).empty()) {
+                std::cout << action_result_line(result);
+            }
         }
 
         flush_inferior_output(session, outcome);
