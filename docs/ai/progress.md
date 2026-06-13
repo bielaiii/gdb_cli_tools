@@ -732,6 +732,33 @@ optional/variant/tuple/pair 和工作目录路径归一化。`raw_mi` 已作为�
   assertion 语义。
 - 本轮未新增项目级 decision；属于 D012 typed action boundary 下的物理模块拆分。
 
+## 2026-06-13 本轮更新（real workflow smoke）
+
+- 执行 `docs/ai/next_cli_task.md` 中的真实多步骤 workflow smoke 任务，聚焦 core/replay/probe/on-hit
+  evidence 链路，不新增用户可见 action，不改变外部 schema。
+- 新增 `examples/workflow_fixture.cpp` 和 CMake target `workflow_fixture`：
+  - `live` mode 先用 `SIGTRAP` 提供稳定 create 停点，再依次触发 watchpoint、两个普通
+    breakpoint、一个 `continue_after_hit` breakpoint 和 `write` syscall catchpoint。
+  - `core` mode 在 `workflow_core_capture` 暴露稳定 frame、global value 和 node 指针，供 GDB
+    batch 生成 core 后执行静态取证。
+- 新增 `scripts/smoke_real_workflow_flow.sh` 和 CTest `real_workflow_flow`：
+  - Linux + GDB 下覆盖 daemon create、带 metadata 的 breakpoint/watchpoint/catchpoint、
+    on-hit success/failure/skipped、`continue_after_hit`、静态取证 action 和 hypothesis
+    create/check/conclude。
+  - live flow 保存 `stop_on_error` replay plan；第二个 session 使用同一 task 跨 session replay，
+    覆盖成功 step、失败 step 和 skipped step，并检查 `ReplayStep` / `ReplayRun` /
+    `ToolError` evidence。
+  - core flow 使用 GDB `generate-core-file` 生成 fixture core，覆盖 core session 静态 action 和
+    dynamic action/probe guard rejected 的 `ToolError` evidence。
+  - smoke 统一检查 report、`task.normalized.json`、`session_summary.json`、
+    `session_snapshot.json`、`evidence/index.json`、raw/summary/view 文件引用、`probes.json`
+    deleted metadata、hypotheses index 和 report evidence id 引用一致性。
+- 本轮没有修改 action JSON schema、response schema、replay plan schema、evidence raw 文件布局、
+  snapshot/session summary 既有字段含义、GDB/MI parser、type sanitizer 或 hypothesis assertion
+  语义。
+- 本轮未新增项目级 decision；属于既有 core/replay/probe/hypothesis 能力的真实组合 workflow
+  回归覆盖。
+
 ## 建议的下一步
 
 1. 继续收集不同 GDB 版本和真实项目 core 的 raw 输出，扩展 MI summary fixture 覆盖面。

@@ -1,41 +1,36 @@
 # Handoff
 
-日期：2026-06-10
+日期：2026-06-13
 
 ## 本轮完成
 
 - 执行 `docs/ai/next_cli_task.md` 中的
-  `split probe, replay, and hypothesis runtimes` 任务，仅处理其中 1-3：
-  - split probe / on-hit runtime
-  - split replay runtime
-  - split hypothesis store
-- 新增 `src/workflow/probe_runtime.hpp` / `src/workflow/probe_runtime.cpp`：
-  - `ProbeState` 已从 `src/cli/action_context.hpp` 移入 probe runtime header。
-  - probe metadata、probe list result、probe snapshot、hit attribution、on-hit wrapper evidence 和
-    on-hit action execution 已从 `src/cli/action_dispatch.cpp` 移出。
-  - on-hit execution 继续使用 typed `ActionRequest` / `ActionOutput` 调用 action dispatcher。
-- 新增 `src/replay/replay_runtime.hpp` / `src/replay/replay_runtime.cpp`：
-  - replay JSONL/plan 读取、step execution、failure policy、ReplayStep/ReplayRun evidence 和
-    replay final result 构造已从 `src/cli/action_dispatch.cpp` 移出。
-  - `rebuild_replay_plan_from_jsonl` 移到 replay runtime，供 `save_action` 继续生成现有 replay
-    plan artifact。
-- 新增 `src/workflow/hypothesis_store.hpp` / `src/workflow/hypothesis_store.cpp`：
-  - `HypothesisStore` 保存 hypothesis records 和 id counter。
-  - hypothesis markdown 文件路径、index JSON 写入和 markdown append helper 已从 action dispatch
-    移出。
-  - `hypothesis_create` / `hypothesis_check` / `hypothesis_conclude` 仍在 action dispatch 中处理
-    action payload、GDB evidence collection 和 response 构造。
-- 更新 `src/cli/action_context.hpp`：
-  - 只保留 `ActionContext`。
-  - 不再定义 `ProbeState`。
-- 更新 `src/cli/action_dispatch.hpp` / `src/cli/action_dispatch.cpp`：
-  - action dispatch 继续公开 typed `dispatch_action` / `handle_action_request` /
-    `handle_action_json`。
-  - dispatch switch 只调用 probe/replay/hypothesis store API，不再承载完整 runtime/store 实现。
-- 更新 `CMakeLists.txt`，把三个新源文件接入 `gdb-agent` target。
-- 更新 `docs/ai/progress.md`，记录本轮完成情况和剩余建议。
-- `docs/ai/decision.md` 未更新：本轮没有新增或改变项目级 decision，属于 D012 typed action
-  boundary 下的物理模块拆分。
+  `real workflow smoke for core/replay/probe/on-hit evidence robustness` 任务。
+- 新增 `examples/workflow_fixture.cpp`：
+  - `live` mode 先触发 `SIGTRAP`，便于 daemon `create` 后稳定停住。
+  - live flow 随后触发 `g_workflow_value` watchpoint、两个普通 breakpoint、一个
+    `continue_after_hit` breakpoint 和 `write` syscall catchpoint。
+  - `core` mode 在 `workflow_core_capture` 暴露稳定 frame/global/pointer 状态，供 GDB
+    batch 生成 core 后执行静态取证。
+- 更新 `CMakeLists.txt`：
+  - 新增 `workflow_fixture` target。
+  - 新增 CTest `real_workflow_flow`。
+- 新增 `scripts/smoke_real_workflow_flow.sh`：
+  - 覆盖 live probe/on-hit flow：breakpoint、watchpoint、catchpoint metadata，on-hit success、
+    failure、skipped 和 `continue_after_hit`。
+  - 覆盖 hypothesis workflow：`hypothesis_create`、passed/failed/unknown
+    `hypothesis_check`、`hypothesis_conclude`，并检查 hypotheses index 与 report。
+  - live session 保存 `stop_on_error` replay plan。
+  - 第二个 live session 使用相同 task 跨 session replay，覆盖 success、failed 和 skipped step，
+    并检查 `ReplayStep` / `ReplayRun` / `ToolError` evidence。
+  - core flow 使用 GDB `generate-core-file` 生成 fixture core，覆盖 core static action 和 dynamic
+    action/probe guard rejected。
+  - 统一检查 report、`task.normalized.json`、`session_summary.json`、`session_snapshot.json`、
+    `evidence/index.json`、raw/summary/view 文件存在性和 report evidence id 引用一致性。
+  - 检查 finish-time `probes.json` 同时包含 active metadata 和 deleted historical probe metadata。
+- 更新 `docs/ai/progress.md`，记录本轮新增 workflow fixture/smoke 和验证范围。
+- `docs/ai/decision.md` 未更新：本轮没有新增或改变项目级 decision。
+- `docs/ai/next_cli_task.md` 保留本轮任务说明，并会随本轮提交作为任务记录入库。
 
 ## 验证
 
@@ -43,29 +38,46 @@
   - 结果：通过。
 - `./build/gdb-agent check examples/segfault_task.md`
   - 结果：通过，输出 `ok`。
+- `./build/task_parser_tests`
+  - 结果：通过。
+- `./build/replay_plan_tests`
+  - 结果：通过。
+- `./build/hypothesis_assertion_tests`
+  - 结果：通过。
+- `./build/mi_summary_tests`
+  - 结果：通过。
+- `./build/type_sanitizer_tests`
+  - 结果：通过。
+- `./scripts/smoke_real_workflow_flow.sh`
+  - 结果：通过。
+  - 覆盖 live probe/on-hit、replay 跨 session、core mode、report/assets/evidence 引用一致性。
+- `ctest --test-dir build -R real_workflow_flow --output-on-failure`
+  - 结果：通过。
 - `ctest --test-dir build --output-on-failure`
-  - 结果：13/13 tests passed。
-  - 覆盖 daemon/action、core dump、edge case、capability matrix、catchpoint matrix、
-    type sanitizer、MI summary live flow、replay plan、hypothesis assertion 和 task parser。
+  - 结果：14/14 tests passed。
+  - 覆盖 segfault demo、daemon/action、core dump、edge case、capability matrix、catchpoint
+    matrix、type sanitizer live flow、MI summary live flow、real workflow flow 和所有单元测试。
 - `git diff --check`
   - 结果：通过。
 
 ## 完成标准审计
 
-- `src/workflow/probe_runtime.hpp` / `.cpp` 已存在。
-- `src/replay/replay_runtime.hpp` / `.cpp` 已存在。
-- `src/workflow/hypothesis_store.hpp` / `.cpp` 已存在。
-- `ProbeState` 不再定义在 `src/cli/action_context.hpp`。
-- `src/cli/action_dispatch.cpp` 不再承载完整 probe/on-hit runtime、replay execution runtime 或
-  hypothesis store persistence。
-- action runtime 仍使用 typed `ActionRequest` / `ActionOutput`；没有回退到内部 JSON/string 协议。
-- 未改变用户可见 action schema、response schema、evidence schema/raw 文件布局、replay plan
-  schema、report schema、CLI 语法、GDB/MI parser、type sanitizer 或 hypothesis assertion 语义。
+- 存在真实 workflow fixture：`examples/workflow_fixture.cpp`。
+- 存在新的 Linux + GDB workflow smoke：`scripts/smoke_real_workflow_flow.sh`。
+- smoke 已接入 CTest：`real_workflow_flow`。
+- smoke 覆盖 live probe/on-hit flow、replay 跨 session flow 和 core mode flow。
+- smoke 覆盖成功、失败、skipped 和 core-mode guard rejected 四类结果。
+- smoke 检查 report、session summary、snapshot、evidence index、raw/summary/view 文件引用一致。
+- smoke 覆盖 `ReplayStep` / `ReplayRun`、`BreakpointHit` / `WatchpointHit` / `CatchpointHit`、
+  `OnHitAction`、`ToolError` 和 hypothesis artifacts。
+- 未改变外部 action schema、response schema、replay plan schema、evidence raw 文件布局、
+  snapshot/session summary 既有字段含义、GDB/MI parser、type sanitizer 或 hypothesis assertion
+  语义。
 
 ## 限制和注意事项
 
-- `src/cli/action_dispatch.cpp` 仍保留 action dispatch switch，以及与 action payload 校验、
-  GDB command evidence collection、response field 构造直接相关的逻辑；本轮不拆 session
-  lifecycle、daemon server/client 或 report orchestration。
-- `hypothesis_check` 的 assertion 语义没有扩展；本轮只移动持久化边界。
-- `replay_plan` artifact schema 没有变化；本轮只拆出 replay execution runtime。
+- 本轮主要新增真实组合 workflow 回归，没有新增用户可见 action。
+- `scripts/smoke_real_workflow_flow.sh` 是 Linux + GDB live smoke；没有 GDB 的环境会按既有口径
+  skip。
+- 本轮未处理 `EvidenceStore::add*` 全量重写 `evidence/index.json` 的长期性能建议。
+- 本轮未拆 `src/cli.cpp` 中的 session lifecycle / daemon client glue。

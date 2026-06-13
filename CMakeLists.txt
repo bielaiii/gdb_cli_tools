@@ -83,6 +83,18 @@ target_compile_options(mi_summary_fixture PRIVATE
     -O0
 )
 
+add_executable(workflow_fixture
+    examples/workflow_fixture.cpp
+)
+
+target_compile_options(workflow_fixture PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+    -g
+    -O0
+)
+
 add_executable(mi_summary_tests
     tests/mi_summary_tests.cpp
     src/common/string_utils.cpp
@@ -193,6 +205,12 @@ add_test(
 add_test(
     NAME mi_summary_live_flow
     COMMAND /bin/bash ${CMAKE_SOURCE_DIR}/scripts/smoke_mi_summary_live.sh
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
+add_test(
+    NAME real_workflow_flow
+    COMMAND /bin/bash ${CMAKE_SOURCE_DIR}/scripts/smoke_real_workflow_flow.sh
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
