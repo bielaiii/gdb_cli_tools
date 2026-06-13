@@ -512,6 +512,92 @@ static void write_replay_plan_file_table(std::ostringstream &md, const std::vect
     md << "\n";
 }
 
+static std::string evidence_ids_for_titles(const std::vector<Evidence> &evidence,
+                                           const std::vector<std::string> &titles) {
+    std::ostringstream out;
+    bool first = true;
+    for (const auto &ev : evidence) {
+        bool title_match = false;
+        for (const auto &title : titles) {
+            if (ev.title == title) {
+                title_match = true;
+                break;
+            }
+        }
+        if (!title_match) {
+            continue;
+        }
+        if (!first) {
+            out << ", ";
+        }
+        first = false;
+        out << '`' << ev.id << '`';
+    }
+    return out.str();
+}
+
+static void write_core_dump_snapshot(std::ostringstream &md,
+                                     const DebugTask &task,
+                                     const SessionOutcome &outcome,
+                                     const std::vector<Evidence> &evidence) {
+    if (!outcome.core_mode) {
+        return;
+    }
+
+    md << "## Core Dump Snapshot\n\n";
+    md << "| Field | Value |\n";
+    md << "| --- | --- |\n";
+    md << "| Mode | `core` |\n";
+    md << "| Executable | `" << task.executable.string() << "` |\n";
+    md << "| Working Directory | `" << task.working_directory.string() << "` |\n";
+    md << "| Core Dump | `" << (task.core_dump ? task.core_dump->string() : std::string("")) << "` |\n";
+    md << "| Core Loaded | `" << (outcome.stop_reason == "core_loaded" ? "true" : "false") << "` |\n";
+    md << "| State | `" << session_state_name(outcome.state) << "` |\n";
+    md << "| Stop Reason | `" << outcome.stop_reason << "` |\n";
+    md << "| Signal | `" << outcome.signal_name << "` |\n";
+    md << "| Problem | " << table_cell(task.problem) << " |\n";
+    md << "\n";
+
+    md << "### Core Evidence Links\n\n";
+    md << "| Evidence Group | Evidence |\n";
+    md << "| --- | --- |\n";
+    md << "| Core load | " << table_cell(evidence_ids_for_titles(evidence, {"Core load"})) << " |\n";
+    md << "| Core files/libraries | "
+       << table_cell(evidence_ids_for_titles(evidence, {"Core info files", "Core shared libraries"})) << " |\n";
+    md << "| Threads | " << table_cell(evidence_ids_for_titles(evidence, {"Core threads", "Threads"})) << " |\n";
+    md << "| Backtraces | "
+       << table_cell(evidence_ids_for_titles(evidence, {"Core all thread backtraces", "Backtrace"})) << " |\n";
+    md << "| Current frame | " << table_cell(evidence_ids_for_titles(evidence, {"Current frame"})) << " |\n";
+    md << "| Frame arguments | " << table_cell(evidence_ids_for_titles(evidence, {"Frame arguments"})) << " |\n";
+    md << "| Local variables | " << table_cell(evidence_ids_for_titles(evidence, {"Local variables"})) << " |\n";
+    md << "| Registers | " << table_cell(evidence_ids_for_titles(evidence, {"Registers"})) << " |\n";
+    md << "\n";
+
+    std::vector<const Evidence *> core_guard_errors;
+    for (const auto &ev : evidence) {
+        if (ev.kind != "ToolError") {
+            continue;
+        }
+        Json payload = parse_json_or_null(ev.summary);
+        std::string error = payload.is_object() ? json_string_value(payload, "error") : ev.summary;
+        if (error.find("core mode") != std::string::npos) {
+            core_guard_errors.push_back(&ev);
+        }
+    }
+    if (!core_guard_errors.empty()) {
+        md << "### Core Guard Rejections\n\n";
+        md << "| Evidence | Action | Reason |\n";
+        md << "| --- | --- | --- |\n";
+        for (const auto *ev : core_guard_errors) {
+            Json payload = parse_json_or_null(ev->summary);
+            std::string action = payload.is_object() ? json_string_value(payload, "action") : ev->command;
+            std::string error = payload.is_object() ? json_string_value(payload, "error") : ev->summary;
+            md << "| `" << ev->id << "` | `" << action << "` | " << table_cell(error) << " |\n";
+        }
+        md << "\n";
+    }
+}
+
 void write_report(const fs::path &report,
                   const fs::path &assets,
                   const DebugTask &task,
@@ -573,6 +659,8 @@ void write_report(const fs::path &report,
         md << "- No SIGSEGV was observed during the initial run.\n";
     }
     md << "\n";
+
+    write_core_dump_snapshot(md, task, outcome, evidence);
 
     std::map<std::string, const Evidence *> evidence_by_id;
     for (const auto &ev : evidence) {

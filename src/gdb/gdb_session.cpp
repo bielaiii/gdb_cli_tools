@@ -70,7 +70,9 @@ CommandResult GdbSession::load_core(const DebugTask &task) {
     if (!task.core_dump) {
         throw std::runtime_error("core dump path is missing");
     }
-    return command("-target-select core " + mi_quote(task.core_dump->string()), std::chrono::milliseconds(10000));
+    return command("-interpreter-exec console " +
+                       mi_quote("core-file " + shell_quote_for_report(task.core_dump->string())),
+                   std::chrono::milliseconds(10000));
 }
 
 EvidenceStore &GdbSession::evidence_store() {

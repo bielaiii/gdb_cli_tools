@@ -794,6 +794,45 @@ optional/variant/tuple/pair 和工作目录路径归一化。`raw_mi` 已作为�
 - 本轮未新增项目级 decision；属于既有 replay/probe evidence 模型和 D012 typed action boundary
   下的真实工作流与报告审计增强。
 
+## 2026-06-13 本轮更新（core dump report/replay audit）
+
+- 执行 `docs/ai/next_cli_task.md` 中的 Core Dump Mode report、metadata audit 和 replay semantics
+  任务，不新增用户可见 action，不改变 Core Dump Mode 静态取证边界。
+- 修复 core 加载命令：
+  - 原 `-target-select core "<path>"` 在当前 GDB/MI 环境会把引号当成路径字符，导致 absolute
+    core path 被错误解析为 working directory 下的带引号相对路径。
+  - 现在通过 MI `-interpreter-exec console "core-file <path>"` 加载 core，保留 GDB/MI 接入方式。
+  - core 加载失败时不再把 `stop_reason` 标成 `core_loaded`；只在 GDB 成功加载 core 后采集静态
+    core evidence。
+- 增强最终报告：
+  - Core Dump Mode 下新增 `Core Dump Snapshot` 区域。
+  - 汇总 mode、executable、working directory、core dump path、`core_loaded` 状态、session state、
+    stop reason、problem 摘要。
+  - 汇总 `Core load`、core files/libraries、threads、backtraces、frame args、locals、registers 等
+    静态 evidence id。
+  - 汇总 core-mode guard rejected 的 `ToolError` evidence，显示 action 和 reason。
+- 扩展 `scripts/smoke_core_dump_mode.sh`：
+  - 继续用 GDB batch `generate-core-file` 生成真实 core。
+  - 检查 `session_summary.json` 中 `core_dump` 与 task core path 一致、`core_loaded:true`、
+    evidence count 与 index 一致。
+  - 检查 `task.normalized.json`、`session_snapshot.json`、`evidence/index.json` 和 raw/summary/view
+    文件引用一致性。
+  - 检查 report 的 `Core Dump Snapshot` 包含 core path、loaded 状态、静态 evidence 和 core
+    guard rejection。
+  - 新增 core mixed replay 覆盖：
+    - `continue_on_error`：静态 `backtrace` success、动态 `continue` failed、后续 `args_info`
+      success。
+    - `stop_on_error`：静态 `backtrace` success、动态 `breakpoint_set` failed、后续 `locals`
+      skipped。
+    - 检查 `ReplayStep`、`ReplayRun`、`ToolError` evidence 和 report `Replay Execution Audit`
+      中的 failed/skipped/error evidence/skip reason。
+- 更新 `docs/agent_actions.md` / `.en.md` 和 `docs/evidence_model.md` / `.en.md`，记录
+  Core Dump Snapshot、core mixed replay 语义和 core guard evidence 链路。
+- 本轮没有修改 action JSON schema、CLI 语法、replay plan schema、task format、evidence raw
+  文件布局、snapshot/session summary 既有字段含义、GDB/MI parser、type sanitizer 或 hypothesis
+  assertion 语义。
+- 本轮未新增项目级 decision；属于 D011 Core Dump Mode 静态取证边界内的审计和回归增强。
+
 ## 建议的下一步
 
 1. 继续收集不同 GDB 版本和真实项目 core 的 raw 输出，扩展 MI summary fixture 覆盖面。

@@ -251,6 +251,16 @@ plan, force state, task fingerprint match state, step success/failure/skipped
 status, action evidence, error evidence, and warning evidence without parsing
 replay response text.
 
+Replay also works in Core Dump Mode, but it still follows the core static
+evidence boundary. Static steps such as `backtrace`, `threads`,
+`frame_select`, `locals`, `args_info`, `evaluate`, and `registers` may run.
+Dynamic steps such as `run`, `continue`, breakpoint/watchpoint/catchpoint
+setup, and probe mutation fail through the core-mode state guard and write
+`ToolError` evidence. In mixed plans, `continue_on_error` continues to later
+steps, while `stop_on_error` records later steps as `skipped`. The report's
+`Replay Execution Audit` shows these success / failed / skipped steps and
+their error evidence.
+
 Actions are checked against the live session state before execution. For
 example, `backtrace`, `locals`, `evaluate`, and hypothesis checks require a
 stopped inferior or core mode; `continue` requires stopped state;
@@ -263,6 +273,11 @@ setup plans before the initial run. Rejected actions are recorded as
 Core mode is a static debugging target. `run`, `continue`, `breakpoint_set`,
 `watchpoint_set`, `catchpoint_set`, and probe enable/disable/delete actions are
 rejected in core mode and recorded as `ToolError` evidence.
+
+Core Dump Mode reports also include a `Core Dump Snapshot` section. It
+summarizes the core path, executable, working directory, `core_loaded` state,
+key static evidence links, and core guard rejections. This is a report
+aggregation view, not a replacement for raw evidence or the session MI log.
 
 Hypothesis records are written both as per-hypothesis Markdown files and as a
 structured `assets/hypotheses/index.json`. Tool checks are recorded separately

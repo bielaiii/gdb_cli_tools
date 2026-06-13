@@ -155,6 +155,14 @@ evidence。显式 `force:true` 或 CLI `--force` 会允许执行，但 result �
 step 成功/失败/跳过状态、action evidence、error evidence 和 warning evidence。该区域不从
 response 文本反解析 replay 结果。
 
+在 Core Dump Mode 中也可以 replay 高层 action，但仍遵守 core 的静态取证边界：
+`backtrace`、`threads`、`frame_select`、`locals`、`args_info`、`evaluate` 和 `registers`
+这类静态 step 可以执行；`run`、`continue`、breakpoint/watchpoint/catchpoint 和 probe
+mutation 会按 core mode state guard 返回 `ok:false`，并写 `ToolError` evidence。
+混合 plan 中，`continue_on_error` 会继续执行后续 step；`stop_on_error` 会把后续 step
+记录为 `skipped`。报告的 `Replay Execution Audit` 会展示这些 success / failed / skipped
+step 以及对应 error evidence。
+
 ## Probe 和 On-hit Action
 
 断点、观察点和最小 catchpoint 可以带上 `comment`、`purpose` 和 `on_hit` metadata；
@@ -258,6 +266,10 @@ Action 会先根据 live session 状态做校验。例如：
 - `finish` 需要 stopped、exited 或 error state。
 
 被拒绝的 action 会记录为 `ToolError` evidence。
+
+Core Dump Mode 的最终报告会额外包含 `Core Dump Snapshot` 区域，汇总 core path、executable、
+working directory、`core_loaded` 状态、关键静态 evidence 链接和 core guard rejection。该区域是
+report 聚合视图，不替代 raw evidence 或 session MI log。
 
 ## Hypothesis Workflow
 

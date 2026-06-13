@@ -113,6 +113,13 @@ such as `backtrace`, `threads`, `frame_select`, `locals`, `args_info`, and
 actions are rejected in core mode by the state guard and recorded as
 `ToolError` evidence.
 
+In core mode, the final report also includes a `Core Dump Snapshot` section. It
+aggregates the core path, executable, working directory, `core_loaded` state,
+key static evidence ids, and core-mode guard `ToolError` evidence from the
+task, session outcome, and evidence index. This is a report entry point only;
+it does not change the raw evidence layout and does not make
+`session_snapshot.json` or `session_summary.json` restorable.
+
 ## Replay Evidence
 
 Replay Store saves and replays only high-level actions. Structured plans use
@@ -154,6 +161,12 @@ name, tags, source session, failure policy, and task fingerprint. The `Replay
 Execution Audit` section summarizes replay runs, steps, and warnings from
 structured `ReplayRun`, `ReplayStep`, and `ReplayWarning` evidence; the report
 does not parse replay results back out of action response text.
+
+Core-mode mixed replay plans use the same evidence chain: static action steps
+may succeed; dynamic action steps fail through the core guard and are audited
+through `ToolError` plus `ReplayStep.error_evidence`; `continue_on_error`
+continues to later steps, while `stop_on_error` records later steps as
+`skipped` with a skip reason.
 
 ## Probe Store Snapshot
 

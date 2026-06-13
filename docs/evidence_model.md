@@ -112,6 +112,11 @@ core mode 是静态调试对象；加载 core 会写 `Core load` 的 `SessionEve
 action 会产生普通 evidence。`run`、`continue` 和 probe mutation 在 core mode 下会被状态保护
 拒绝，并写 `ToolError` evidence。
 
+最终报告在 core mode 下会额外生成 `Core Dump Snapshot` 区域。该区域从 task、session outcome
+和 evidence index 聚合 core path、executable、working directory、`core_loaded` 状态、核心静态
+evidence id 以及 core-mode guard rejected 的 `ToolError` evidence。它只是报告入口，不改变 raw
+evidence 布局，也不表示 `session_snapshot.json` 或 `session_summary.json` 可以恢复 live GDB。
+
 ## Replay Evidence
 
 Replay Store 只保存和重放高层 action。结构化 plan 使用
@@ -149,6 +154,11 @@ schema 或 schema version 会被稳定拒绝。
 failure policy 和 task fingerprint。`Replay Execution Audit` 区域会从结构化
 `ReplayRun`、`ReplayStep` 和 `ReplayWarning` evidence 汇总 replay run、step 和 warning
 审计表；报告不会从 action response 文本反解析 replay 结果。
+
+Core mode 下 replay mixed plan 也使用同一套 evidence：静态 action step 可以成功；动态 action
+step 会因 core guard 失败并通过 `ToolError` / `ReplayStep.error_evidence` 审计；
+`continue_on_error` 继续后续 step，`stop_on_error` 将后续 step 记录为 `skipped` 并保存
+skip reason。
 
 ## Probe Store 快照
 

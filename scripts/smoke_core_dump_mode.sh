@@ -16,6 +16,11 @@ if ! command -v gdb >/dev/null 2>&1; then
     exit 0
 fi
 
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "skip: python3 is not installed"
+    exit 0
+fi
+
 if [[ ! -x "$agent" || ! -x "$target" ]]; then
     echo "missing build artifacts; run: cmake -S . -B build && cmake --build build" >&2
     exit 1
@@ -67,6 +72,116 @@ require_gdb_action_response() {
     else
         require_contains "$response" '"ok":true'
     fi
+}
+
+action_seq=0
+save_named_action() {
+    local session="$1"
+    local payload="$2"
+    local name="$3"
+    local policy="$4"
+    action_seq=$((action_seq + 1))
+    local action_file="$work_dir/save-action-$action_seq.json"
+    printf '%s\n' "$payload" >"$action_file"
+    "$agent" save-action "$session" "$action_file" --name "$name" --failure-policy "$policy" --socket "$socket_path"
+}
+
+artifact_check() {
+    python3 - "$assets_dir" "$report_path" "$core_file" <<'PY'
+import json
+import pathlib
+import re
+import sys
+
+assets = pathlib.Path(sys.argv[1])
+report = pathlib.Path(sys.argv[2])
+core = pathlib.Path(sys.argv[3])
+
+required = [
+    assets / "task.normalized.json",
+    assets / "session_summary.json",
+    assets / "session_snapshot.json",
+    assets / "evidence" / "index.json",
+]
+for path in required:
+    if not path.exists():
+        raise SystemExit(f"missing artifact: {path}")
+if not report.exists():
+    raise SystemExit(f"missing report: {report}")
+
+summary = json.loads((assets / "session_summary.json").read_text())
+task = json.loads((assets / "task.normalized.json").read_text())
+index = json.loads((assets / "evidence" / "index.json").read_text())
+evidence = index.get("evidence", [])
+ids = {item["id"] for item in evidence}
+kinds = [item.get("kind") for item in evidence]
+titles = [item.get("title") for item in evidence]
+
+if summary.get("mode") != "core":
+    raise SystemExit(f"expected core mode summary, saw {summary.get('mode')!r}")
+if summary.get("core_dump") != str(core):
+    raise SystemExit(f"core_dump mismatch: {summary.get('core_dump')!r} vs {core}")
+if summary.get("core_loaded") is not True:
+    raise SystemExit("expected core_loaded true")
+if summary.get("evidence_count") != len(evidence):
+    raise SystemExit(f"evidence_count mismatch: {summary.get('evidence_count')} vs {len(evidence)}")
+if task.get("core_dump") != str(core):
+    raise SystemExit(f"task core_dump mismatch: {task.get('core_dump')!r} vs {core}")
+
+for item in evidence:
+    for key in ("view_file", "raw_file", "summary_file"):
+        path = pathlib.Path(item[key])
+        if not path.exists():
+            raise SystemExit(f"{key} missing for {item['id']}: {path}")
+
+for kind in ("SessionEvent", "GdbCommand", "ReplayStep", "ReplayRun", "ToolError"):
+    if kind not in kinds:
+        raise SystemExit(f"missing evidence kind {kind}; saw {sorted(set(kinds))}")
+for title in ("Core load", "Backtrace", "Core threads"):
+    if title not in titles:
+        raise SystemExit(f"missing evidence title {title}; saw {sorted(set(titles))}")
+
+report_text = report.read_text()
+for expected in (
+    "## Core Dump Snapshot",
+    "| Core Dump |",
+    "| Core Loaded | `true` |",
+    "### Core Evidence Links",
+    "### Core Guard Rejections",
+    "## Replay Execution Audit",
+    "previous step a2 failed under stop_on_error",
+):
+    if expected not in report_text:
+        raise SystemExit(f"report missing expected text: {expected}")
+if str(core) not in report_text:
+    raise SystemExit("report does not include core dump path")
+
+report_ids = set(re.findall(r"\bE\d{4}\b", report_text))
+missing = report_ids - ids
+if missing:
+    raise SystemExit(f"report references missing evidence ids: {sorted(missing)}")
+
+print("artifact consistency ok")
+PY
+}
+
+require_replay_steps() {
+    local response="$1"
+    shift
+    python3 - "$response" "$@" <<'PY'
+import json
+import sys
+
+lines = [line for line in sys.argv[1].splitlines() if line.strip()]
+if not lines:
+    raise SystemExit("empty replay response")
+result = json.loads(lines[-1])
+steps = {(step.get("action_name"), step.get("status")) for step in result.get("steps", [])}
+for expected in sys.argv[2:]:
+    action, status = expected.split(":", 1)
+    if (action, status) not in steps:
+        raise SystemExit(f"missing replay step {action}:{status}; saw {sorted(steps)}")
+PY
 }
 
 if ! gdb --batch -q \
@@ -171,6 +286,38 @@ require_contains "$run_response" '"action":"run"'
 require_contains "$run_response" '"error":"run is not available in core mode"'
 require_contains "$run_response" '"evidence":"'
 
+save_named_action C1 '{"action":"backtrace"}' core-continue-audit continue_on_error >/dev/null
+save_named_action C1 '{"action":"continue"}' core-continue-audit continue_on_error >/dev/null
+save_named_action C1 '{"action":"args_info"}' core-continue-audit continue_on_error >/dev/null
+
+save_named_action C1 '{"action":"backtrace"}' core-stop-audit stop_on_error >/dev/null
+save_named_action C1 '{"action":"breakpoint_set","location":"read_session_value"}' core-stop-audit stop_on_error >/dev/null
+save_named_action C1 '{"action":"locals"}' core-stop-audit stop_on_error >/dev/null
+
+continue_plan="$assets_dir/replay/core-continue-audit.json"
+stop_plan="$assets_dir/replay/core-stop-audit.json"
+require_file "$continue_plan"
+require_file "$stop_plan"
+grep -F '"schema": "gdb-agent-replay-plan-v1"' "$continue_plan" >/dev/null
+grep -F '"fingerprint":' "$continue_plan" >/dev/null
+grep -F '"failure_policy": "continue_on_error"' "$continue_plan" >/dev/null
+grep -F '"failure_policy": "stop_on_error"' "$stop_plan" >/dev/null
+
+replay_continue="$("$agent" replay C1 --file "$continue_plan" --socket "$socket_path")"
+require_contains "$replay_continue" '"ok":false'
+require_contains "$replay_continue" '"task_metadata_match":true'
+require_contains "$replay_continue" '"failure_policy":"continue_on_error"'
+require_contains "$replay_continue" '"error_evidence":"'
+require_contains "$replay_continue" '"run_evidence":"'
+require_replay_steps "$replay_continue" "backtrace:success" "continue:failed" "args_info:success"
+
+replay_stop="$("$agent" replay C1 --file "$stop_plan" --socket "$socket_path")"
+require_contains "$replay_stop" '"ok":false'
+require_contains "$replay_stop" '"task_metadata_match":true'
+require_contains "$replay_stop" '"failure_policy":"stop_on_error"'
+require_contains "$replay_stop" 'previous step a2 failed under stop_on_error'
+require_replay_steps "$replay_stop" "backtrace:success" "breakpoint_set:failed" "locals:skipped"
+
 finish_response="$("$agent" finish C1 --socket "$socket_path" --out "$report_path")"
 require_contains "$finish_response" '"ok":true'
 require_contains "$finish_response" '"report":"'
@@ -185,18 +332,29 @@ require_file "$assets_dir/evidence/index.json"
 grep -F '"mode": "core"' "$assets_dir/session_summary.json" >/dev/null
 grep -F '"core_loaded": true' "$assets_dir/session_summary.json" >/dev/null
 grep -F '"core_dump": "' "$assets_dir/session_summary.json" >/dev/null
+grep -F '"replay_step_count": 6' "$assets_dir/session_summary.json" >/dev/null
 grep -F '"mode": "core"' "$assets_dir/session_snapshot.json" >/dev/null
 grep -F '"kind":"SessionEvent"' "$assets_dir/evidence/index.json" >/dev/null
 grep -F '"title":"Core load"' "$assets_dir/evidence/index.json" >/dev/null
 grep -F '"kind":"ToolError"' "$assets_dir/evidence/index.json" >/dev/null
+grep -F '"kind":"ReplayStep"' "$assets_dir/evidence/index.json" >/dev/null
+grep -F '"kind":"ReplayRun"' "$assets_dir/evidence/index.json" >/dev/null
 grep -F '## Session Summary' "$report_path" >/dev/null
+grep -F '## Core Dump Snapshot' "$report_path" >/dev/null
 grep -F -- '- Mode: Core Dump' "$report_path" >/dev/null
 grep -F 'The core dump was loaded and static crash evidence was collected.' "$report_path" >/dev/null
 grep -F 'Core load' "$report_path" >/dev/null
+grep -F 'core-continue-audit' "$report_path" >/dev/null
+grep -F 'core-stop-audit' "$report_path" >/dev/null
+grep -F '`continue` | `failed`' "$report_path" >/dev/null
+grep -F '`breakpoint_set` | `failed`' "$report_path" >/dev/null
+grep -F '`locals` | `skipped`' "$report_path" >/dev/null
+
+artifact_check
 
 shutdown_response="$("$agent" shutdown --socket "$socket_path")"
 require_contains "$shutdown_response" '"ok":true'
 wait "$daemon_pid" >/dev/null 2>&1 || true
 daemon_pid=""
 
-echo "smoke ok: core dump mode load, static actions, guards, and report passed"
+echo "smoke ok: core dump mode load, static actions, guards, replay, and report audit passed"

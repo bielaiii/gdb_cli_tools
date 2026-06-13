@@ -530,9 +530,14 @@ static void start_live_session(LiveSession &live) {
         live.outcome.state = SessionState::Loading;
         auto load = live.session->load_core(live.task);
         live.session->evidence_store().add("SessionEvent", "Core load", load.command, load.raw_lines, false, load.record_sequences);
-        live.outcome.stop_reason = "core_loaded";
-        live.outcome.state = SessionState::Stopped;
-        collect_core_evidence(*live.session);
+        if (load.result_class == "error") {
+            live.outcome.stop_reason = "core_load_failed";
+            live.outcome.state = SessionState::Error;
+        } else {
+            live.outcome.stop_reason = "core_loaded";
+            live.outcome.state = SessionState::Stopped;
+            collect_core_evidence(*live.session);
+        }
     } else {
         live.outcome.state = SessionState::Running;
         live.outcome.inferior_stdout_offset = 0;
@@ -916,9 +921,14 @@ static int run_serve(const CliOptions &opts, const DebugTask &task) {
             outcome.state = SessionState::Loading;
             auto load = session.load_core(task);
             session.evidence_store().add("SessionEvent", "Core load", load.command, load.raw_lines, false, load.record_sequences);
-            outcome.stop_reason = "core_loaded";
-            outcome.state = SessionState::Stopped;
-            collect_core_evidence(session);
+            if (load.result_class == "error") {
+                outcome.stop_reason = "core_load_failed";
+                outcome.state = SessionState::Error;
+            } else {
+                outcome.stop_reason = "core_loaded";
+                outcome.state = SessionState::Stopped;
+                collect_core_evidence(session);
+            }
         } else {
             outcome.state = SessionState::Running;
             outcome.inferior_stdout_offset = 0;

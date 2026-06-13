@@ -5,76 +5,82 @@
 ## 本轮完成
 
 - 执行 `docs/ai/next_cli_task.md` 中的
-  `replay setup plan and report auditability hardening` 任务。
-- 补齐 `watchpoint_set` 状态守卫：
-  - live session 的 ready/stopped/exited state 都允许设置 watchpoint。
-  - core mode 仍拒绝 `watchpoint_set`，保持动态 probe 在 core 中不可用的既有约束。
-  - 这使 `--replay-before-run` 能在第一次 `run` 前通过 setup plan 安装
-    breakpoint/watchpoint/catchpoint。
-- 扩展 `examples/workflow_fixture.cpp`：
-  - live path 在现有 breakpoint/stop-policy/auto-continue 路径后新增稳定 C++ throw 事件。
-  - 新增事件用于 replay setup plan smoke 的 catchpoint hit 覆盖，避免 syscall catchpoint 在
-    启动阶段受环境噪声影响。
+  `core dump report, metadata audit, and replay semantics` 任务。
+- 修复 core 加载命令：
+  - 将 `GdbSession::load_core` 从 `-target-select core <mi-quoted-path>` 改为通过
+    `-interpreter-exec console "core-file <path>"` 执行。
+  - 当前 GDB/MI 对 `-target-select core` 的 quoted path 会把引号当作路径字符，导致实际没有加载
+    core；本轮 smoke 已覆盖真实 core 成功加载。
+  - core load 失败时不再设置 `stop_reason:"core_loaded"` 或采集静态 core evidence；状态会进入
+    error，`session_summary.json` 的 `core_loaded` 会保持 false。
 - 增强 `src/report/report.cpp`：
-  - `Replay Plans` 区域改为结构化表格，展示 plan file、name、tags、source session、
-    failure policy 和 task fingerprint。
-  - 新增 `Replay Execution Audit` 区域，按结构化 `ReplayRun`、`ReplayStep` 和
-    `ReplayWarning` evidence 生成 replay runs、steps 和 warnings 表。
-  - 报告不从 replay response 文本反解析状态，继续使用结构化 evidence summary。
-- 新增 `scripts/smoke_replay_setup_plan_flow.sh`：
-  - RS1：通过 `save-action` 生成 probe setup plan 和 `stop_on_error` audit plan，检查
-    schema、tags、source session、fingerprint 和 action。
-  - RS2：用 `--replay-before-run` 应用 setup plan，确认 replay-set breakpoint、watchpoint、
-    catchpoint 真实命中，并产生 on-hit evidence。
-  - RS3：replay `stop_on_error` plan，覆盖 success、failed、skipped step 和 skip reason。
-  - RS4：覆盖 task fingerprint mismatch 默认拒绝，以及 `--force` 后的 `ReplayWarning`。
-  - 全流程检查 report/assets/session/evidence 引用一致性。
-- 更新 `CMakeLists.txt`，新增 CTest `replay_setup_plan_flow`。
+  - Core Dump Mode 下新增 `## Core Dump Snapshot`。
+  - 展示 mode、executable、working directory、core dump path、core loaded、state、stop reason、
+    signal 和 problem 摘要。
+  - 汇总 core load、files/libraries、threads、backtraces、current frame、frame args、locals、
+    registers 等静态 evidence id。
+  - 汇总 core-mode guard rejected 的 `ToolError` evidence，展示 action 和 reason。
+- 扩展 `scripts/smoke_core_dump_mode.sh`：
+  - 增加 Python artifact consistency audit，检查 task/session/report/evidence 互相一致。
+  - 检查 `session_summary.json` 的 `mode:"core"`、`core_dump` exact path、`core_loaded:true` 和
+    evidence count。
+  - 检查 `task.normalized.json` core path、`session_snapshot.json`、`evidence/index.json`、
+    raw/summary/view 文件、report evidence id 引用。
+  - 新增 core mixed replay：
+    - `core-continue-audit`：`backtrace` success、`continue` core guard failed、`args_info`
+      success。
+    - `core-stop-audit`：`backtrace` success、`breakpoint_set` core guard failed、`locals`
+      skipped。
+  - 检查 `ReplayStep`、`ReplayRun`、`ToolError` evidence 和 report `Replay Execution Audit`
+    中的 failed/skipped/error evidence/skip reason。
 - 更新用户文档：
   - `docs/agent_actions.md`
   - `docs/agent_actions.en.md`
   - `docs/evidence_model.md`
   - `docs/evidence_model.en.md`
-- 更新 `docs/ai/progress.md`，记录本轮 replay setup/report audit 进展。
+- 更新 `docs/ai/progress.md`，记录本轮 core report、metadata audit 和 replay semantics 进展。
 - `docs/ai/decision.md` 未更新：本轮没有新增或改变项目级 decision。
-- `docs/ai/next_cli_task.md` 保留本轮任务说明，并随本轮提交作为任务记录入库。
+- `docs/ai/next_cli_task.md` 是本轮执行任务记录，会随本轮提交入库。
 
 ## 验证
 
 - `cmake --build build`
   - 结果：通过。
-- `./scripts/smoke_replay_setup_plan_flow.sh`
+- `./scripts/smoke_core_dump_mode.sh`
   - 结果：通过。
-  - 覆盖 `save-action` 生成 setup plan、`--replay-before-run`、三类 probe 命中、on-hit、
-    replay failed/skipped、mismatch reject/force warning 和 report audit。
+  - 覆盖真实 core 加载、静态 action、core guard rejected、Core Dump Snapshot、artifact
+    consistency、core mixed replay success/failed/skipped 和 report replay audit。
 - `./build/gdb-agent check examples/segfault_task.md`
   - 结果：通过，输出 `ok`。
+- `ctest --test-dir build -R core_dump_mode --output-on-failure`
+  - 结果：通过，`1/1 Test #3: core_dump_mode Passed`。
 - `ctest --test-dir build --output-on-failure`
-  - 结果：15/15 tests passed。
-  - 覆盖 segfault demo、daemon/action、core dump、edge case、capability matrix、catchpoint
-    matrix、type sanitizer live flow、MI summary live flow、real workflow flow、
-    replay setup plan flow 和所有单元测试。
+  - 结果：通过，`15/15 tests passed`。
+- `./scripts/smoke_replay_setup_plan_flow.sh`
+  - 结果：通过。
+- `./build/replay_plan_tests`
+  - 结果：通过。
 - `git diff --check`
   - 结果：通过。
 
 ## 完成标准审计
 
-- `save_action` 生成的 probe setup plan 已通过 smoke 检查，包含结构化 schema、空 tags、
-  source session、task fingerprint 和高层 action。
-- `--replay-before-run` 已在新 session 初始运行前真实应用 setup plan。
-- replay-set breakpoint/watchpoint/catchpoint 均真实命中，并产生 hit/on-hit evidence。
-- replay success、failed、skipped 和 mismatch warning 均能在 report 中通过
-  `Replay Execution Audit` 追踪到结构化 evidence。
-- 内部 replay/on-hit/dispatcher 仍使用 typed `ActionRequest` / `ActionOutput` /
-  `ActionResult` 数据流；本轮未引入 response text JSON 反解析。
-- 未改变 replay plan schema、action JSON schema、response schema、task format、evidence raw
-  文件布局、GDB/MI parser、type sanitizer 或 hypothesis assertion 语义。
+- report 中存在 core-first 的 `Core Dump Snapshot` 区域。
+- core report 区域展示 core path、core loaded 状态和关键静态 evidence 链路。
+- core smoke 检查 task/session/evidence/report artifact 一致性。
+- core replay mixed plan 覆盖 `continue_on_error` 下 success / failed / success。
+- core replay mixed plan 覆盖 `stop_on_error` 下 success / failed / skipped。
+- failed dynamic replay step 能追踪到 core guard `ToolError` evidence。
+- report 的 replay audit 能展示 core replay step 的 failed/skipped/error evidence/skip reason。
+- docs 已说明 core mode 下 replay mixed plan 语义。
+- 未改变 core mode 静态取证边界。
+- 未改变 action JSON schema、CLI 语法、replay plan schema、evidence raw 文件布局或 task format。
 
 ## 限制和注意事项
 
-- 新增 `replay_setup_plan_flow` 是 Linux + GDB live smoke；没有 GDB 的环境会按既有口径 skip。
-- 本轮 report audit 依赖现有 `ReplayRun` / `ReplayStep` / `ReplayWarning` summary JSON；
-  如果未来这些 evidence schema 扩展，报告表格可继续按结构化字段补列。
-- 本轮没有实现 replay plan tags 的用户输入接口；只验证并展示现有 schema 中的空 tags 字段。
-- 本轮没有处理长期建议：更丰富的真实项目 core 样本、更多 watchpoint/catchpoint GDB 版本差异覆盖、
-  或 `EvidenceStore::add*` 重写 index 的性能优化。
+- 本轮没有新增多线程 core fixture；用户明确只要求 core report、metadata audit 和 core replay
+  semantics。
+- 本轮没有新增用户可见 action。
+- `Core Dump Snapshot` 是 report 聚合视图，不替代 raw evidence 或 session MI log。
+- core load 失败路径现在不伪装成 loaded，但本轮没有新增专门的 invalid-core smoke；当前 smoke
+  覆盖真实有效 core load。
