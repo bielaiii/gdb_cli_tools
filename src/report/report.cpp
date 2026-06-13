@@ -10,6 +10,7 @@
 #include <map>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -68,6 +69,52 @@ static Json parse_json_or_null(const std::string &text) {
     }
 }
 
+static std::string json_bool_text(const Json &json, const std::string &key) {
+    const Json *value = json.find(key);
+    if (value == nullptr || !value->is_bool()) {
+        return {};
+    }
+    return value->bool_value ? "true" : "false";
+}
+
+static std::string json_int_text(const Json &json, const std::string &key) {
+    const Json *value = json.find(key);
+    if (value == nullptr || !value->is_number()) {
+        return {};
+    }
+    return std::to_string(static_cast<int>(value->number_value));
+}
+
+static std::string json_array_strings_text(const Json &json, const std::string &key) {
+    const Json *value = json.find(key);
+    if (value == nullptr || !value->is_array()) {
+        return {};
+    }
+    std::ostringstream out;
+    bool first = true;
+    for (const auto &item : value->array_value) {
+        if (!item.is_string()) {
+            continue;
+        }
+        if (!first) {
+            out << ", ";
+        }
+        first = false;
+        out << item.string_value;
+    }
+    return out.str();
+}
+
+static std::string json_object_string_value(const Json &json,
+                                            const std::string &object_key,
+                                            const std::string &value_key) {
+    const Json *object = json.find(object_key);
+    if (object == nullptr || !object->is_object()) {
+        return {};
+    }
+    return json_string_value(*object, value_key);
+}
+
 static std::string evidence_summary_for(const std::string &evidence_id,
                                         const std::map<std::string, const Evidence *> &evidence_by_id) {
     auto it = evidence_by_id.find(evidence_id);
@@ -75,6 +122,225 @@ static std::string evidence_summary_for(const std::string &evidence_id,
         return {};
     }
     return inline_report_text(it->second->summary);
+}
+
+struct ReplayStepSummary {
+    std::string run_evidence;
+    std::string plan;
+    std::string index;
+    std::string step_id;
+    std::string action_name;
+    std::string status;
+    std::string failure_policy;
+    std::string step_evidence;
+    std::string action_evidence;
+    std::string error_evidence;
+    std::string skip_reason;
+};
+
+struct ReplayRunSummary {
+    std::string evidence;
+    std::string plan;
+    std::string file;
+    std::string ok;
+    std::string force;
+    std::string task_metadata_match;
+    std::string failure_policy;
+    std::string warning_evidence;
+    std::string error_evidence;
+    std::vector<ReplayStepSummary> steps;
+};
+
+struct ReplayWarningSummary {
+    std::string evidence;
+    std::string plan;
+    std::string file;
+    std::string force;
+    std::string task_metadata_match;
+    std::string warning;
+};
+
+static ReplayRunSummary replay_run_summary_from_evidence(const Evidence &ev) {
+    ReplayRunSummary summary;
+    summary.evidence = ev.id;
+    Json payload = parse_json_or_null(ev.summary);
+    if (!payload.is_object()) {
+        return summary;
+    }
+    summary.file = json_string_value(payload, "file");
+    const Json *result = payload.find("result");
+    if (result == nullptr || !result->is_object()) {
+        return summary;
+    }
+    summary.plan = json_string_value(*result, "plan");
+    if (summary.file.empty()) {
+        summary.file = json_string_value(*result, "file");
+    }
+    summary.ok = json_bool_text(*result, "ok");
+    summary.force = json_bool_text(*result, "force");
+    summary.task_metadata_match = json_bool_text(*result, "task_metadata_match");
+    summary.failure_policy = json_string_value(*result, "failure_policy");
+    summary.warning_evidence = json_string_value(*result, "warning_evidence");
+    summary.error_evidence = json_string_value(*result, "error_evidence");
+    const Json *steps = result->find("steps");
+    if (steps != nullptr && steps->is_array()) {
+        for (const auto &step : steps->array_value) {
+            if (!step.is_object()) {
+                continue;
+            }
+            ReplayStepSummary step_summary;
+            step_summary.run_evidence = ev.id;
+            step_summary.plan = summary.plan;
+            step_summary.index = json_int_text(step, "index");
+            step_summary.step_id = json_string_value(step, "step_id");
+            step_summary.action_name = json_string_value(step, "action_name");
+            step_summary.status = json_string_value(step, "status");
+            step_summary.failure_policy = json_string_value(step, "failure_policy");
+            step_summary.step_evidence = json_string_value(step, "evidence");
+            step_summary.action_evidence = json_string_value(step, "action_evidence");
+            step_summary.error_evidence = json_string_value(step, "error_evidence");
+            step_summary.skip_reason = json_string_value(step, "skip_reason");
+            summary.steps.push_back(std::move(step_summary));
+        }
+    }
+    return summary;
+}
+
+static ReplayStepSummary replay_step_summary_from_evidence(const Evidence &ev) {
+    ReplayStepSummary summary;
+    summary.step_evidence = ev.id;
+    Json payload = parse_json_or_null(ev.summary);
+    if (!payload.is_object()) {
+        return summary;
+    }
+    summary.plan = json_string_value(payload, "plan");
+    summary.index = json_int_text(payload, "index");
+    summary.step_id = json_string_value(payload, "step_id");
+    summary.action_name = json_string_value(payload, "action_name");
+    summary.status = json_string_value(payload, "status");
+    summary.failure_policy = json_string_value(payload, "failure_policy");
+    summary.action_evidence = json_string_value(payload, "action_evidence");
+    summary.error_evidence = json_string_value(payload, "error_evidence");
+    summary.skip_reason = json_string_value(payload, "skip_reason");
+    return summary;
+}
+
+static ReplayWarningSummary replay_warning_summary_from_evidence(const Evidence &ev) {
+    ReplayWarningSummary summary;
+    summary.evidence = ev.id;
+    Json payload = parse_json_or_null(ev.summary);
+    if (!payload.is_object()) {
+        return summary;
+    }
+    summary.plan = json_string_value(payload, "plan");
+    summary.file = json_string_value(payload, "file");
+    summary.force = json_bool_text(payload, "force");
+    summary.task_metadata_match = json_bool_text(payload, "task_metadata_match");
+    summary.warning = json_string_value(payload, "warning");
+    return summary;
+}
+
+static void write_replay_execution_audit(std::ostringstream &md, const std::vector<Evidence> &evidence) {
+    std::vector<ReplayRunSummary> runs;
+    std::vector<ReplayStepSummary> steps;
+    std::vector<ReplayWarningSummary> warnings;
+    for (const auto &ev : evidence) {
+        if (ev.kind == "ReplayRun") {
+            runs.push_back(replay_run_summary_from_evidence(ev));
+        } else if (ev.kind == "ReplayStep") {
+            steps.push_back(replay_step_summary_from_evidence(ev));
+        } else if (ev.kind == "ReplayWarning") {
+            warnings.push_back(replay_warning_summary_from_evidence(ev));
+        }
+    }
+    if (runs.empty() && warnings.empty()) {
+        return;
+    }
+
+    md << "## Replay Execution Audit\n\n";
+    md << "Replay execution is summarized from structured `ReplayRun`, `ReplayStep`, and `ReplayWarning` evidence.\n\n";
+
+    if (!runs.empty()) {
+        md << "### Replay Runs\n\n";
+        md << "| Run Evidence | Plan | File | OK | Force | Task Match | Policy | Warning Evidence | Error Evidence |\n";
+        md << "| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n";
+        for (const auto &run : runs) {
+            md << "| `" << run.evidence
+               << "` | `" << run.plan
+               << "` | " << table_cell(run.file)
+               << " | `" << run.ok
+               << "` | `" << run.force
+               << "` | `" << run.task_metadata_match
+               << "` | `" << run.failure_policy
+               << "` | " << (run.warning_evidence.empty() ? "`-`" : ("`" + run.warning_evidence + "`"))
+               << " | " << (run.error_evidence.empty() ? "`-`" : ("`" + run.error_evidence + "`"))
+               << " |\n";
+        }
+        md << "\n";
+
+        if (steps.empty()) {
+            for (const auto &run : runs) {
+                for (const auto &step : run.steps) {
+                    steps.push_back(step);
+                }
+            }
+        } else {
+            std::map<std::string, std::string> run_evidence_by_plan;
+            std::map<std::string, bool> duplicate_plan;
+            for (const auto &run : runs) {
+                if (run.plan.empty()) {
+                    continue;
+                }
+                if (run_evidence_by_plan.count(run.plan) > 0) {
+                    duplicate_plan[run.plan] = true;
+                } else {
+                    run_evidence_by_plan[run.plan] = run.evidence;
+                }
+            }
+            for (auto &step : steps) {
+                if (!step.run_evidence.empty()) {
+                    continue;
+                }
+                auto run_it = run_evidence_by_plan.find(step.plan);
+                if (run_it != run_evidence_by_plan.end() && !duplicate_plan[step.plan]) {
+                    step.run_evidence = run_it->second;
+                } else {
+                    step.run_evidence = step.plan;
+                }
+            }
+        }
+
+        md << "### Replay Steps\n\n";
+        md << "| Run | Step | Action | Status | Policy | Step Evidence | Action Evidence | Error Evidence | Skip Reason |\n";
+        md << "| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n";
+        for (const auto &step : steps) {
+            md << "| `" << step.run_evidence
+               << "` | `" << step.step_id
+               << "` | `" << step.action_name
+               << "` | `" << step.status
+               << "` | `" << step.failure_policy
+               << "` | " << (step.step_evidence.empty() ? "`-`" : ("`" + step.step_evidence + "`"))
+               << " | " << (step.action_evidence.empty() ? "`-`" : ("`" + step.action_evidence + "`"))
+               << " | " << (step.error_evidence.empty() ? "`-`" : ("`" + step.error_evidence + "`"))
+               << " | " << table_cell(step.skip_reason) << " |\n";
+        }
+        md << "\n";
+    }
+
+    if (!warnings.empty()) {
+        md << "### Replay Warnings\n\n";
+        md << "| Evidence | Plan | File | Force | Task Match | Warning |\n";
+        md << "| --- | --- | --- | --- | --- | --- |\n";
+        for (const auto &warning : warnings) {
+            md << "| `" << warning.evidence
+               << "` | `" << warning.plan
+               << "` | " << table_cell(warning.file)
+               << " | `" << warning.force
+               << "` | `" << warning.task_metadata_match
+               << "` | " << table_cell(warning.warning) << " |\n";
+        }
+        md << "\n";
+    }
 }
 
 static bool write_hypotheses_from_index(std::ostringstream &md,
@@ -211,6 +477,39 @@ static void write_hypothesis_file_list(std::ostringstream &md, const fs::path &h
         }
         md << "\n";
     }
+}
+
+static void write_replay_plan_file_table(std::ostringstream &md, const std::vector<fs::path> &files) {
+    if (files.empty()) {
+        md << "No replay plans were written.\n\n";
+        return;
+    }
+
+    md << "| Plan File | Name | Tags | Source Session | Failure Policy | Task Fingerprint |\n";
+    md << "| --- | --- | --- | --- | --- | --- |\n";
+    for (const auto &file : files) {
+        Json plan = parse_json_or_null(read_text_or_empty(file));
+        std::string name;
+        std::string tags;
+        std::string source_session;
+        std::string failure_policy;
+        std::string fingerprint;
+        if (plan.is_object()) {
+            name = json_string_value(plan, "name");
+            tags = json_array_strings_text(plan, "tags");
+            source_session = json_string_value(plan, "source_session_id");
+            failure_policy = json_string_value(plan, "failure_policy");
+            fingerprint = json_object_string_value(plan, "task", "fingerprint");
+        }
+        md << "| `" << display_path(file)
+           << "` | `" << name
+           << "` | " << table_cell(tags)
+           << " | `" << source_session
+           << "` | `" << failure_policy
+           << "` | `" << fingerprint
+           << "` |\n";
+    }
+    md << "\n";
 }
 
 void write_report(const fs::path &report,
@@ -386,15 +685,10 @@ void write_report(const fs::path &report,
             }
         }
         std::sort(files.begin(), files.end());
-        if (files.empty()) {
-            md << "No replay plans were written.\n\n";
-        } else {
-            for (const auto &file : files) {
-                md << "- `" << display_path(file) << "`\n";
-            }
-            md << "\n";
-        }
+        write_replay_plan_file_table(md, files);
     }
+
+    write_replay_execution_audit(md, evidence);
 
     md << "## Limitations\n\n";
     md << "- This MVP uses GDB/MI without PTY support.\n";

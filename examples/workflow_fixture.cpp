@@ -1,6 +1,8 @@
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
+#include <stdexcept>
 #include <string>
 
 #ifdef __linux__
@@ -49,6 +51,11 @@ static int live_mode() {
     int total = workflow_breakpoint_site(g_workflow_value);
     total += workflow_stop_policy_site(g_workflow_value);
     total += workflow_auto_continue_site(g_workflow_value);
+
+    try {
+        throw std::runtime_error("workflow replay setup throw");
+    } catch (const std::exception &) {
+    }
 
 #ifdef __linux__
     const char message[] = "workflow syscall write\n";

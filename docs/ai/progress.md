@@ -759,6 +759,41 @@ optional/variant/tuple/pair 和工作目录路径归一化。`raw_mi` 已作为�
 - 本轮未新增项目级 decision；属于既有 core/replay/probe/hypothesis 能力的真实组合 workflow
   回归覆盖。
 
+## 2026-06-13 本轮更新（replay setup plan/report audit）
+
+- 执行 `docs/ai/next_cli_task.md` 中的 replay setup plan 和 report auditability hardening 任务，
+  聚焦 `save-action`、`--replay-before-run`、probe setup、replay 失败策略、mismatch warning
+  和报告可审计性。
+- `watchpoint_set` 状态守卫已补齐：live session 的 ready/stopped/exited state 均可设置
+  watchpoint，和 breakpoint/catchpoint 保持一致；core mode 仍拒绝动态 probe action。
+  这使 setup replay plan 能在第一次 `run` 前安装 breakpoint、watchpoint 和 catchpoint。
+- 扩展 `examples/workflow_fixture.cpp` 的 live path，新增稳定 C++ throw/catchpoint 事件，用于
+  replay setup plan smoke 覆盖 catchpoint hit，避免 syscall catchpoint 在程序启动阶段产生过多
+  环境相关 stop。
+- 新增 `scripts/smoke_replay_setup_plan_flow.sh` 和 CTest `replay_setup_plan_flow`：
+  - session RS1 通过 `save-action` 生成 probe setup plan，确认结构化 plan 保留 schema、tags、
+    source session、task fingerprint 和高层 action。
+  - session RS2 使用 `--replay-before-run` 在初始运行前安装 breakpoint/watchpoint/catchpoint，
+    并真实命中三类 probe，产生 `BreakpointHit`、`WatchpointHit`、`CatchpointHit` 和
+    `OnHitAction` evidence。
+  - session RS3 replay `stop_on_error` plan，覆盖成功 step、失败 step、skipped step、
+    `ReplayStep`、`ReplayRun` 和 `ToolError` evidence。
+  - session RS4 覆盖 task fingerprint mismatch 默认拒绝和 `--force` warning，确认
+    `ReplayWarning`、`ToolError`、`replay_warning_count` 和报告 warning table。
+  - smoke 统一检查 report、assets、session summary、snapshot、evidence index、raw/summary/view
+    文件和 report evidence id 引用一致性。
+- 增强最终报告：
+  - `Replay Plans` 从结构化 plan 文件列出 plan file、name、tags、source session、failure
+    policy 和 task fingerprint。
+  - 新增 `Replay Execution Audit` 区域，从结构化 `ReplayRun`、`ReplayStep` 和 `ReplayWarning`
+    evidence 生成 run、step 和 warning 表；不从 action response 文本反解析 replay 结果。
+- 更新 `docs/agent_actions.md` / `.en.md` 和 `docs/evidence_model.md` / `.en.md`，记录
+  before-run setup plan、watchpoint ready-state 支持和 replay audit report 行为。
+- 本轮没有修改 replay plan schema、action JSON schema、response schema、evidence raw 文件布局、
+  task format、GDB/MI parser、type sanitizer 或 hypothesis assertion 语义。
+- 本轮未新增项目级 decision；属于既有 replay/probe evidence 模型和 D012 typed action boundary
+  下的真实工作流与报告审计增强。
+
 ## 建议的下一步
 
 1. 继续收集不同 GDB 版本和真实项目 core 的 raw 输出，扩展 MI summary fixture 覆盖面。

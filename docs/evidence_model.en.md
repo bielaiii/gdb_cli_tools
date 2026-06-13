@@ -149,6 +149,12 @@ Older JSONL replay files and older plans without a failure policy default to
 readable but produce a warning. Unknown schema names or schema versions are
 rejected with stable errors.
 
+The final report's `Replay Plans` section lists structured plan file metadata:
+name, tags, source session, failure policy, and task fingerprint. The `Replay
+Execution Audit` section summarizes replay runs, steps, and warnings from
+structured `ReplayRun`, `ReplayStep`, and `ReplayWarning` evidence; the report
+does not parse replay results back out of action response text.
+
 ## Probe Store Snapshot
 
 The authoritative runtime probe state is the in-memory `ProbeState`.

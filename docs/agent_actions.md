@@ -87,7 +87,8 @@ command 失败。Agent 不需要打开 raw MI 就能知道该 action 是否被 G
 ## Replay
 
 保存的 replay plan 会同时写成兼容 JSONL 文件和结构化 `replay/<name>.json` plan。
-可以使用 `--replay-before-run plan.json` 在第一次运行前应用断点等 action。
+可以使用 `--replay-before-run plan.json` 在第一次运行前应用 breakpoint/watchpoint/catchpoint
+等 setup action。这样新的 session 会先安装 probe，再执行第一次 `run`。
 结构化 plan 默认 `failure_policy` 是 `continue_on_error`；也可以使用
 `stop_on_error`。step 可以用自己的 `failure_policy` 覆盖 plan-level policy。
 旧 JSONL 和缺少 policy 的旧结构化 plan 按 `continue_on_error` 处理。
@@ -149,6 +150,10 @@ evidence。显式 `force:true` 或 CLI `--force` 会允许执行，但 result �
 每次 replay 会记录 `ReplayRun` evidence；每个 step 都会记录
 `ReplayStep` evidence；action 返回失败或执行异常时还会记录 `ToolError` evidence。
 `stop_on_error` 触发后，后续 step 会以 `skipped` 记录，并带上 skip reason。
+最终报告会从结构化 `ReplayRun`、`ReplayStep` 和 `ReplayWarning` evidence 生成
+`Replay Execution Audit` 区域，汇总 plan、force 状态、task fingerprint 是否匹配、
+step 成功/失败/跳过状态、action evidence、error evidence 和 warning evidence。该区域不从
+response 文本反解析 replay 结果。
 
 ## Probe 和 On-hit Action
 
@@ -246,6 +251,8 @@ Action 会先根据 live session 状态做校验。例如：
 - `backtrace`、`locals`、`evaluate` 和 hypothesis check 需要 inferior 已停止或处于
   core mode。
 - `continue` 需要 stopped state。
+- `breakpoint_set`、`watchpoint_set`、`catchpoint_set` 和 `replay` 可在 live session 的
+  ready、stopped 或 exited state 使用；这支持 `--replay-before-run` 先安装 probe setup plan。
 - core mode 是静态调试对象，`run`、`continue`、`breakpoint_set`、`watchpoint_set`、
   `catchpoint_set` 和 probe enable/disable/delete 会被拒绝，并记录 `ToolError` evidence。
 - `finish` 需要 stopped、exited 或 error state。

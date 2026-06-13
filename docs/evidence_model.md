@@ -145,6 +145,11 @@ created_at、task metadata、task fingerprint、plan-level failure policy 和 ac
 缺少 task metadata 或 fingerprint 的旧 plan 可以读取，但会产生 warning；无法识别的
 schema 或 schema version 会被稳定拒绝。
 
+最终报告的 `Replay Plans` 区域会列出结构化 plan 文件的 name、tags、source session、
+failure policy 和 task fingerprint。`Replay Execution Audit` 区域会从结构化
+`ReplayRun`、`ReplayStep` 和 `ReplayWarning` evidence 汇总 replay run、step 和 warning
+审计表；报告不会从 action response 文本反解析 replay 结果。
+
 ## Probe Store 快照
 
 Probe 的运行期权威状态是内存中的 `ProbeState`。`assets/probes.json` 只在

@@ -215,6 +215,12 @@ add_test(
 )
 
 add_test(
+    NAME replay_setup_plan_flow
+    COMMAND /bin/bash ${CMAKE_SOURCE_DIR}/scripts/smoke_replay_setup_plan_flow.sh
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
+add_test(
     NAME mi_summary_tests
     COMMAND mi_summary_tests
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}

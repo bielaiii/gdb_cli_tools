@@ -216,7 +216,7 @@ static bool action_allowed_in_state(const SessionOutcome &outcome,
 
     if (action == "backtrace" || action == "locals" || action == "args_info" ||
         action == "registers" || action == "frame_select" || action == "evaluate" ||
-        action == "hypothesis_check" || action == "watchpoint_set") {
+        action == "hypothesis_check") {
         return state_is_stopped_or_core(outcome)
                    ? true
                    : deny(action + " requires stopped state or core mode");
@@ -226,7 +226,7 @@ static bool action_allowed_in_state(const SessionOutcome &outcome,
         return state == SessionState::Stopped ? true : deny("continue requires stopped state");
     }
 
-    if (action == "run" || action == "breakpoint_set" || action == "replay") {
+    if (action == "run" || action == "breakpoint_set" || action == "watchpoint_set" || action == "replay") {
         return (state == SessionState::Ready || state == SessionState::Stopped || state == SessionState::Exited)
                    ? true
                    : deny(action + " requires ready, stopped, or exited state");

@@ -83,7 +83,9 @@ action without opening raw MI, while the raw MI remains available for audit.
 
 Saved replay plans are written as both a compatibility JSONL file and a
 structured `replay/<name>.json` plan. Use `--replay-before-run plan.json` to
-apply actions such as breakpoints before the first run.
+apply setup actions such as breakpoints, watchpoints, and catchpoints before
+the first run. The new session installs the probes first, then performs the
+initial `run`.
 The default structured-plan `failure_policy` is `continue_on_error`; plans or
 individual steps may use `stop_on_error`. Older JSONL files and older
 structured plans without a policy default to `continue_on_error`.
@@ -243,11 +245,19 @@ The replay result includes each step's `index`, `step_id`, `action_name`,
 records `ReplayStep` evidence. Failed action responses or execution exceptions
 also record `ToolError` evidence. When `stop_on_error` triggers, later steps
 are recorded as `skipped` with a skip reason.
+The final report builds a `Replay Execution Audit` section from structured
+`ReplayRun`, `ReplayStep`, and `ReplayWarning` evidence. It summarizes the
+plan, force state, task fingerprint match state, step success/failure/skipped
+status, action evidence, error evidence, and warning evidence without parsing
+replay response text.
 
 Actions are checked against the live session state before execution. For
 example, `backtrace`, `locals`, `evaluate`, and hypothesis checks require a
-stopped inferior or core mode; `continue` requires stopped state; `finish`
-requires stopped, exited, or error state. Rejected actions are recorded as
+stopped inferior or core mode; `continue` requires stopped state;
+`breakpoint_set`, `watchpoint_set`, `catchpoint_set`, and `replay` can run in a
+live session's ready, stopped, or exited state; and `finish` requires stopped,
+exited, or error state. This allows `--replay-before-run` to install probe
+setup plans before the initial run. Rejected actions are recorded as
 `ToolError` evidence.
 
 Core mode is a static debugging target. `run`, `continue`, `breakpoint_set`,
