@@ -11,6 +11,7 @@ add_executable(gdb-agent
     src/cli.cpp
     src/cli/action.cpp
     src/cli/action_dispatch.cpp
+    src/cli/session_executor.cpp
     src/replay/replay_runtime.cpp
     src/common/json.cpp
     src/common/string_utils.cpp

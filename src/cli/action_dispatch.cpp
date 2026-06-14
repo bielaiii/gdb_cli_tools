@@ -1,5 +1,6 @@
 #include "action_dispatch.hpp"
 
+#include "session_executor.hpp"
 #include "../common/json.hpp"
 #include "../common/string_utils.hpp"
 #include "../gdb/gdb_session.hpp"
@@ -979,7 +980,7 @@ ActionOutput dispatch_action(ActionContext &context, const ActionRequest &reques
 }
 
 ActionOutput handle_action_request(ActionContext &context, const ActionRequest &request) {
-    return dispatch_action(context, request);
+    return execute_session_operation(context, request);
 }
 
 ActionOutput handle_action_json(ActionContext &context, const Json &action) {

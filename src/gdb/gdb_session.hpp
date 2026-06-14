@@ -9,6 +9,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <string_view>
 
 class GdbSession {
@@ -33,6 +34,7 @@ public:
     const std::filesystem::path &assets_dir() const;
     void set_session_id(std::string session_id);
     const std::string &session_id() const;
+    std::recursive_mutex &operation_mutex();
     void shutdown();
 
 private:
@@ -47,6 +49,7 @@ private:
     EvidenceStore evidence_;
     GdbProcess process_;
     std::string session_id_;
+    std::recursive_mutex operation_mutex_;
     uint64_t token_ = 0;
     unsigned long long record_sequence_ = 0;
     std::ofstream session_log_;

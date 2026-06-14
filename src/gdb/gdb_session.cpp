@@ -95,6 +95,10 @@ const std::string &GdbSession::session_id() const {
     return session_id_;
 }
 
+std::recursive_mutex &GdbSession::operation_mutex() {
+    return operation_mutex_;
+}
+
 void GdbSession::shutdown() {
     if (process_.pid > 0) {
         try {

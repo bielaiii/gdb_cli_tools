@@ -206,3 +206,71 @@ text。这里禁止的是把序列化后的 action/response 文本当成内部�
 - 结构化 KV 保留了 action response metadata 的可扩展性，同时避免内部依赖 serialized JSON。
 - 保持 JSON 作为外部边界格式可以兼容现有 CLI、daemon、smoke、report、evidence 和 replay plan。
 - protobuf 会引入依赖、生成代码、CMake 集成和 schema 维护成本；对当前内部重构收益不足。
+
+## D013: 高层 action record 是 replay 的运行期来源
+
+状态：Accepted
+
+工具需要提供与高层 replay 对称的高层 record 能力。record 记录的是 Agent 提交并被 session
+接受的高层 action intent，而不是 GDB process record/reverse debugging，也不是旧 action 的执行
+结果。replay 执行时必须重新执行这些 action，并产生新的 evidence id。
+
+record 的运行期权威状态默认保存在 session 内存中，例如 `RecordingState` 持有当前 plan name、
+failure policy、checkpoint policy 和 `std::vector<ActionRequest>`。这避免把 JSONL append log
+当成产品层核心状态，也让普通 action、on-hit action 和 replay step 可以共享 typed action
+pipeline。record/replay/on-hit 不应绕过 session 的串行 action 执行入口。
+
+工具同时需要提供持久化 action 组的接口。持久化用于跨 gdb-agent 重启复用、审计和报告引用；
+默认 record 行为可以先写入内存，但必须允许显式 checkpoint 或 stop 时落盘。推荐策略：
+
+- `record_start` 默认创建内存 buffer。
+- 普通高层 action 被接受后追加到内存 buffer。
+- `record_stop` 将内存 buffer 写成可重放 plan artifact。
+- 可选 checkpoint policy 支持每步落盘，降低 gdb-agent 自身 crash 或被 kill 时的丢失风险。
+- `session_snapshot.json` 和 `session_summary.json` 仍不是 record/replay 恢复文件。
+
+持久化格式优先考虑版本化二进制格式，作为工具内部 action 组 artifact 的权威存储。二进制格式需要
+包含 schema magic/version、plan metadata、task fingerprint、failure policy、step list 和每步
+typed action payload，并提供稳定的读取校验与错误报告。为了人工检查、review、diff 和文档示例，
+必须同时提供字符串格式化接口，把二进制 action plan 导出为人类可读文本；该文本可以是 JSON、
+JSONL 或 Markdown view，但它不是运行期权威状态。现有 JSON/JSONL replay plan 可以作为兼容读取和
+human-readable export/import 格式保留，但新 record 抽象不应依赖 JSONL 作为唯一主存储。
+
+默认不自动记录 `record_*`、`replay`、`finish_session` 和 `save_action` 自身。`raw_mi` 是高级
+escape hatch，默认不进入自动 record，除非显式 opt in 并在 plan metadata 中标记 advanced risk。
+
+原因：
+
+- 有高层 replay 就需要对称的高层 record，避免 Agent 只能用 `save_action` 手动拼 plan。
+- 内存 buffer 更符合 live session 的运行期语义，文件是持久化 artifact，而不是唯一状态源。
+- 二进制格式更适合作为稳定、紧凑、可校验的内部 action 组存储；字符串格式更适合人工审计。
+- checkpoint 解决的是 gdb-agent 自身退出或崩溃导致的 durability 问题；inferior segfault 不会让
+  gdb-agent 内存 record 自动丢失。
+- 串行 session executor 能保证 record 的 action 顺序、实际执行顺序和 replay 审计顺序一致。
+
+## D014: 先建立 session 串行执行边界，再实现 record
+
+状态：Accepted
+
+在实现高层 record 前，应先拆出 session 级 action executor 或等价的串行操作队列。这里的目标不是
+引入多个线程并共享同一份 GDB/session 状态，而是明确操作对象和执行边界：
+
+- Agent/RPC 接入层负责接收请求、解析输入和定位 session。
+- 每个 live session 有一个串行 action executor，负责按顺序执行普通 action、replay step、
+  on-hit action 和后续 record append。
+- GDB/MI transport 由该 session executor 独占写命令；MI reader 可以是 async reader/coroutine，
+  但不能让多个调用方并发向同一个 GDB session 发命令。
+- Evidence writer、record/replay store 可以作为独立模块，但通过 session executor 观察 action
+  顺序和执行结果。
+
+如果底层实现需要线程，推荐使用少量 worker/coroutine 和 per-session queue/actor 模型；不推荐让
+Agent thread、replay thread、on-hit thread、record thread 分别直接操作共享 `GdbSession`、
+`ProbeState`、`RecordingState` 或 GDB/MI pipe。跨对象通信应通过明确的 request/result 结构完成，
+不要靠 shared mutable state 和大量 mutex 维持语义。
+
+原因：
+
+- GDB/MI 是状态机，同一 session 的命令必须串行化。
+- record 必须记录 session 接受并按顺序执行的高层 action，不能旁路 action pipeline。
+- replay、on-hit 和未来 record 都会触发嵌套 action；先建立 executor 边界能避免乱序和证据归属错误。
+- 多线程不能解决 durability；record 持久性应依赖 checkpoint/atomic write，而不是线程数量。

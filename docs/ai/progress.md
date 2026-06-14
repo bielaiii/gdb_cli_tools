@@ -833,6 +833,29 @@ optional/variant/tuple/pair 和工作目录路径归一化。`raw_mi` 已作为�
   assertion 语义。
 - 本轮未新增项目级 decision；属于 D011 Core Dump Mode 静态取证边界内的审计和回归增强。
 
+## 2026-06-14 本轮更新（session executor boundary）
+
+- 执行 `docs/ai/next_cli_task.md` 中的 session concurrency and operation executor 任务，先建立
+  session 串行执行边界，不实现高层 record action，也不新增 action 组二进制持久化。
+- 新增 `src/cli/session_executor.hpp` / `src/cli/session_executor.cpp`：
+  - 提供 `SessionOperationExecutor` 和 `execute_session_operation` 作为 typed action execution
+    boundary。
+  - 通过 `SessionOperationOrigin` 标记 direct、replay step 和 on-hit action 调用来源，为后续
+    record append hook 预留位置。
+  - 本轮实现是同步 executor，没有引入 OS thread 或后台 worker。
+- `GdbSession` 新增 per-session `std::recursive_mutex` operation lock：
+  - executor 执行 action 时持锁，确保同一 session 的 action 语义串行。
+  - 使用 recursive mutex 允许 `run` / `continue` 命中 probe 后在同一线程中执行 on-hit 子 action。
+- 普通 action、replay step 和 on-hit action 已统一经过 executor 或共享底层 execution entry：
+  - `handle_action_request` 现在通过 `execute_session_operation`。
+  - replay step 通过 `execute_session_operation(... ReplayStep)` 执行。
+  - on-hit action 和 `continue_after_hit` 通过 `execute_session_operation(... OnHitAction)` 执行。
+- 保持外部行为兼容：未修改 action JSON schema、response 字段语义、replay plan schema、task
+  format、evidence raw 文件布局、report schema、Core Dump Mode 静态边界或 raw MI risk 语义。
+- 本轮新增项目级 decision：
+  - D013：高层 action record 是 replay 的运行期来源，后续默认内存保存，并提供持久化接口。
+  - D014：先建立 session 串行执行边界，再实现 record。
+
 ## 建议的下一步
 
 1. 继续收集不同 GDB 版本和真实项目 core 的 raw 输出，扩展 MI summary fixture 覆盖面。

@@ -1,7 +1,7 @@
 #include "probe_runtime.hpp"
 
 #include "../cli/action_context.hpp"
-#include "../cli/action_dispatch.hpp"
+#include "../cli/session_executor.hpp"
 #include "../common/json.hpp"
 #include "../common/string_utils.hpp"
 #include "../gdb/gdb_session.hpp"
@@ -397,7 +397,10 @@ static std::vector<ProbeState::OnHitActionResult> run_on_hit_actions(
         ActionRequest action_request = with_timeout_defaults(*configured_action, policy.timeout_ms);
         size_t evidence_start = session.evidence_store().all().size();
         ActionContext action_context{session, task, outcome, probe_state};
-        ActionOutput action_output = handle_action_request(action_context, action_request);
+        ActionOutput action_output = execute_session_operation(
+            action_context,
+            action_request,
+            SessionOperationOptions{SessionOperationOrigin::OnHitAction});
         std::string response_text = action_output_text(action_output);
         prelude.insert(prelude.end(), action_output.prelude.begin(), action_output.prelude.end());
         prelude.push_back(action_output.final);
@@ -431,7 +434,10 @@ static std::vector<ProbeState::OnHitActionResult> run_on_hit_actions(
         action_request.payload = ContinuePayload{policy.timeout_ms, true};
         size_t evidence_start = session.evidence_store().all().size();
         ActionContext action_context{session, task, outcome, probe_state};
-        ActionOutput action_output = handle_action_request(action_context, action_request);
+        ActionOutput action_output = execute_session_operation(
+            action_context,
+            action_request,
+            SessionOperationOptions{SessionOperationOrigin::OnHitAction});
         std::string response_text = action_output_text(action_output);
         prelude.insert(prelude.end(), action_output.prelude.begin(), action_output.prelude.end());
         prelude.push_back(action_output.final);

@@ -2,7 +2,7 @@
 
 #include "replay_plan.hpp"
 #include "../cli/action_context.hpp"
-#include "../cli/action_dispatch.hpp"
+#include "../cli/session_executor.hpp"
 #include "../common/json.hpp"
 #include "../common/string_utils.hpp"
 #include "../gdb/gdb_session.hpp"
@@ -247,7 +247,10 @@ static ReplayStepRunResult replay_action_step(GdbSession &session,
 
     try {
         ActionContext action_context{session, task, outcome, probe_state};
-        ActionOutput action_output = handle_action_request(action_context, step.action);
+        ActionOutput action_output = execute_session_operation(
+            action_context,
+            step.action,
+            SessionOperationOptions{SessionOperationOrigin::ReplayStep});
         std::string step_output = action_output_text(action_output);
         prelude.insert(prelude.end(), action_output.prelude.begin(), action_output.prelude.end());
         prelude.push_back(action_output.final);
@@ -592,4 +595,3 @@ ActionOutput replay_action_file(ActionContext &context,
     output.final = replay_result_action(path, result);
     return output;
 }
-
