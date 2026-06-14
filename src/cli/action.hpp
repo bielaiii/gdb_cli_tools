@@ -32,6 +32,10 @@ enum class ActionKind {
     HypothesisCheck,
     HypothesisConclude,
     RawMi,
+    RecordStart,
+    RecordStatus,
+    RecordStop,
+    RecordDiscard,
 };
 
 struct ActionRequest;
@@ -102,6 +106,11 @@ struct ReplayPayload {
     bool force = false;
     std::string failure_policy;
 };
+struct RecordStartPayload {
+    std::string name;
+    std::string failure_policy;
+    bool include_raw_mi = false;
+};
 
 using ActionPayload = std::variant<
     NoPayload,
@@ -120,7 +129,8 @@ using ActionPayload = std::variant<
     HypothesisCheckPayload,
     HypothesisConcludePayload,
     SaveActionPayload,
-    ReplayPayload>;
+    ReplayPayload,
+    RecordStartPayload>;
 
 struct ActionRequest {
     ActionKind kind = ActionKind::Unknown;

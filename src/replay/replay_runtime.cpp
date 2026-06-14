@@ -1,5 +1,6 @@
 #include "replay_runtime.hpp"
 
+#include "record_store.hpp"
 #include "replay_plan.hpp"
 #include "../cli/action_context.hpp"
 #include "../cli/session_executor.hpp"
@@ -488,6 +489,24 @@ ActionOutput replay_action_file(ActionContext &context,
     ReplayRunResult result;
     result.plan_name = path.stem().string();
     result.force = force;
+
+    if (is_record_artifact(path)) {
+        RecordedActionGroup group = read_record_artifact(path);
+        Json plan = record_group_to_replay_plan_json(group);
+        result = replay_json_plan(session,
+                                  task,
+                                  outcome,
+                                  probe_state,
+                                  path,
+                                  plan,
+                                  output.prelude,
+                                  force,
+                                  failure_policy_override);
+        add_replay_run_evidence(session, path, result);
+        output.final = replay_result_action(path, result);
+        return output;
+    }
+
     std::ifstream in(path);
     if (!in) {
         throw std::runtime_error("failed to open replay file: " + path.string());

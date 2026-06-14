@@ -12,6 +12,7 @@ add_executable(gdb-agent
     src/cli/action.cpp
     src/cli/action_dispatch.cpp
     src/cli/session_executor.cpp
+    src/replay/record_store.cpp
     src/replay/replay_runtime.cpp
     src/common/json.cpp
     src/common/string_utils.cpp
@@ -134,6 +135,21 @@ target_compile_options(replay_plan_tests PRIVATE
     -Wpedantic
 )
 
+add_executable(record_store_tests
+    tests/record_store_tests.cpp
+    src/cli/action.cpp
+    src/common/json.cpp
+    src/common/string_utils.cpp
+    src/replay/record_store.cpp
+    src/replay/replay_plan.cpp
+)
+
+target_compile_options(record_store_tests PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+)
+
 add_executable(hypothesis_assertion_tests
     tests/hypothesis_assertion_tests.cpp
     src/common/string_utils.cpp
@@ -222,6 +238,12 @@ add_test(
 )
 
 add_test(
+    NAME record_flow
+    COMMAND /bin/bash ${CMAKE_SOURCE_DIR}/scripts/smoke_record_flow.sh
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
+add_test(
     NAME mi_summary_tests
     COMMAND mi_summary_tests
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
@@ -236,6 +258,12 @@ add_test(
 add_test(
     NAME replay_plan_tests
     COMMAND replay_plan_tests
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
+add_test(
+    NAME record_store_tests
+    COMMAND record_store_tests
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 

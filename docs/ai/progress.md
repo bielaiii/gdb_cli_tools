@@ -856,6 +856,48 @@ optional/variant/tuple/pair 和工作目录路径归一化。`raw_mi` 已作为�
   - D013：高层 action record 是 replay 的运行期来源，后续默认内存保存，并提供持久化接口。
   - D014：先建立 session 串行执行边界，再实现 record。
 
+## 2026-06-14 本轮更新（high-level action record）
+
+- 执行 `docs/ai/next_cli_task.md` 中的 high-level action record 任务，基于上一轮
+  `SessionOperationExecutor` 边界实现 record append hook 和 action group artifact。
+- 新增用户可见 record action：
+  - `record_start`：开启 session 内存 `RecordingState`，支持 `name`、`failure_policy` 和
+    `include_raw_mi`。
+  - `record_status`：返回 active 状态、组名、failure policy、`include_raw_mi`、step count 和最近
+    artifact 路径。
+  - `record_stop`：把当前内存 action group 持久化为 `assets/replay/<name>.gar`，并写
+    `assets/replay/<name>.json` 人工可读 export。
+  - `record_discard`：丢弃当前内存录制，不写 artifact。
+- record 语义保持为高层 action intent 录制，不是 GDB process record/reverse debugging：
+  - 默认只记录 direct Agent action 且 action 成功返回后的高层 action JSON。
+  - 默认不记录 `record_*`、`replay`、`finish_session`、`save_action`、`raw_mi`、失败 action、
+    replay step 或 probe on-hit 子 action。
+  - `raw_mi` 只有在 `record_start` 显式设置 `include_raw_mi:true` 时才会被录入，且原 action 仍需
+    `risk:"advanced"`。
+- 新增 `src/replay/record_store.hpp` / `.cpp`：
+  - `.gar` 二进制 artifact 使用 magic `GDBA_REC1`、version `1`。
+  - artifact 内容包括 group name、source session id、created_at、failure policy、task metadata
+    JSON 和 action JSON list。
+  - JSON export 沿用 replay plan 形状，并标记
+    `record_artifact_schema:"gdb-agent-record-artifact-v1"` 与
+    `record_artifact_authority:"binary"`。
+- Replay runtime 已支持读取 `.gar`：
+  - `replay --file <path>.gar` 会读取 record artifact 并在内存转换成现有 replay plan 后执行。
+  - 按名字 replay 时优先读取同名 `.gar`，不存在时继续兼容 `.json` 和 `.jsonl`。
+  - replay audit 仍使用现有 `ReplayRun`、`ReplayStep`、`ReplayWarning` 和 `ToolError` evidence，
+    没有新增 `RecordRun` evidence 类型。
+- 新增验证：
+  - `tests/record_store_tests.cpp` 覆盖内存 record state、二进制 artifact roundtrip、task
+    fingerprint、JSON export 和 replay-plan 转换。
+  - `scripts/smoke_record_flow.sh` 覆盖 daemon live session 中的 `record_start` / direct action /
+    `record_status` / `record_stop` / `.gar` replay / report audit。
+  - CTest 新增 `record_flow` 和 `record_store_tests`。
+- 更新 `docs/agent_actions.md` / `.en.md` 和 `docs/evidence_model.md` / `.en.md`，记录 record action、
+  `.gar` artifact、JSON export、默认内存保存、record 排除规则和 replay `.gar` 兼容路径。
+- 本轮没有修改 task format、GDB/MI parser、Core Dump Mode 静态边界、hypothesis assertion 语义或
+  evidence raw/summary/view 文件布局；新增的是 replay 目录下的 record artifact 格式。
+- 本轮未新增项目级 decision；沿用 D013 高层 action record 语义和 D014 session executor 优先级。
+
 ## 建议的下一步
 
 1. 继续收集不同 GDB 版本和真实项目 core 的 raw 输出，扩展 MI summary fixture 覆盖面。

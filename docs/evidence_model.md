@@ -160,6 +160,27 @@ step 会因 core guard 失败并通过 `ToolError` / `ReplayStep.error_evidence`
 `continue_on_error` 继续后续 step，`stop_on_error` 将后续 step 记录为 `skipped` 并保存
 skip reason。
 
+## Record Artifacts
+
+Record 保存的是高层 action group artifact，不是 live GDB 进程恢复文件，也不是
+`session_snapshot.json` / `session_summary.json` 的替代物。运行期权威状态是 session 内存中的
+`RecordingState`；只有 `record_stop` 才会把当前 action group 写入 `assets/replay/`。
+
+`record_stop` 会写两个文件：
+
+- `replay/<name>.gar`：版本化二进制权威 artifact，magic 为 `GDBA_REC1`，当前 version 为 `1`。
+  内容包含 group name、source session id、created_at、failure policy、task metadata JSON 和
+  action JSON list。
+- `replay/<name>.json`：人工检查用 export，沿用 replay plan 形状并带
+  `record_artifact_schema:"gdb-agent-record-artifact-v1"` 和
+  `record_artifact_authority:"binary"`，表示 `.gar` 是运行时权威来源。
+
+按名字 replay 时，同名 `.gar` 优先级高于 `.json` 和 `.jsonl`。直接 `--file` replay 也可以指向
+`.gar`。读取 `.gar` 后，工具会在内存中转换成现有 replay plan 结构再执行，因此执行 audit 仍写
+现有的 `ReplayRun`、`ReplayStep`、`ReplayWarning` 和 `ToolError` evidence；没有新增单独的
+`RecordRun` evidence。JSON export 只是可读视图，方便 code review 或人工排查，不作为 raw
+evidence 的替代。
+
 ## Probe Store 快照
 
 Probe 的运行期权威状态是内存中的 `ProbeState`。`assets/probes.json` 只在

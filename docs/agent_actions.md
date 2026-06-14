@@ -59,10 +59,15 @@ MVP action 行保持有意的小而稳定：
 {"action":"probe_enable","number":1}
 {"action":"probe_delete","number":1}
 {"action":"continue"}
+{"action":"record_start","name":"fd-checks","failure_policy":"stop_on_error"}
+{"action":"record_status"}
+{"action":"record_stop"}
+{"action":"record_discard"}
 {"action":"save_action","name":"fd-checks","saved_action":"{\"action\":\"backtrace\"}"}
 {"action":"save_action","name":"fd-checks","failure_policy":"stop_on_error","saved_action":{"action":"backtrace"}}
 {"action":"replay","name":"fd-checks","failure_policy":"stop_on_error"}
 {"action":"replay","file":"report.assets/replay/fd-checks.json","force":true}
+{"action":"replay","file":"report.assets/replay/fd-checks.gar","force":true}
 {"action":"hypothesis_create","id":"H-stale-session","title":"session is null before dereference"}
 {"action":"hypothesis_check","hypothesis":"H-stale-session","description":"session argument is null","expression":"session","assertion":"is_null"}
 {"action":"hypothesis_conclude","hypothesis":"H-stale-session","conclusion":"Supported","inference":"The check shows session is null at the breakpoint."}
@@ -87,11 +92,15 @@ command 失败。Agent 不需要打开 raw MI 就能知道该 action 是否被 G
 ## Replay
 
 保存的 replay plan 会同时写成兼容 JSONL 文件和结构化 `replay/<name>.json` plan。
+`record_stop` 写出的录制产物使用二进制 `replay/<name>.gar` 作为权威 replay artifact，
+并额外写 `replay/<name>.json` 作为人工检查用 export。按名字 replay 时，如果同名 `.gar`
+存在，工具会优先读取 `.gar`；否则继续兼容 `.json` 和 `.jsonl`。
 可以使用 `--replay-before-run plan.json` 在第一次运行前应用 breakpoint/watchpoint/catchpoint
 等 setup action。这样新的 session 会先安装 probe，再执行第一次 `run`。
 结构化 plan 默认 `failure_policy` 是 `continue_on_error`；也可以使用
 `stop_on_error`。step 可以用自己的 `failure_policy` 覆盖 plan-level policy。
-旧 JSONL 和缺少 policy 的旧结构化 plan 按 `continue_on_error` 处理。
+旧 JSONL、旧结构化 plan 和录制 `.gar` 中缺少 policy 的 action group 按
+`continue_on_error` 处理。
 
 CLI 支持：
 
@@ -99,6 +108,7 @@ CLI 支持：
 gdb-agent save-action S1 action.json --name repro-checks --failure-policy stop_on_error
 gdb-agent replay S1 repro-checks --failure-policy stop_on_error
 gdb-agent replay S1 --file report.assets/replay/repro-checks.json --force
+gdb-agent replay S1 --file report.assets/replay/repro-checks.gar --force
 ```
 
 `replay` 会在执行前检查 plan 的 `schema`、`schema_version` 和 task fingerprint。
@@ -162,6 +172,40 @@ mutation 会按 core mode state guard 返回 `ok:false`，并写 `ToolError` evi
 混合 plan 中，`continue_on_error` 会继续执行后续 step；`stop_on_error` 会把后续 step
 记录为 `skipped`。报告的 `Replay Execution Audit` 会展示这些 success / failed / skipped
 step 以及对应 error evidence。
+
+## Record
+
+`record_*` 是高层 action intent 录制，不是 GDB process record/reverse debugging。录制只保存
+Agent 发送给工具的 action JSON，用于后续 replay；不会保存旧 GDB 进程、inferior 内存或
+`session_snapshot.json`。
+
+CLI 通常通过通用 `action` 子命令控制录制：
+
+```bash
+gdb-agent action S1 '{"action":"record_start","name":"repro-checks","failure_policy":"stop_on_error"}'
+gdb-agent action S1 '{"action":"backtrace"}'
+gdb-agent action S1 '{"action":"locals"}'
+gdb-agent action S1 '{"action":"record_status"}'
+gdb-agent action S1 '{"action":"record_stop"}'
+gdb-agent replay S1 repro-checks
+```
+
+`record_start` 开始一个 session 内存录制组；`name` 会用于最终 artifact 文件名，
+`failure_policy` 默认是 `continue_on_error`，也可以设为 `stop_on_error`。默认不录制
+`raw_mi`；如果确实需要把高级 escape hatch 也纳入录制，可以传
+`"include_raw_mi":true`，但 `raw_mi` action 本身仍必须带 `risk:"advanced"`。
+
+录制期间，只有 direct Agent action 且 action 成功返回后才会 append 到内存中的
+`RecordingState`。默认不会录制 `record_start`、`record_status`、`record_stop`、
+`record_discard`、`replay`、`finish_session`、`save_action`、`raw_mi`，也不会录制 replay
+step 或 probe on-hit 子 action。被 state guard 拒绝或 GDB 返回失败的 action 不会进入录制组。
+
+`record_status` 返回当前录制状态、组名、failure policy 和已录 step 数。
+`record_discard` 丢弃当前内存录制，不写 artifact。`record_stop` 将录制组持久化到
+`assets/replay/<name>.gar`，并同时写出 `assets/replay/<name>.json` 人工可读 export。
+`.gar` 是版本化二进制权威格式，包含 magic/version、组 metadata、task fingerprint 和 action
+list；`.json` export 使用 replay plan 形状方便 review，但标记
+`record_artifact_authority:"binary"`，运行时 replay 仍以 `.gar` 为权威。
 
 ## Probe 和 On-hit Action
 

@@ -4,31 +4,47 @@
 
 ## 本轮完成
 
-- 执行 `docs/ai/next_cli_task.md` 中的 `session concurrency and operation executor` 任务。
-- 新增同步 session executor：
-  - `src/cli/session_executor.hpp`
-  - `src/cli/session_executor.cpp`
-- `SessionOperationExecutor` 现在是普通 action、replay step 和 on-hit action 的统一 typed
-  execution boundary。
-- `GdbSession` 新增 per-session `std::recursive_mutex` operation lock：
-  - executor 在执行 action 前持锁。
-  - 同一 session 的 GDB/MI action 执行被串行化。
-  - recursive mutex 允许 `run` / `continue` 内部触发 on-hit 子 action 时重入 executor。
-- 迁移调用路径：
-  - 普通 action：`handle_action_request` -> `execute_session_operation` -> `dispatch_action`。
-  - replay step：`replay_runtime` 使用 `execute_session_operation(... ReplayStep)`。
-  - on-hit action：`probe_runtime` 使用 `execute_session_operation(... OnHitAction)`。
-  - `continue_after_hit` 也走 on-hit executor origin。
-- 本轮没有新增 OS thread、后台 worker 或 coroutine queue；建立的是同步 executor/lock 边界。
-- 本轮没有新增 `record_start` / `record_stop` / `record_status` 等用户可见 record action。
-- 本轮没有实现二进制 action group 持久化；record 后续应接在 executor 的 action accepted /
-  observed metadata 位置。
-- 更新 `CMakeLists.txt`，把 `src/cli/session_executor.cpp` 加入 `gdb-agent`。
-- 更新 `docs/ai/progress.md`。
-- `docs/ai/decision.md` 已新增：
-  - D013：高层 action record 是 replay 的运行期来源。
-  - D014：先建立 session 串行执行边界，再实现 record。
-- `docs/ai/next_cli_task.md` 已更新为本轮执行任务记录。
+- 执行 `docs/ai/next_cli_task.md` 中的 high-level action record 任务。
+- 新增高层 record action：
+  - `record_start`：开启 session 内存 `RecordingState`，支持 `name`、`failure_policy` 和
+    `include_raw_mi`。
+  - `record_status`：返回当前录制 active 状态、组名、failure policy、`include_raw_mi`、step count
+    和最近 artifact 路径。
+  - `record_stop`：把当前内存 action group 写到 `assets/replay/<name>.gar`，并生成
+    `assets/replay/<name>.json` 人工可读 export。
+  - `record_discard`：丢弃当前内存录制，不写 artifact。
+- 新增 `src/replay/record_store.hpp` / `src/replay/record_store.cpp`：
+  - `.gar` 是版本化二进制权威 artifact，magic 为 `GDBA_REC1`，当前 version 为 `1`。
+  - artifact 保存 group name、source session id、created_at、failure policy、task metadata JSON
+    和 high-level action JSON list。
+  - JSON export 使用 replay plan 形状，标记 `record_artifact_schema:"gdb-agent-record-artifact-v1"`
+    和 `record_artifact_authority:"binary"`，方便人工检查。
+- `SessionOperationExecutor` 已接入 record append hook：
+  - 只记录 direct Agent action。
+  - 只在 action 返回 `ok:true` 后 append。
+  - 默认排除 `record_*`、`replay`、`finish_session`、`save_action`、`raw_mi`、`Unknown`。
+  - `raw_mi` 只有在 `record_start` 设置 `include_raw_mi:true` 时才会记录，原 action 仍需
+    `risk:"advanced"`。
+  - replay step 和 probe on-hit 子 action 不会被录入当前 direct recording。
+- Replay runtime 已支持二进制 record artifact：
+  - `gdb-agent replay S1 --file path/to/name.gar` 可直接执行。
+  - `gdb-agent replay S1 <name>` 会优先选择 `assets/replay/<name>.gar`，不存在时继续 fallback 到
+    `.json` 和 `.jsonl`。
+  - `.gar` 执行时在内存转换为现有 replay plan，仍写现有 `ReplayRun` / `ReplayStep` /
+    `ReplayWarning` / `ToolError` evidence。
+- 新增验证覆盖：
+  - `tests/record_store_tests.cpp`
+  - `scripts/smoke_record_flow.sh`
+  - CTest `record_store_tests`
+  - CTest `record_flow`
+- 更新文档：
+  - `docs/agent_actions.md`
+  - `docs/agent_actions.en.md`
+  - `docs/evidence_model.md`
+  - `docs/evidence_model.en.md`
+  - `docs/ai/progress.md`
+- 本轮没有更新 `docs/ai/decision.md`；D013/D014 已覆盖 record 默认内存、持久化接口、二进制优先和先建
+  session executor 边界的决策。
 
 ## 验证
 
@@ -38,33 +54,41 @@
   - 结果：通过，输出 `ok`。
 - `./build/replay_plan_tests`
   - 结果：通过，输出 `replay_plan_tests ok`。
-- `ctest --test-dir build --output-on-failure`
-  - 结果：通过，`15/15 tests passed`。
-- `./scripts/smoke_replay_setup_plan_flow.sh`
+- `./build/record_store_tests`
+  - 结果：通过，输出 `record_store_tests ok`。
+- `./scripts/smoke_record_flow.sh`
   - 结果：通过。
-  - 覆盖 replay setup plan、`--replay-before-run`、report audit 和 mismatch handling。
+  - 覆盖 high-level record、`.gar` 二进制 artifact、JSON export 和 `.gar` replay。
 - `./scripts/smoke_daemon_action_flow.sh`
   - 结果：通过。
-  - 覆盖 daemon/action flow、catchpoint_set、on-hit policy 和 restart replay。
+  - 确认 daemon/action、catchpoint、on-hit policy 和 restart replay 无回归。
+- `./scripts/smoke_replay_setup_plan_flow.sh`
+  - 结果：通过。
+  - 确认 replay setup plan、`--replay-before-run`、report audit 和 mismatch handling 无回归。
+- `ctest --test-dir build --output-on-failure`
+  - 结果：通过，`17/17 tests passed`。
 - `git diff --check`
   - 结果：通过。
 
 ## 完成标准审计
 
-- 代码中存在清晰 session operation executor：`SessionOperationExecutor`。
-- 同一 session 的 action 执行通过 per-session operation mutex 串行化。
-- 普通 action 已通过 executor。
-- replay step 已通过 executor。
-- on-hit action 和 `continue_after_hit` 已通过 executor。
-- replay/on-hit 仍依赖 typed `ActionResult.ok` 和 `ActionResult.error`，不解析 response JSON 文本控制流程。
-- 现有 replay、on-hit、core mode、hypothesis、evidence/report 行为在全量 CTest 和相关 smoke 下无回归。
-- 为后续 record append intent / observed metadata 留出了 `SessionOperationOrigin` 和 executor 入口。
+- `record_start` / `record_status` / `record_stop` / `record_discard` 均已通过 action parser 和
+  dispatch 支持。
+- 默认 record state 保存在 session 内存中。
+- direct Agent action 通过 executor 成功执行后 append 到 `RecordingState`。
+- record 默认排除 `record_*`、`replay`、`finish_session`、`save_action`、`raw_mi`、失败 action、
+  replay step 和 on-hit 子 action。
+- 提供二进制持久化接口和人工可读字符串/JSON export。
+- Replay 支持读取 `.gar`，并保持 JSON/JSONL 兼容。
+- 用户文档和 evidence 文档已同步更新。
 
 ## 限制和注意事项
 
-- 本轮没有引入真正的 per-session worker thread 或 async queue；当前是同步 executor + lock。
-- `GdbSession::command` 等低层 API 仍可被 executor 之外的启动/初始化路径调用；这些路径发生在 session
-  发布给 daemon/Agent 之前，当前不构成 live action 并发入口。
-- `dispatch_action` 仍承载主要 action handler 逻辑；本轮只建立执行边界，没有拆分每个 action handler。
-- 后续实现 record 时，应在 executor 中记录被 session 接受的高层 action intent，并避免记录
-  `record_*`、`replay`、`finish_session`、`save_action` 和默认未 opt in 的 `raw_mi`。
+- 当前 record 持久化仅在 `record_stop` 发生；如果进程在录制中途崩溃，尚未 stop 的内存 actions 会丢失。
+  这是 D013 中“默认内存保存，提供持久化接口”的当前实现形态。
+- `.gar` 是本轮新增的 replay artifact 格式，不是 evidence raw/summary/view 文件；执行 replay 后仍通过
+  现有 replay evidence 链路审计。
+- 当前没有引入真正的后台 writer thread 或异步 WAL；后续如果要降低 host process crash 时的 action
+  丢失窗口，需要单独设计。
+- `record_status` 在 `record_stop` 后保留最近 artifact 路径和已清空的 step count；重新
+  `record_start` 会清空这些路径。

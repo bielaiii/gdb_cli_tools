@@ -5,6 +5,7 @@
 #include "../common/string_utils.hpp"
 #include "../gdb/gdb_session.hpp"
 #include "../gdb/mi_utils.hpp"
+#include "../replay/record_store.hpp"
 #include "../replay/replay_plan.hpp"
 #include "../replay/replay_runtime.hpp"
 #include "../task/debug_task.hpp"
@@ -211,7 +212,9 @@ static bool action_allowed_in_state(const SessionOutcome &outcome,
     }
 
     if (action == "hypothesis_create" || action == "hypothesis_conclude" ||
-        action == "save_action" || action == "raw_mi") {
+        action == "save_action" || action == "raw_mi" ||
+        action == "record_start" || action == "record_status" ||
+        action == "record_stop" || action == "record_discard") {
         return true;
     }
 
@@ -951,9 +954,10 @@ ActionOutput dispatch_action(ActionContext &context, const ActionRequest &reques
                 replay_file = payload.file;
             } else if (!payload.name.empty()) {
                 fs::path replay_dir = session.assets_dir() / "replay";
+                fs::path record = replay_dir / (slugify(payload.name) + ".gar");
                 fs::path plan = replay_dir / (slugify(payload.name) + ".json");
                 fs::path jsonl = replay_dir / (slugify(payload.name) + ".jsonl");
-                replay_file = fs::exists(plan) ? plan : jsonl;
+                replay_file = fs::exists(record) ? record : (fs::exists(plan) ? plan : jsonl);
             } else {
                 return single_output(make_action_error(session, request.kind, action_name, "replay requires file or name"));
             }
@@ -970,6 +974,92 @@ ActionOutput dispatch_action(ActionContext &context, const ActionRequest &reques
                                                        ex.what(),
                                                        "Replay failed",
                                                        {{"file", replay_file.lexically_normal().string()}}));
+            }
+        }
+        case ActionKind::RecordStart: {
+            const auto &payload = std::get<RecordStartPayload>(request.payload);
+            if (context.recording == nullptr) {
+                return single_output(make_action_error(session, request.kind, action_name, "recording state is not available"));
+            }
+            if (payload.name.empty()) {
+                return single_output(make_action_error(session, request.kind, action_name, "record_start requires name"));
+            }
+            if (context.recording->active) {
+                return single_output(make_action_error(session,
+                                                       request.kind,
+                                                       action_name,
+                                                       "recording is already active",
+                                                       "Record start failed",
+                                                       {{"name", context.recording->name}}));
+            }
+            recording_start(*context.recording,
+                            payload.name,
+                            payload.failure_policy,
+                            payload.include_raw_mi);
+            ActionResult result = ActionResult::success(request.kind, action_name);
+            action_result_set_bool(result, "active", true);
+            action_result_set_string(result, "name", context.recording->name);
+            action_result_set_string(result, "failure_policy", context.recording->failure_policy);
+            action_result_set_bool(result, "include_raw_mi", context.recording->include_raw_mi);
+            action_result_set_int(result, "step_count", 0);
+            return single_output(std::move(result));
+        }
+        case ActionKind::RecordStatus: {
+            if (context.recording == nullptr) {
+                return single_output(make_action_error(session, request.kind, action_name, "recording state is not available"));
+            }
+            ActionResult result = ActionResult::success(request.kind, action_name);
+            action_result_set_bool(result, "active", context.recording->active);
+            action_result_set_string(result, "name", context.recording->name);
+            action_result_set_string(result, "failure_policy", context.recording->failure_policy);
+            action_result_set_bool(result, "include_raw_mi", context.recording->include_raw_mi);
+            action_result_set_int(result, "step_count", static_cast<int>(context.recording->actions.size()));
+            action_result_set_string(result, "binary", context.recording->binary_path.lexically_normal().string());
+            action_result_set_string(result, "export", context.recording->export_path.lexically_normal().string());
+            return single_output(std::move(result));
+        }
+        case ActionKind::RecordDiscard: {
+            if (context.recording == nullptr) {
+                return single_output(make_action_error(session, request.kind, action_name, "recording state is not available"));
+            }
+            if (!context.recording->active) {
+                return single_output(make_action_error(session, request.kind, action_name, "no active recording"));
+            }
+            int step_count = static_cast<int>(context.recording->actions.size());
+            std::string name = context.recording->name;
+            recording_clear(*context.recording);
+            ActionResult result = ActionResult::success(request.kind, action_name);
+            action_result_set_string(result, "name", name);
+            action_result_set_int(result, "discarded_steps", step_count);
+            return single_output(std::move(result));
+        }
+        case ActionKind::RecordStop: {
+            if (context.recording == nullptr) {
+                return single_output(make_action_error(session, request.kind, action_name, "recording state is not available"));
+            }
+            if (!context.recording->active) {
+                return single_output(make_action_error(session, request.kind, action_name, "no active recording"));
+            }
+            try {
+                RecordPersistResult persisted = persist_recording(*context.recording,
+                                                                  task,
+                                                                  session.session_id(),
+                                                                  session.assets_dir());
+                std::string name = context.recording->name;
+                std::string policy = context.recording->failure_policy;
+                context.recording->active = false;
+                context.recording->actions.clear();
+                context.recording->binary_path = persisted.binary_path;
+                context.recording->export_path = persisted.export_path;
+                ActionResult result = ActionResult::success(request.kind, action_name);
+                action_result_set_string(result, "name", name);
+                action_result_set_string(result, "failure_policy", policy);
+                action_result_set_int(result, "step_count", persisted.step_count);
+                action_result_set_string(result, "binary", persisted.binary_path.lexically_normal().string());
+                action_result_set_string(result, "export", persisted.export_path.lexically_normal().string());
+                return single_output(std::move(result));
+            } catch (const std::exception &ex) {
+                return single_output(make_action_error(session, request.kind, action_name, ex.what(), "Record stop failed"));
             }
         }
         case ActionKind::Unknown:

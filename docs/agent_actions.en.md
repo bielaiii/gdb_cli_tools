@@ -51,10 +51,15 @@ Supported action lines are intentionally small in MVP form:
 {"action":"probe_enable","number":1}
 {"action":"probe_delete","number":1}
 {"action":"continue"}
+{"action":"record_start","name":"fd-checks","failure_policy":"stop_on_error"}
+{"action":"record_status"}
+{"action":"record_stop"}
+{"action":"record_discard"}
 {"action":"save_action","name":"fd-checks","saved_action":"{\"action\":\"backtrace\"}"}
 {"action":"save_action","name":"fd-checks","failure_policy":"stop_on_error","saved_action":{"action":"backtrace"}}
 {"action":"replay","name":"fd-checks","failure_policy":"stop_on_error"}
 {"action":"replay","file":"report.assets/replay/fd-checks.json","force":true}
+{"action":"replay","file":"report.assets/replay/fd-checks.gar","force":true}
 {"action":"hypothesis_create","id":"H-stale-session","title":"session is null before dereference"}
 {"action":"hypothesis_check","hypothesis":"H-stale-session","description":"session argument is null","expression":"session","assertion":"is_null"}
 {"action":"hypothesis_conclude","hypothesis":"H-stale-session","conclusion":"Supported","inference":"The check shows session is null at the breakpoint."}
@@ -81,14 +86,20 @@ run deadlines still mean the inferior ran until the tool interrupted it; they
 are not treated as GDB command failures. Agents can see whether GDB rejected the
 action without opening raw MI, while the raw MI remains available for audit.
 
+## Replay
+
 Saved replay plans are written as both a compatibility JSONL file and a
-structured `replay/<name>.json` plan. Use `--replay-before-run plan.json` to
-apply setup actions such as breakpoints, watchpoints, and catchpoints before
-the first run. The new session installs the probes first, then performs the
-initial `run`.
+structured `replay/<name>.json` plan. `record_stop` writes recorded groups as a
+binary authoritative `replay/<name>.gar` artifact and also writes
+`replay/<name>.json` as a human-readable export. Replay by name prefers the
+same-name `.gar` when it exists, then falls back to `.json` and `.jsonl`.
+Use `--replay-before-run plan.json` to apply setup actions such as breakpoints,
+watchpoints, and catchpoints before the first run. The new session installs the
+probes first, then performs the initial `run`.
 The default structured-plan `failure_policy` is `continue_on_error`; plans or
 individual steps may use `stop_on_error`. Older JSONL files and older
-structured plans without a policy default to `continue_on_error`.
+structured plans without a policy default to `continue_on_error`; recorded
+`.gar` groups without a policy use the same default.
 
 CLI examples:
 
@@ -96,6 +107,7 @@ CLI examples:
 gdb-agent save-action S1 action.json --name repro-checks --failure-policy stop_on_error
 gdb-agent replay S1 repro-checks --failure-policy stop_on_error
 gdb-agent replay S1 --file report.assets/replay/repro-checks.json --force
+gdb-agent replay S1 --file report.assets/replay/repro-checks.gar --force
 ```
 
 Before replaying a structured plan, the tool checks `schema`,
@@ -107,6 +119,50 @@ the mismatch warning.
 ```json
 {"action":"breakpoint_set","location":"examples/segfault.cpp:14","condition":"session == 0"}
 ```
+
+## Record
+
+`record_*` captures high-level action intent. It is not GDB process
+record/reverse debugging. A recording saves the action JSON sent by the Agent
+for later replay; it does not save the old GDB process, inferior memory, or
+`session_snapshot.json`.
+
+Recording is controlled through the normal `action` command:
+
+```bash
+gdb-agent action S1 '{"action":"record_start","name":"repro-checks","failure_policy":"stop_on_error"}'
+gdb-agent action S1 '{"action":"backtrace"}'
+gdb-agent action S1 '{"action":"locals"}'
+gdb-agent action S1 '{"action":"record_status"}'
+gdb-agent action S1 '{"action":"record_stop"}'
+gdb-agent replay S1 repro-checks
+```
+
+`record_start` opens an in-memory recording group for the session. `name` is
+used for the final artifact file name. `failure_policy` defaults to
+`continue_on_error`; it may be set to `stop_on_error`. `raw_mi` is not recorded
+by default. To explicitly include the advanced escape hatch, pass
+`"include_raw_mi":true`; the `raw_mi` action itself must still carry
+`risk:"advanced"`.
+
+While recording is active, only direct Agent actions that return success are
+appended to the in-memory `RecordingState`. By default, the tool does not
+record `record_start`, `record_status`, `record_stop`, `record_discard`,
+`replay`, `finish_session`, `save_action`, or `raw_mi`, and it does not record
+replay steps or probe on-hit child actions. Actions rejected by the state guard
+or by GDB are not added to the recording group.
+
+`record_status` returns the current active state, group name, failure policy,
+and recorded step count. `record_discard` drops the active in-memory recording
+without writing artifacts. `record_stop` persists the group to
+`assets/replay/<name>.gar` and writes a readable `assets/replay/<name>.json`
+export. `.gar` is the versioned binary authoritative format and stores
+magic/version, group metadata, task fingerprint, and the action list. The
+`.json` export follows the replay-plan shape for review and marks
+`record_artifact_authority:"binary"`; runtime replay treats `.gar` as the
+authority.
+
+## Probe And On-Hit Actions
 
 Breakpoints, watchpoints, and the minimal catchpoint action may include
 `comment`, `purpose`, and `on_hit` metadata; breakpoints and watchpoints also

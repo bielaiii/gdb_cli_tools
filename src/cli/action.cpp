@@ -300,6 +300,10 @@ const char *action_kind_name(ActionKind kind) {
         case ActionKind::HypothesisCheck: return "hypothesis_check";
         case ActionKind::HypothesisConclude: return "hypothesis_conclude";
         case ActionKind::RawMi: return "raw_mi";
+        case ActionKind::RecordStart: return "record_start";
+        case ActionKind::RecordStatus: return "record_status";
+        case ActionKind::RecordStop: return "record_stop";
+        case ActionKind::RecordDiscard: return "record_discard";
         case ActionKind::Unknown: return "";
     }
     return "";
@@ -329,6 +333,10 @@ ActionKind action_kind_from_name(const std::string &name) {
     if (name == "hypothesis_check") return ActionKind::HypothesisCheck;
     if (name == "hypothesis_conclude") return ActionKind::HypothesisConclude;
     if (name == "raw_mi") return ActionKind::RawMi;
+    if (name == "record_start") return ActionKind::RecordStart;
+    if (name == "record_status") return ActionKind::RecordStatus;
+    if (name == "record_stop") return ActionKind::RecordStop;
+    if (name == "record_discard") return ActionKind::RecordDiscard;
     return ActionKind::Unknown;
 }
 
@@ -486,6 +494,19 @@ ActionRequest parse_action_request(const Json &json) {
             request.payload = std::move(payload);
             break;
         }
+        case ActionKind::RecordStart: {
+            RecordStartPayload payload;
+            payload.name = string_field(json, "name");
+            payload.failure_policy = string_field(json, "failure_policy");
+            payload.include_raw_mi = json.bool_or("include_raw_mi", false);
+            request.payload = std::move(payload);
+            break;
+        }
+        case ActionKind::RecordStatus:
+        case ActionKind::RecordStop:
+        case ActionKind::RecordDiscard:
+            request.payload = NoPayload{};
+            break;
         case ActionKind::ProbeList:
             request.payload = NoPayload{};
             break;
@@ -561,6 +582,10 @@ Json action_request_to_json(const ActionRequest &request) {
             if (!payload.name.empty()) json.object_value["name"] = json_string(payload.name);
             if (payload.force) json.object_value["force"] = json_bool(payload.force);
             if (!payload.failure_policy.empty()) json.object_value["failure_policy"] = json_string(payload.failure_policy);
+        } else if constexpr (std::is_same_v<T, RecordStartPayload>) {
+            if (!payload.name.empty()) json.object_value["name"] = json_string(payload.name);
+            if (!payload.failure_policy.empty()) json.object_value["failure_policy"] = json_string(payload.failure_policy);
+            if (payload.include_raw_mi) json.object_value["include_raw_mi"] = json_bool(payload.include_raw_mi);
         } else if constexpr (std::is_same_v<T, FinishPayload>) {
             if (!payload.agent_inference.empty()) json.object_value["agent_inference"] = json_string(payload.agent_inference);
             if (!payload.final_conclusion.empty()) json.object_value["final_conclusion"] = json_string(payload.final_conclusion);

@@ -168,6 +168,33 @@ through `ToolError` plus `ReplayStep.error_evidence`; `continue_on_error`
 continues to later steps, while `stop_on_error` records later steps as
 `skipped` with a skip reason.
 
+## Record Artifacts
+
+Record stores a high-level action group artifact. It is not a live GDB process
+restore file and does not replace `session_snapshot.json` or
+`session_summary.json`. The runtime source of truth is the session's in-memory
+`RecordingState`; only `record_stop` writes the current action group under
+`assets/replay/`.
+
+`record_stop` writes two files:
+
+- `replay/<name>.gar`: the versioned binary authoritative artifact. Its magic
+  is `GDBA_REC1`, and the current version is `1`. It stores the group name,
+  source session id, created_at, failure policy, task metadata JSON, and action
+  JSON list.
+- `replay/<name>.json`: a human-readable export that follows the replay-plan
+  shape and carries `record_artifact_schema:"gdb-agent-record-artifact-v1"` and
+  `record_artifact_authority:"binary"`, marking the `.gar` file as the runtime
+  authority.
+
+Replay by name prefers a same-name `.gar` over `.json` and `.jsonl`. Direct
+`--file` replay may also point at a `.gar`. After reading the binary artifact,
+the tool converts it in memory to the existing replay-plan structure, so replay
+audit still writes the existing `ReplayRun`, `ReplayStep`, `ReplayWarning`, and
+`ToolError` evidence entries. There is no separate `RecordRun` evidence type.
+The JSON export is a readable view for review and debugging; it is not a
+replacement for raw evidence.
+
 ## Probe Store Snapshot
 
 The authoritative runtime probe state is the in-memory `ProbeState`.

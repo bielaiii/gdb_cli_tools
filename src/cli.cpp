@@ -6,6 +6,7 @@
 #include "common/json.hpp"
 #include "gdb/gdb_session.hpp"
 #include "gdb/mi_utils.hpp"
+#include "replay/record_store.hpp"
 #include "replay/replay_plan.hpp"
 #include "report/report.hpp"
 #include "task/debug_task.hpp"
@@ -505,6 +506,7 @@ struct LiveSession {
     std::unique_ptr<GdbSession> session;
     SessionOutcome outcome;
     ProbeState probe_state;
+    RecordingState recording;
 };
 
 static void start_live_session(LiveSession &live) {
@@ -521,7 +523,7 @@ static void start_live_session(LiveSession &live) {
     collect_environment_info(*live.session, live.task, live.outcome);
 
     if (!live.opts.replay_before_run.empty()) {
-        ActionContext context{*live.session, &live.task, &live.outcome, live.probe_state};
+        ActionContext context{*live.session, &live.task, &live.outcome, live.probe_state, &live.recording};
         (void)replay_action_file(context, live.opts.replay_before_run);
     }
 
@@ -552,7 +554,7 @@ static void start_live_session(LiveSession &live) {
         live.outcome.run_timed_out = run.timed_out;
         update_outcome_from_stop(live.outcome, run);
         collect_stop_followup(*live.session, live.outcome, run);
-        ActionContext context{*live.session, &live.task, &live.outcome, live.probe_state};
+        ActionContext context{*live.session, &live.task, &live.outcome, live.probe_state, &live.recording};
         (void)handle_probe_stop(context, run);
     }
 }
@@ -692,7 +694,7 @@ static std::string handle_daemon_request(const Json &request,
         if (payload == nullptr || !payload->is_object()) {
             return daemon_response(false, "action request missing payload");
         }
-        ActionContext context{*live.session, &live.task, &live.outcome, live.probe_state};
+        ActionContext context{*live.session, &live.task, &live.outcome, live.probe_state, &live.recording};
         ActionOutput output = handle_action_json(context, *payload);
         if (output.final.finished) {
             std::string response = finish_live_session_response(session_id, live, "");
@@ -903,6 +905,7 @@ static int run_serve(const CliOptions &opts, const DebugTask &task) {
     outcome.run_timeout_ms = effective_run_timeout_ms(opts, task);
     set_inferior_output_paths(outcome, opts.assets);
     ProbeState probe_state;
+    RecordingState recording;
 
     try {
         outcome.state = SessionState::Starting;
@@ -912,7 +915,7 @@ static int run_serve(const CliOptions &opts, const DebugTask &task) {
         collect_environment_info(session, task, outcome);
 
         if (!opts.replay_before_run.empty()) {
-            ActionContext context{session, &task, &outcome, probe_state};
+            ActionContext context{session, &task, &outcome, probe_state, &recording};
             std::cout << action_output_text(replay_action_file(context, opts.replay_before_run));
         }
 
@@ -943,7 +946,7 @@ static int run_serve(const CliOptions &opts, const DebugTask &task) {
             outcome.run_timed_out = run.timed_out;
             update_outcome_from_stop(outcome, run);
             collect_stop_followup(session, outcome, run);
-            ActionContext context{session, &task, &outcome, probe_state};
+            ActionContext context{session, &task, &outcome, probe_state, &recording};
             for (const auto &result : handle_probe_stop(context, run)) {
                 std::cout << action_result_line(result);
             }
@@ -960,7 +963,7 @@ static int run_serve(const CliOptions &opts, const DebugTask &task) {
             ActionOutput output;
             if (!trim(line).empty()) {
                 try {
-                    ActionContext context{session, &task, &outcome, probe_state};
+                    ActionContext context{session, &task, &outcome, probe_state, &recording};
                     output = handle_action_json(context, parse_json(line));
                 } catch (const std::exception &ex) {
                     output = single_output(make_action_error(session, ActionKind::Unknown, "", std::string("invalid json: ") + ex.what()));
